@@ -41,7 +41,7 @@ Three commands, one minute, encrypted WireGuard mesh between your servers.
     Dedicated Servers   ← OVH, Hetzner, Scaleway + S3 buckets
 ```
 
-Each layer is a self-contained crate in `layers/`. See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design.
+Each layer is a self-contained crate in `layers/`. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 
 ## Repository Structure
 
@@ -66,7 +66,7 @@ Each layer has a `README.md` with its concept documentation. Browse any layer fo
 
 ## Documentation
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) — Global architecture, design principles, non-goals, failure model
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Global architecture, design principles, non-goals, failure model
 - [layers/fabric/README.md](layers/fabric/README.md) — Fabric (WireGuard mesh)
 - [layers/forge/README.md](layers/forge/README.md) — Forge (per-node control)
 - [layers/compute/README.md](layers/compute/README.md) — Compute (Firecracker)
