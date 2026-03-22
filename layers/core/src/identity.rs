@@ -13,7 +13,10 @@ pub struct NodeIdentity {
 
 impl NodeIdentity {
     pub fn new(name: String, wg_public_key: String) -> Self {
-        Self { name, wg_public_key }
+        Self {
+            name,
+            wg_public_key,
+        }
     }
 }
 
@@ -23,10 +26,7 @@ mod tests {
 
     #[test]
     fn serde_roundtrip() {
-        let identity = NodeIdentity::new(
-            "node-1".into(),
-            "dGVzdC1wdWJsaWMta2V5".into(),
-        );
+        let identity = NodeIdentity::new("node-1".into(), "dGVzdC1wdWJsaWMta2V5".into());
         let json = serde_json::to_string(&identity).unwrap();
         let parsed: NodeIdentity = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.name, "node-1");

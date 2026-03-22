@@ -10,11 +10,19 @@ use crate::peering::JoinRequestInfo;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ControlRequest {
-    PeeringStart { port: u16, pin: Option<String> },
+    PeeringStart {
+        port: u16,
+        pin: Option<String>,
+    },
     PeeringStop,
     PeeringList,
-    PeeringAccept { request_id: String },
-    PeeringReject { request_id: String, reason: Option<String> },
+    PeeringAccept {
+        request_id: String,
+    },
+    PeeringReject {
+        request_id: String,
+        reason: Option<String>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -32,17 +40,17 @@ pub trait ControlHandler: Send + Sync {
 }
 
 /// Start the Unix domain socket control listener.
-pub async fn start_control_listener(
-    socket_path: &Path,
-    handler: Arc<dyn ControlHandler>,
-) {
+pub async fn start_control_listener(socket_path: &Path, handler: Arc<dyn ControlHandler>) {
     // Remove stale socket
     let _ = std::fs::remove_file(socket_path);
 
     let listener = match UnixListener::bind(socket_path) {
         Ok(l) => l,
         Err(e) => {
-            warn!("failed to bind control socket at {}: {e}", socket_path.display());
+            warn!(
+                "failed to bind control socket at {}: {e}",
+                socket_path.display()
+            );
             return;
         }
     };

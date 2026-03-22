@@ -1,4 +1,4 @@
-pub mod secret;
-pub mod identity;
 pub mod addressing;
+pub mod identity;
 pub mod mesh;
+pub mod secret;

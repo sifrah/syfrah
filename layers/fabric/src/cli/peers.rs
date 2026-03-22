@@ -1,8 +1,8 @@
 use std::time::SystemTime;
 
+use crate::{store, wg};
 use anyhow::Result;
 use syfrah_core::mesh::PeerStatus;
-use crate::{store, wg};
 
 pub async fn run() -> Result<()> {
     let state = store::load().map_err(|_| {

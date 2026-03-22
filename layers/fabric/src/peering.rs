@@ -225,10 +225,8 @@ async fn handle_incoming(
                 if let Some(ref config) = *auto {
                     if config.pin == *req_pin {
                         info!("PIN matched, auto-accepting {}", req.node_name);
-                        let (response, new_record) =
-                            build_auto_accept_response(&req, config)?;
-                        write_message(&mut stream, &PeeringMessage::JoinResponse(response))
-                            .await?;
+                        let (response, new_record) = build_auto_accept_response(&req, config)?;
+                        write_message(&mut stream, &PeeringMessage::JoinResponse(response)).await?;
                         on_accepted(new_record);
                         return Ok(());
                     }
@@ -248,10 +246,13 @@ async fn handle_incoming(
 
             {
                 let mut map = pending.write().await;
-                map.insert(req.request_id.clone(), PendingJoin {
-                    info,
-                    response_tx: tx,
-                });
+                map.insert(
+                    req.request_id.clone(),
+                    PendingJoin {
+                        info,
+                        response_tx: tx,
+                    },
+                );
             }
 
             let response = match tokio::time::timeout(JOIN_TIMEOUT, rx).await {
@@ -279,8 +280,8 @@ async fn handle_incoming(
         }
 
         PeeringMessage::PeerAnnounce(ciphertext) => {
-            let enc_key = encryption_key
-                .ok_or_else(|| PeeringError::Protocol("no encryption key".into()))?;
+            let enc_key =
+                encryption_key.ok_or_else(|| PeeringError::Protocol("no encryption key".into()))?;
             let record = decrypt_record(&ciphertext, &enc_key)?;
             info!(
                 "peer announce from {peer_addr}: {} ({})",
@@ -306,8 +307,7 @@ fn build_auto_accept_response(
 
     let new_wg_pub = wireguard_control::Key::from_base64(&req.wg_public_key)
         .map_err(|_| PeeringError::Protocol("invalid WG public key".into()))?;
-    let new_mesh_ipv6 =
-        addressing::derive_node_address(&config.mesh_prefix, new_wg_pub.as_bytes());
+    let new_mesh_ipv6 = addressing::derive_node_address(&config.mesh_prefix, new_wg_pub.as_bytes());
 
     let new_record = PeerRecord {
         name: req.node_name.clone(),
@@ -319,9 +319,7 @@ fn build_auto_accept_response(
     };
 
     // Load current peers from store + our own record
-    let mut all_peers = crate::store::load()
-        .map(|s| s.peers)
-        .unwrap_or_default();
+    let mut all_peers = crate::store::load().map(|s| s.peers).unwrap_or_default();
     all_peers.push(config.my_record.clone());
 
     let response = JoinResponse {

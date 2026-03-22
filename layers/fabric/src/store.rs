@@ -143,7 +143,11 @@ pub fn daemon_running() -> Option<u32> {
     #[cfg(unix)]
     {
         let alive = unsafe { libc::kill(pid as i32, 0) } == 0;
-        if alive { Some(pid) } else { None }
+        if alive {
+            Some(pid)
+        } else {
+            None
+        }
     }
     #[cfg(not(unix))]
     {
@@ -178,7 +182,8 @@ mod tests {
 
         let json = serde_json::to_string_pretty(&state).unwrap();
         std::fs::write(&file, &json).unwrap();
-        let loaded: NodeState = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let loaded: NodeState =
+            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(loaded.mesh_name, "test");
         assert_eq!(loaded.node_name, "node-1");
         assert_eq!(loaded.mesh_ipv6, state.mesh_ipv6);

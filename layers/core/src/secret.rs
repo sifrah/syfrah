@@ -82,7 +82,9 @@ impl FromStr for MeshSecret {
     type Err = SecretError;
 
     fn from_str(s: &str) -> Result<Self, SecretError> {
-        let encoded = s.strip_prefix(SECRET_PREFIX).ok_or(SecretError::InvalidPrefix)?;
+        let encoded = s
+            .strip_prefix(SECRET_PREFIX)
+            .ok_or(SecretError::InvalidPrefix)?;
         let decoded = bs58::decode(encoded).into_vec()?;
         if decoded.len() != SECRET_BYTES {
             return Err(SecretError::InvalidLength(decoded.len()));
@@ -95,7 +97,12 @@ impl FromStr for MeshSecret {
 
 impl std::fmt::Display for MeshSecret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}{}", SECRET_PREFIX, bs58::encode(&self.bytes).into_string())
+        write!(
+            f,
+            "{}{}",
+            SECRET_PREFIX,
+            bs58::encode(&self.bytes).into_string()
+        )
     }
 }
 

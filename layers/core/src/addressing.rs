@@ -20,8 +20,14 @@ pub fn generate_mesh_prefix() -> Ipv6Addr {
     ];
 
     Ipv6Addr::new(
-        segments[0], segments[1], segments[2], segments[3],
-        segments[4], segments[5], segments[6], segments[7],
+        segments[0],
+        segments[1],
+        segments[2],
+        segments[3],
+        segments[4],
+        segments[5],
+        segments[6],
+        segments[7],
     )
 }
 

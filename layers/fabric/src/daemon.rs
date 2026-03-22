@@ -70,7 +70,11 @@ pub async fn run_init(config: DaemonConfig) -> anyhow::Result<()> {
 }
 
 /// Auto-init: create mesh if none exists, used by `syfrah peering` on a fresh node.
-pub fn auto_init(node_name: &str, wg_port: u16, peering_port: u16) -> anyhow::Result<(MeshSecret, KeyPair)> {
+pub fn auto_init(
+    node_name: &str,
+    wg_port: u16,
+    peering_port: u16,
+) -> anyhow::Result<(MeshSecret, KeyPair)> {
     let mesh_secret = MeshSecret::generate();
     let wg_keypair = wg::generate_keypair();
 
@@ -103,7 +107,11 @@ pub fn auto_init(node_name: &str, wg_port: u16, peering_port: u16) -> anyhow::Re
 }
 
 /// Run the join flow: request to join an existing mesh via TCP peering.
-pub async fn run_join(target: SocketAddr, config: DaemonConfig, pin: Option<String>) -> anyhow::Result<()> {
+pub async fn run_join(
+    target: SocketAddr,
+    config: DaemonConfig,
+    pin: Option<String>,
+) -> anyhow::Result<()> {
     if store::exists() {
         anyhow::bail!("mesh state already exists. Run 'syfrah leave' first.");
     }
@@ -130,12 +138,15 @@ pub async fn run_join(target: SocketAddr, config: DaemonConfig, pin: Option<Stri
         anyhow::bail!("Join request rejected: {reason}");
     }
 
-    let mesh_secret_str = response.mesh_secret
+    let mesh_secret_str = response
+        .mesh_secret
         .ok_or_else(|| anyhow::anyhow!("accepted but no mesh secret"))?;
-    let mesh_secret: MeshSecret = mesh_secret_str.parse()
+    let mesh_secret: MeshSecret = mesh_secret_str
+        .parse()
         .map_err(|e| anyhow::anyhow!("invalid mesh secret: {e}"))?;
     let mesh_name = response.mesh_name.unwrap_or_else(|| "mesh".into());
-    let mesh_prefix = response.mesh_prefix
+    let mesh_prefix = response
+        .mesh_prefix
         .ok_or_else(|| anyhow::anyhow!("accepted but no mesh prefix"))?;
 
     let mesh_ipv6 = addressing::derive_node_address(&mesh_prefix, wg_keypair.public.as_bytes());
@@ -180,7 +191,9 @@ pub async fn run_start() -> anyhow::Result<()> {
         anyhow::anyhow!("no mesh state found. Run 'syfrah init' or 'syfrah join' first.")
     })?;
 
-    let mesh_secret: MeshSecret = state.mesh_secret.parse()
+    let mesh_secret: MeshSecret = state
+        .mesh_secret
+        .parse()
         .map_err(|e| anyhow::anyhow!("corrupt secret in state: {e}"))?;
     let wg_private = Key::from_base64(&state.wg_private_key)
         .map_err(|_| anyhow::anyhow!("corrupt WG private key in state"))?;
@@ -199,10 +212,15 @@ pub async fn run_start() -> anyhow::Result<()> {
     println!("  Node: {} ({})", state.node_name, state.mesh_ipv6);
     println!("Running daemon... (Ctrl+C to stop)");
 
-    let endpoint_addr = state.public_endpoint.unwrap_or_else(|| {
-        SocketAddr::new("0.0.0.0".parse().unwrap(), state.wg_listen_port)
-    });
-    let my_record = build_record(&state.node_name, &wg_keypair, endpoint_addr, state.mesh_ipv6);
+    let endpoint_addr = state
+        .public_endpoint
+        .unwrap_or_else(|| SocketAddr::new("0.0.0.0".parse().unwrap(), state.wg_listen_port));
+    let my_record = build_record(
+        &state.node_name,
+        &wg_keypair,
+        endpoint_addr,
+        state.mesh_ipv6,
+    );
     run_daemon(my_record, &wg_keypair, mesh_secret, state.peering_port).await
 }
 
@@ -262,7 +280,11 @@ pub async fn run_daemon(
             }
             // Save to store
             if let Ok(mut state) = store::load() {
-                if !state.peers.iter().any(|p| p.wg_public_key == record.wg_public_key) {
+                if !state
+                    .peers
+                    .iter()
+                    .any(|p| p.wg_public_key == record.wg_public_key)
+                {
                     let known = state.peers.clone();
                     state.peers.push(record.clone());
                     let _ = store::save(&state);
@@ -307,7 +329,11 @@ pub async fn run_daemon(
             }
             // Save to store
             if let Ok(mut state) = store::load() {
-                if !state.peers.iter().any(|p| p.wg_public_key == record.wg_public_key) {
+                if !state
+                    .peers
+                    .iter()
+                    .any(|p| p.wg_public_key == record.wg_public_key)
+                {
                     state.peers.push(record);
                     let _ = store::save(&state);
                 }
@@ -411,18 +437,24 @@ impl ControlHandler for DaemonControlHandler {
                 if let Some(pin_val) = pin {
                     let state = match store::load() {
                         Ok(s) => s,
-                        Err(e) => return ControlResponse::Error { message: format!("{e}") },
+                        Err(e) => {
+                            return ControlResponse::Error {
+                                message: format!("{e}"),
+                            }
+                        }
                     };
-                    self.peering_state.set_auto_accept(Some(AutoAcceptConfig {
-                        pin: pin_val,
-                        mesh_name: state.mesh_name,
-                        mesh_secret_str: state.mesh_secret,
-                        mesh_prefix: state.mesh_prefix,
-                        my_record: self.my_record.clone(),
-                        wg_pubkey: self.wg_pubkey.clone(),
-                        encryption_key: self.mesh_secret.encryption_key(),
-                        peering_port: self.peering_port,
-                    })).await;
+                    self.peering_state
+                        .set_auto_accept(Some(AutoAcceptConfig {
+                            pin: pin_val,
+                            mesh_name: state.mesh_name,
+                            mesh_secret_str: state.mesh_secret,
+                            mesh_prefix: state.mesh_prefix,
+                            my_record: self.my_record.clone(),
+                            wg_pubkey: self.wg_pubkey.clone(),
+                            encryption_key: self.mesh_secret.encryption_key(),
+                            peering_port: self.peering_port,
+                        }))
+                        .await;
                 }
                 self.peering_state.set_active(true).await;
                 ControlResponse::Ok
@@ -439,7 +471,11 @@ impl ControlHandler for DaemonControlHandler {
             ControlRequest::PeeringAccept { request_id } => {
                 let state = match store::load() {
                     Ok(s) => s,
-                    Err(e) => return ControlResponse::Error { message: format!("{e}") },
+                    Err(e) => {
+                        return ControlResponse::Error {
+                            message: format!("{e}"),
+                        }
+                    }
                 };
 
                 let mut all_peers = state.peers.clone();
@@ -458,10 +494,15 @@ impl ControlHandler for DaemonControlHandler {
                     Ok(info) => {
                         let new_wg_pub = match Key::from_base64(&info.wg_public_key) {
                             Ok(k) => k,
-                            Err(_) => return ControlResponse::Error { message: "invalid WG key".into() },
+                            Err(_) => {
+                                return ControlResponse::Error {
+                                    message: "invalid WG key".into(),
+                                }
+                            }
                         };
                         let new_mesh_ipv6 = addressing::derive_node_address(
-                            &state.mesh_prefix, new_wg_pub.as_bytes(),
+                            &state.mesh_prefix,
+                            new_wg_pub.as_bytes(),
                         );
                         let new_record = PeerRecord {
                             name: info.node_name.clone(),
@@ -472,22 +513,33 @@ impl ControlHandler for DaemonControlHandler {
                             status: PeerStatus::Active,
                         };
                         (self.on_accepted)(new_record);
-                        ControlResponse::PeeringAccepted { peer_name: info.node_name }
+                        ControlResponse::PeeringAccepted {
+                            peer_name: info.node_name,
+                        }
                     }
-                    Err(e) => ControlResponse::Error { message: e.to_string() },
+                    Err(e) => ControlResponse::Error {
+                        message: e.to_string(),
+                    },
                 }
             }
             ControlRequest::PeeringReject { request_id, reason } => {
                 match self.peering_state.reject(&request_id, reason).await {
                     Ok(()) => ControlResponse::Ok,
-                    Err(e) => ControlResponse::Error { message: e.to_string() },
+                    Err(e) => ControlResponse::Error {
+                        message: e.to_string(),
+                    },
                 }
             }
         }
     }
 }
 
-fn build_record(name: &str, wg_keypair: &KeyPair, endpoint: SocketAddr, mesh_ipv6: std::net::Ipv6Addr) -> PeerRecord {
+fn build_record(
+    name: &str,
+    wg_keypair: &KeyPair,
+    endpoint: SocketAddr,
+    mesh_ipv6: std::net::Ipv6Addr,
+) -> PeerRecord {
     PeerRecord {
         name: name.to_string(),
         wg_public_key: wg_keypair.public.to_base64(),
@@ -499,7 +551,8 @@ fn build_record(name: &str, wg_keypair: &KeyPair, endpoint: SocketAddr, mesh_ipv
 }
 
 fn resolve_endpoint(config: &DaemonConfig) -> SocketAddr {
-    config.public_endpoint
+    config
+        .public_endpoint
         .unwrap_or_else(|| SocketAddr::new("0.0.0.0".parse().unwrap(), config.wg_listen_port))
 }
 
@@ -510,10 +563,17 @@ pub fn derive_prefix_from_secret(secret: &MeshSecret) -> std::net::Ipv6Addr {
         0xfd00 | (hash[0] as u16),
         ((hash[1] as u16) << 8) | (hash[2] as u16),
         ((hash[3] as u16) << 8) | (hash[4] as u16),
-        0, 0, 0, 0, 0,
+        0,
+        0,
+        0,
+        0,
+        0,
     )
 }
 
 fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }

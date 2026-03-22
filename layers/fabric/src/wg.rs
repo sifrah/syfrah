@@ -30,8 +30,7 @@ fn backend() -> Backend {
 }
 
 fn iface_name() -> Result<InterfaceName, WgError> {
-    InterfaceName::from_str(INTERFACE_NAME)
-        .map_err(|e| WgError::InvalidName(e.to_string()))
+    InterfaceName::from_str(INTERFACE_NAME).map_err(|e| WgError::InvalidName(e.to_string()))
 }
 
 /// Generate a new WireGuard keypair.
@@ -71,10 +70,7 @@ pub fn get_device() -> Result<Device, WgError> {
 
 /// Full reconciliation: replace all peers on the interface with the given peer records.
 /// Skips peers whose WG public key matches `self_pubkey` (the local node).
-pub fn apply_peers(
-    self_pubkey: &Key,
-    peers: &[PeerRecord],
-) -> Result<(), WgError> {
+pub fn apply_peers(self_pubkey: &Key, peers: &[PeerRecord]) -> Result<(), WgError> {
     let iface = iface_name()?;
 
     let mut update = DeviceUpdate::new().replace_peers();
@@ -122,10 +118,7 @@ pub fn apply_peers(
 
 /// Incrementally add or update a single peer. Does NOT replace all peers.
 /// Use this for gossip events (one peer changed at a time).
-pub fn upsert_peer(
-    self_pubkey: &Key,
-    peer: &PeerRecord,
-) -> Result<(), WgError> {
+pub fn upsert_peer(self_pubkey: &Key, peer: &PeerRecord) -> Result<(), WgError> {
     let peer_key = Key::from_base64(&peer.wg_public_key)
         .map_err(|_| WgError::InvalidKey(peer.wg_public_key.clone()))?;
 

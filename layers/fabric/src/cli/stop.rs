@@ -1,5 +1,5 @@
-use anyhow::Result;
 use crate::store;
+use anyhow::Result;
 
 pub async fn run() -> Result<()> {
     match store::daemon_running() {

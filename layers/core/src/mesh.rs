@@ -1,7 +1,7 @@
 use std::net::{Ipv6Addr, SocketAddr};
 
 use aes_gcm::aead::{Aead, KeyInit, OsRng};
-use aes_gcm::{Aes256Gcm, AeadCore, Nonce};
+use aes_gcm::{AeadCore, Aes256Gcm, Nonce};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -77,10 +77,13 @@ pub enum PeeringMessage {
 
 /// Encrypt a PeerRecord with AES-256-GCM using the mesh encryption key.
 /// Returns nonce (12 bytes) || ciphertext.
-pub fn encrypt_record(record: &PeerRecord, encryption_key: &[u8; 32]) -> Result<Vec<u8>, MeshError> {
+pub fn encrypt_record(
+    record: &PeerRecord,
+    encryption_key: &[u8; 32],
+) -> Result<Vec<u8>, MeshError> {
     let plaintext = serde_json::to_vec(record)?;
-    let cipher = Aes256Gcm::new_from_slice(encryption_key)
-        .map_err(|_| MeshError::EncryptionFailed)?;
+    let cipher =
+        Aes256Gcm::new_from_slice(encryption_key).map_err(|_| MeshError::EncryptionFailed)?;
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
     let ciphertext = cipher
         .encrypt(&nonce, plaintext.as_ref())
@@ -99,8 +102,8 @@ pub fn decrypt_record(data: &[u8], encryption_key: &[u8; 32]) -> Result<PeerReco
     }
     let (nonce_bytes, ciphertext) = data.split_at(12);
     let nonce = Nonce::from_slice(nonce_bytes);
-    let cipher = Aes256Gcm::new_from_slice(encryption_key)
-        .map_err(|_| MeshError::DecryptionFailed)?;
+    let cipher =
+        Aes256Gcm::new_from_slice(encryption_key).map_err(|_| MeshError::DecryptionFailed)?;
     let plaintext = cipher
         .decrypt(nonce, ciphertext)
         .map_err(|_| MeshError::DecryptionFailed)?;

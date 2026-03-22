@@ -1,11 +1,9 @@
+use crate::store;
 use anyhow::Result;
 use syfrah_core::secret::MeshSecret;
-use crate::store;
 
 pub async fn run() -> Result<()> {
-    let mut state = store::load().map_err(|_| {
-        anyhow::anyhow!("no mesh configured.")
-    })?;
+    let mut state = store::load().map_err(|_| anyhow::anyhow!("no mesh configured."))?;
 
     if store::daemon_running().is_some() {
         anyhow::bail!("daemon is running. Stop it first with 'syfrah stop'.");
@@ -16,7 +14,8 @@ pub async fn run() -> Result<()> {
     let new_ipv6 = syfrah_core::addressing::derive_node_address(
         &new_prefix,
         wireguard_control::Key::from_base64(&state.wg_public_key)
-            .map_err(|_| anyhow::anyhow!("bad WG key"))?.as_bytes(),
+            .map_err(|_| anyhow::anyhow!("bad WG key"))?
+            .as_bytes(),
     );
 
     state.mesh_secret = new_secret.to_string();

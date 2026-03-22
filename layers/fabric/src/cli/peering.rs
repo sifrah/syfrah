@@ -1,7 +1,7 @@
-use std::collections::HashSet;
-use anyhow::Result;
-use crate::control::{ControlRequest, ControlResponse, send_control_request};
+use crate::control::{send_control_request, ControlRequest, ControlResponse};
 use crate::store;
+use anyhow::Result;
+use std::collections::HashSet;
 
 /// Interactive peering mode: watch for requests and prompt accept/reject.
 pub async fn watch(pin: Option<String>) -> Result<()> {
@@ -16,7 +16,9 @@ pub async fn watch(pin: Option<String>) -> Result<()> {
         println!();
 
         // Start daemon in background
-        let mesh_secret: syfrah_core::secret::MeshSecret = store::load()?.mesh_secret.parse()
+        let mesh_secret: syfrah_core::secret::MeshSecret = store::load()?
+            .mesh_secret
+            .parse()
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let wg_private = wireguard_control::Key::from_base64(&store::load()?.wg_private_key)
             .map_err(|_| anyhow::anyhow!("corrupt WG key"))?;
@@ -35,13 +37,16 @@ pub async fn watch(pin: Option<String>) -> Result<()> {
         };
         let pp = state.peering_port;
         tokio::spawn(async move {
-            if let Err(e) = crate::daemon::run_daemon(my_record, &wg_keypair, mesh_secret, pp).await {
+            if let Err(e) = crate::daemon::run_daemon(my_record, &wg_keypair, mesh_secret, pp).await
+            {
                 eprintln!("daemon error: {e}");
             }
         });
         // Wait for control socket
         for _ in 0..30 {
-            if store::control_socket_path().exists() { break; }
+            if store::control_socket_path().exists() {
+                break;
+            }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     }
@@ -50,7 +55,8 @@ pub async fn watch(pin: Option<String>) -> Result<()> {
     let resp = send_request(ControlRequest::PeeringStart {
         port: 51821,
         pin: pin.clone(),
-    }).await?;
+    })
+    .await?;
     match resp {
         ControlResponse::Ok => {}
         ControlResponse::Error { message } => anyhow::bail!("{message}"),
@@ -84,7 +90,10 @@ pub async fn watch(pin: Option<String>) -> Result<()> {
                 seen.insert(req.request_id.clone());
 
                 println!("Join request from {} ({})", req.node_name, req.endpoint);
-                println!("  WG pubkey: {}", &req.wg_public_key[..20.min(req.wg_public_key.len())]);
+                println!(
+                    "  WG pubkey: {}",
+                    &req.wg_public_key[..20.min(req.wg_public_key.len())]
+                );
                 print!("  Accept? [Y/n] ");
 
                 // Read from stdin
@@ -96,7 +105,9 @@ pub async fn watch(pin: Option<String>) -> Result<()> {
                     if trimmed.is_empty() || trimmed == "y" || trimmed == "yes" {
                         match send_request(ControlRequest::PeeringAccept {
                             request_id: req.request_id.clone(),
-                        }).await {
+                        })
+                        .await
+                        {
                             Ok(ControlResponse::PeeringAccepted { peer_name }) => {
                                 println!("  Accepted: {peer_name} joined the mesh.\n");
                             }
@@ -109,7 +120,9 @@ pub async fn watch(pin: Option<String>) -> Result<()> {
                         match send_request(ControlRequest::PeeringReject {
                             request_id: req.request_id.clone(),
                             reason: Some("rejected by operator".into()),
-                        }).await {
+                        })
+                        .await
+                        {
                             Ok(_) => println!("  Rejected.\n"),
                             Err(e) => println!("  Error: {e}\n"),
                         }
@@ -121,7 +134,11 @@ pub async fn watch(pin: Option<String>) -> Result<()> {
 }
 
 pub async fn start(port: u16, pin: Option<String>) -> Result<()> {
-    let resp = send_request(ControlRequest::PeeringStart { port, pin: pin.clone() }).await?;
+    let resp = send_request(ControlRequest::PeeringStart {
+        port,
+        pin: pin.clone(),
+    })
+    .await?;
     match resp {
         ControlResponse::Ok => {
             if let Some(p) = pin {
@@ -179,7 +196,8 @@ pub async fn list() -> Result<()> {
 pub async fn accept(request_id: &str) -> Result<()> {
     let resp = send_request(ControlRequest::PeeringAccept {
         request_id: request_id.to_string(),
-    }).await?;
+    })
+    .await?;
     match resp {
         ControlResponse::PeeringAccepted { peer_name } => {
             println!("Accepted: {peer_name} joined the mesh.");
@@ -194,7 +212,8 @@ pub async fn reject(request_id: &str, reason: Option<String>) -> Result<()> {
     let resp = send_request(ControlRequest::PeeringReject {
         request_id: request_id.to_string(),
         reason,
-    }).await?;
+    })
+    .await?;
     match resp {
         ControlResponse::Ok => println!("Request {request_id} rejected."),
         ControlResponse::Error { message } => anyhow::bail!("{message}"),
@@ -215,5 +234,9 @@ async fn send_request(req: ControlRequest) -> Result<ControlResponse> {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max { s.to_string() } else { format!("{}...", &s[..max - 3]) }
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max - 3])
+    }
 }
