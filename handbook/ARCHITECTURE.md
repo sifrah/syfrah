@@ -25,8 +25,8 @@ These are deliberate choices, not missing features:
 - **No L2 flood-and-learn networking.** FDB entries are statically populated by the control plane. ARP is proxied. Zero broadcast traffic in steady state.
 - **No distributed storage cluster.** No Ceph, no GlusterFS. Storage durability is delegated to the provider's S3. ZeroFS handles caching and block device abstraction.
 - **No hyperscaler-style AZ guarantees.** Zones and regions are operator-defined labels. The platform does not enforce physical isolation between AZs — the operator's choice of providers and locations determines actual fault domain boundaries.
-- **No Windows guests.** Firecracker boots Linux kernels only.
-- **No GPU passthrough.** Firecracker has no PCI passthrough. GPU workloads are out of scope.
+- **No Windows guests.** Firecracker boots Linux kernels directly (ELF), with no BIOS/UEFI. Windows requires UEFI, which Firecracker does not provide. The only non-Linux guest supported is OSv (a unikernel).
+- **No GPU passthrough in v1.** Firecracker has no PCI passthrough by design (minimal attack surface). GPU workloads would require Cloud Hypervisor or QEMU with VFIO — a future consideration, not a current goal. This is the same split used by Koyeb and AWS (Firecracker for CPU, different stack for GPU).
 
 ## The stack
 
