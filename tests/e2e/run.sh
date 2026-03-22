@@ -42,14 +42,9 @@ trap cleanup EXIT
 
 # ── Build ─────────────────────────────────────────────────────
 
-info "Building syfrah (release)..."
+info "Building Docker image (compiles syfrah inside the container)..."
 cd "$REPO_ROOT"
-cargo build --release --quiet
-
-info "Building Docker image..."
-cp target/release/syfrah tests/e2e/syfrah
-docker build -t "$IMAGE" tests/e2e/ --quiet
-rm -f tests/e2e/syfrah
+docker build -t "$IMAGE" -f tests/e2e/Dockerfile . --quiet
 
 # ── Setup network ─────────────────────────────────────────────
 
