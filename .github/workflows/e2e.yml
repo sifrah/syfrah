@@ -1,0 +1,30 @@
+name: E2E Tests
+
+on:
+  schedule:
+    - cron: '0 4 * * 1'  # Weekly Monday 4am UTC
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'layers/*/src/**'
+      - 'bin/*/src/**'
+      - 'tests/**'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  e2e:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install WireGuard
+        run: sudo apt-get update && sudo apt-get install -y wireguard-tools
+
+      - name: Run E2E tests
+        run: sudo -E cargo test --test '*' -- --ignored

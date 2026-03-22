@@ -2,5 +2,5 @@
   "overview": [{"title":"Architecture","href":"/"}],
   "layers": [{"title":"Compute","href":"/compute","children":[]},{"title":"Control Plane","href":"/controlplane","children":[]},{"title":"Fabric","href":"/fabric","children":[]},{"title":"Forge","href":"/forge","children":[]},{"title":"IAM","href":"/iam","children":[]},{"title":"Organization Model","href":"/org","children":[]},{"title":"Overlay Network","href":"/overlay","children":[]},{"title":"Cloud Products","href":"/products","children":[]},{"title":"Storage","href":"/storage","children":[]}],
   "operations": [{"title":"CLI","href":"/cli"},{"title":"State and Reconciliation","href":"/state-and-reconciliation"},{"title":"Zones and Regions","href":"/zones-and-regions"}],
-  "reference": [{"title":"Repository Structure","href":"/repository"},{"title":"Documentation Strategy","href":"/documentation-strategy"},{"title":"CI/CD","href":"/ci"}]
+  "reference": [{"title":"Repository Structure","href":"/repository"},{"title":"Documentation Strategy","href":"/documentation-strategy"},{"title":"CI/CD","href":"/ci"},{"title":"Testing","href":"/testing"}]
 }
