@@ -185,10 +185,25 @@ get_mesh_ipv6() {
 # Assert syfrah0 interface does NOT exist. Args: <container>
 assert_interface_gone() {
     local container="$1"
-    if docker exec "$container" ip link show syfrah0 2>&1 | grep -q "does not exist"; then
+    if ! docker exec "$container" ip link show syfrah0 >/dev/null 2>&1; then
         pass "$container syfrah0 interface removed"
     else
         fail "$container syfrah0 interface still exists"
+    fi
+}
+
+# Assert daemon is NOT running. Args: <container>
+assert_daemon_stopped() {
+    local container="$1"
+    if docker exec "$container" syfrah fabric status 2>&1 | grep -q "stopped"; then
+        pass "$container daemon is stopped"
+    else
+        # Also check if process is gone
+        if ! docker exec "$container" pgrep -f "syfrah" >/dev/null 2>&1; then
+            pass "$container daemon is stopped (process gone)"
+        else
+            fail "$container daemon is still running"
+        fi
     fi
 }
 

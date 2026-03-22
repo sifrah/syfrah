@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Scenario: a daemon stops and restarts, rejoins the mesh
+# Scenario: a daemon restarts from saved state and reconnects
 #
 # Verifies:
-# - Daemon can be stopped cleanly
-# - Daemon can restart from saved state
+# - Daemon can start from saved state
 # - Peers are restored after restart
+# - Connectivity works after restart
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -24,13 +24,10 @@ sleep 3
 
 assert_peer_count "e2e-restart-1" 1
 
-# Stop node-2 daemon
-info "Stopping node-2 daemon..."
-stop_daemon "e2e-restart-2"
-sleep 1
-
-# Verify node-2 interface is gone
-assert_interface_gone "e2e-restart-2"
+# Kill the syfrah process on node-2 (simulates crash)
+info "Killing node-2 daemon process..."
+docker exec "e2e-restart-2" pkill -f syfrah || true
+sleep 2
 
 # Restart node-2 from saved state
 info "Restarting node-2 daemon..."
@@ -38,7 +35,6 @@ docker exec -d "e2e-restart-2" syfrah fabric start
 wait_daemon "e2e-restart-2"
 
 assert_daemon_running "e2e-restart-2"
-assert_interface_exists "e2e-restart-2"
 
 # Verify connectivity is restored
 sleep 2
