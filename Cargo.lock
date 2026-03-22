@@ -1048,7 +1048,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
-name = "syfrah-cli"
+name = "syfrah-bin"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1057,11 +1057,9 @@ dependencies = [
  "hostname",
  "libc",
  "syfrah-core",
- "syfrah-net",
+ "syfrah-fabric",
  "tokio",
- "tracing",
  "tracing-subscriber",
- "wireguard-control",
 ]
 
 [[package]]
@@ -1080,12 +1078,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "syfrah-net"
+name = "syfrah-fabric"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "clap",
  "dirs",
+ "hostname",
  "libc",
  "rand",
  "serde",

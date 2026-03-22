@@ -353,37 +353,36 @@ Regions and availability zones are logical labels on nodes. They represent where
 | Serialization | serde + JSON | All public types are Serialize/Deserialize |
 | Errors | thiserror (lib), anyhow (bin) | Project convention |
 
-## Crate structure
+## Repository structure
+
+The repo is organized by architectural layer. Each layer is a self-contained folder with its own code, documentation (README.md), and CLI commands. See [`docs/repository.md`](docs/repository.md) for the full conventions.
 
 ```
     syfrah/
-    ├── crates/
-    │   ├── syfrah-core/          Pure types, crypto, addressing, IPAM math
+    ├── layers/
+    │   ├── core/                 syfrah-core: pure types, crypto, addressing
     │   │                         No I/O, no async. The foundation.
     │   │
-    │   ├── syfrah-net/           WireGuard, peering, overlay, store
-    │   │                         Async, I/O, network operations.
+    │   ├── fabric/               syfrah-fabric: WireGuard mesh + peering + CLI
+    │   │                         Implemented. The first layer.
     │   │
-    │   ├── syfrah-cp/            Control plane (future)
-    │   │                         Raft, gossip, scheduler, API server.
-    │   │
-    │   └── syfrah-cli/           CLI binary: syfrah
-    │                             User-facing commands.
+    │   ├── forge/                Per-node debug/ops (planned)
+    │   ├── compute/              Firecracker microVMs (planned)
+    │   ├── storage/              ZeroFS + S3 block storage (planned)
+    │   ├── overlay/              VXLAN, VPC, security groups (planned)
+    │   ├── controlplane/         Raft + gossip + scheduler (planned)
+    │   ├── org/                  Org / Project / Environment (planned)
+    │   ├── iam/                  Users, roles, API keys (planned)
+    │   └── products/             Product orchestration (planned)
+    │
+    ├── bin/
+    │   └── syfrah/               Binary — composes all layers, zero logic
     │
     ├── docs/
-    │   └── concepts/             Detailed concept documents
-    │       ├── fabric.md
-    │       ├── forge.md
-    │       ├── compute.md
-    │       ├── storage.md
-    │       ├── overlay.md
-    │       ├── control-plane.md
-    │       ├── products.md
-    │       ├── zones-and-regions.md
-    │       ├── organization-model.md
-    │       ├── iam.md
-    │       ├── state-and-reconciliation.md
-    │       └── cli.md
+    │   ├── repository.md         Repo structure conventions
+    │   ├── cli.md                CLI command tree
+    │   ├── state-and-reconciliation.md
+    │   └── zones-and-regions.md
     │
     ├── ARCHITECTURE.md           This file
     ├── CLAUDE.md                 Build instructions, conventions

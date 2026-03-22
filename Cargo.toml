@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/syfrah-core",
-    "crates/syfrah-net",
-    "crates/syfrah-cli",
+    "layers/core",
+    "layers/fabric",
+    "bin/syfrah",
 ]
 
 [workspace.package]

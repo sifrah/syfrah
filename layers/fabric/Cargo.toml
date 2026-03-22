@@ -1,0 +1,26 @@
+[package]
+name = "syfrah-fabric"
+description = "WireGuard fabric mesh layer for Syfrah"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+syfrah-core = { path = "../core" }
+wireguard-control = "1.7"
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait = "0.1"
+sha2 = "0.10"
+dirs = "6"
+libc = "0.2"
+rand = "0.8"
+clap = { version = "4", features = ["derive"] }
+hostname = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
