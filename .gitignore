@@ -1,5 +1,7 @@
 /target
-/site/dist
+/documentation/node_modules
+/documentation/.next
+/documentation/out
 **/*.rs.bk
 *.swp
 *.swo

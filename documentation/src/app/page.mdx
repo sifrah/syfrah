@@ -1,0 +1,44 @@
+export const metadata = {
+  title: 'Architecture',
+  description: 'Syfrah global architecture overview',
+}
+
+# Architecture
+
+Syfrah is an open-source control plane that turns rented dedicated servers into a programmable cloud. You rent servers from OVH, Hetzner, Scaleway, or any provider — Syfrah connects them, orchestrates them, and exposes cloud services on top. {{ className: 'lead' }}
+
+## The Stack
+
+```
+Tenant API          ← HTTP REST, any node, forwarded to Raft leader
+IAM + Org Model     ← 4 roles, Org/Project/Environment
+Cloud Products      ← VMs, LBs, managed DBs (forge primitives + config)
+Control Plane       ← Raft (openraft) + gossip (SWIM), embedded on every node
+Compute + Storage   ← Firecracker microVMs + ZeroFS (S3-backed block devices)
+Overlay             ← VXLAN, VPC, security groups, private DNS
+Forge               ← Per-node REST API, manages local resources
+Fabric              ← WireGuard full-mesh, IPv6 ULA, manual peering
+Dedicated Servers   ← OVH, Hetzner, Scaleway + S3 buckets
+```
+
+## Design Principles
+
+1. **No external dependencies.** The control plane is embedded in every node. No etcd, no Consul, no external database.
+2. **Dedicated-servers-first.** Designed for rented bare-metal machines, not VMs-on-VMs.
+3. **IPv6-native, IPv4 as compatibility layer.** The fabric uses IPv6 ULA internally.
+4. **Reconciliation over imperative orchestration.** Desired state in Raft, each forge reconciles locally.
+5. **Simple products from generic primitives.** The forge manages VMs, volumes, and network interfaces — nothing more.
+
+## Explore
+
+Browse the layers to understand each part of the architecture:
+
+- [Fabric](/fabric) — WireGuard mesh between all nodes
+- [Forge](/forge) — Per-node REST API
+- [Compute](/compute) — Firecracker microVMs
+- [Storage](/storage) — ZeroFS + S3 block storage
+- [Overlay](/overlay) — VXLAN, VPC, security groups, DNS
+- [Control Plane](/controlplane) — Raft + gossip, distributed
+- [Organization](/org) — Org / Project / Environment
+- [IAM](/iam) — 4 roles, API keys
+- [Products](/products) — Product orchestration model

@@ -1,0 +1,368 @@
+export const metadata = {
+  title: 'Cloud Products',
+  description: 'Cloud product orchestration model',
+}
+
+# Cloud Products
+
+
+## What is the compute layer?
+
+The compute layer runs tenant workloads. Every VM, every managed database, every load balancer ultimately runs as a **Firecracker microVM** on a node in the fabric.
+
+Firecracker is an open-source Virtual Machine Monitor (VMM) written in Rust, created by AWS. It powers AWS Lambda (trillions of requests/month) and AWS Fargate. It provides hardware-level isolation via KVM with minimal overhead.
+
+```
+    ┌──────────────────────────────────────────────────────┐
+    │                     Node                              │
+    │                                                       │
+    │  ┌────────┐  ┌────────┐  ┌────────┐  ┌────────┐     │
+    │  │ VM-1   │  │ VM-2   │  │ VM-3   │  │ VM-4   │     │
+    │  │ 2 vCPU │  │ 1 vCPU │  │ 4 vCPU │  │ 1 vCPU │     │
+    │  │ 4 GB   │  │ 1 GB   │  │ 8 GB   │  │ 512 MB │     │
+    │  └───┬────┘  └───┬────┘  └───┬────┘  └───┬────┘     │
+    │      │           │           │           │           │
+    │  Each VM is a separate Firecracker process.           │
+    │  Hardware isolation via KVM.                          │
+    │  ~5 MB overhead per VM.                               │
+    │                                                       │
+    │  ┌────────────────────────────────────────────────┐   │
+    │  │  Linux kernel + KVM                            │   │
+    │  │  Dedicated server hardware                     │   │
+    │  └────────────────────────────────────────────────┘   │
+    └──────────────────────────────────────────────────────┘
+```
+
+## Why Firecracker
+
+| | **Firecracker** | **QEMU** | **Cloud Hypervisor** |
+|---|---|---|---|
+| **Overhead per VM** | ~5 MB | ~130 MB | ~13 MB |
+| **Boot time** | &lt;125 ms | Seconds | ~200 ms |
+| **Snapshot restore** | &lt;30 ms | Seconds | Supported |
+| **Device model** | 5 devices (minimal) | Hundreds (full PC) | Moderate |
+| **Attack surface** | Minimal | Large | Moderate |
+| **Language** | Rust | C | Rust |
+| **GPU passthrough** | No | Yes | Yes |
+| **Live migration** | No | Yes | Yes |
+| **License** | Apache 2.0 | GPL 2.0 | Apache 2.0 |
+
+Firecracker's trade-off is clear: **maximum density and security at the cost of flexibility**. No GPU, no live migration, no Windows guests. For a cloud platform running Linux VMs, databases, and load balancers on dedicated servers, these trade-offs are acceptable.
+
+The minimal device model (5 devices instead of hundreds) means fewer lines of code between the guest and the host — a smaller attack surface for multi-tenant workloads.
+
+## Architecture of a microVM
+
+Each Firecracker microVM is a single Linux process with three thread types:
+
+```
+    Firecracker process (one per VM)
+    ┌──────────────────────────────────────────────┐
+    │                                              │
+    │  API thread          ← REST API over Unix    │
+    │  (configuration,       domain socket         │
+    │   lifecycle control)                         │
+    │                                              │
+    │  VMM thread          ← device emulation      │
+    │  (virtio-net,          and machine model     │
+    │   virtio-block,                              │
+    │   virtio-vsock,                              │
+    │   serial console)                            │
+    │                                              │
+    │  vCPU thread(s)      ← one per vCPU,         │
+    │  (KVM_RUN loop)        runs guest code       │
+    │                                              │
+    └──────────────────────────────────────────────┘
+```
+
+A microVM is composed of four elements provided at creation time:
+
+- **Kernel** — an uncompressed Linux kernel (`vmlinux`). Shared read-only across all VMs on the node.
+- **Root filesystem** — an ext4 disk image containing the OS (Ubuntu, Alpine, etc.). Can be shared (read-only) or per-VM (copy-on-write).
+- **Block devices** — additional storage volumes (ZeroFS NBD devices). See [storage.md](storage.md).
+- **Network interfaces** — Linux TAP devices connecting the VM to the overlay network.
+
+## Boot sequence
+
+When the forge creates a VM, this is what happens:
+
+```
+    Forge receives POST /compute/vms
+         │
+         ▼
+    1. Create TAP device (networking)
+         │
+    2. Create/attach NBD volume (storage, via ZeroFS)
+         │
+    3. Start Firecracker process with jailer
+         │
+    4. Configure via Unix socket API:
+         ├── PUT /machine-config     → vCPU count, memory
+         ├── PUT /boot-source        → kernel path, boot args
+         ├── PUT /drives/rootfs      → root filesystem image
+         ├── PUT /drives/data        → data volume (ZeroFS NBD)
+         ├── PUT /network-interfaces → TAP device
+         └── PUT /actions            → InstanceStart
+         │
+    5. VM boots in &lt;125 ms
+         │
+    6. Guest init runs (cloud-init, agent, or application)
+
+    Total time from API call to running VM: ~200-500 ms
+```
+
+## Networking
+
+Each VM gets one or more **TAP devices** on the host, connecting it to the overlay network.
+
+```
+    ┌──────────────┐
+    │     VM       │
+    │              │
+    │  eth0        │  ← virtio-net device (guest side)
+    └──────┬───────┘
+           │
+    ┌──────┴───────┐
+    │   tap-vm1    │  ← TAP device (host side)
+    └──────┬───────┘
+           │
+    ┌──────┴───────┐
+    │  br-vpc-xyz  │  ← Linux bridge (one per VPC subnet on this node)
+    └──────┬───────┘
+           │
+    ┌──────┴───────┐
+    │   VXLAN      │  ← overlay encapsulation for cross-node traffic
+    └──────┬───────┘
+           │
+    ┌──────┴───────┐
+    │   syfrah0    │  ← fabric (WireGuard)
+    └──────────────┘
+```
+
+The VM sees a standard network interface (`eth0`). The guest configures it with an IP from its VPC subnet. All the overlay and fabric encapsulation is invisible to the guest.
+
+### Rate limiting
+
+Firecracker supports per-VM rate limiting on both network and block devices:
+
+- **Network**: bandwidth (bytes/sec) and packet rate (ops/sec), configurable for ingress and egress
+- **Block I/O**: bandwidth (bytes/sec) and IOPS (ops/sec)
+
+Rate limits are applied via the Firecracker API and can be updated at runtime without restarting the VM.
+
+CPU limiting is handled by **cgroups** configured by the jailer.
+
+## Storage integration
+
+VMs use two types of block devices:
+
+### Root filesystem (rootfs)
+
+A read-only (or copy-on-write) ext4 image containing the base OS. The platform provides a catalog of images:
+
+| Image | Contents | Size |
+|---|---|---|
+| `ubuntu-24.04` | Ubuntu 24.04 minimal | ~500 MB |
+| `alpine-3.20` | Alpine Linux | ~50 MB |
+| `debian-12` | Debian 12 minimal | ~300 MB |
+
+Kernels are shared across all VMs. A single `vmlinux` binary on disk is referenced by every Firecracker instance — read-only, no duplication.
+
+### Data volumes (via ZeroFS)
+
+Persistent storage backed by S3. See [storage.md](storage.md) for the full storage design.
+
+Firecracker's `virtio-block` connects directly to ZeroFS's NBD devices — standard Linux block device semantics, no custom integration:
+
+```
+    Guest                 Firecracker              Host                  Durable
+    ─────                 ───────────              ────                  ───────
+
+    /dev/vda ──────► virtio-block ──────► rootfs.ext4            Local image file
+    (root fs)             drive:rootfs    (read-only or CoW)
+
+    /dev/vdb ──────► virtio-block ──────► /dev/nbd0 ──────► ZeroFS ──────► S3
+    (data vol)            drive:data      (NBD device)       ├─ SSD cache
+                                                             ├─ memory cache
+                                                             └─ LZ4 + XChaCha20
+```
+
+The write path through the full stack:
+
+```
+    1. VM writes to /dev/vdb
+    2. Firecracker virtio-block passes write to /dev/nbd0
+    3. ZeroFS buffers in memory (microseconds)
+    4. On fsync: ZeroFS WAL flush to S3 (~10-50ms)
+    5. Background: ZeroFS compacts and flushes SST chunks to S3
+```
+
+The read path:
+
+```
+    1. VM reads from /dev/vdb
+    2. Firecracker virtio-block reads from /dev/nbd0
+    3. ZeroFS checks memory cache → hit? return (microseconds)
+    4. ZeroFS checks SSD cache    → hit? return (~100μs)
+    5. ZeroFS fetches from S3     → miss? fetch, cache, return (~10-100ms)
+```
+
+For most workloads, the cache absorbs >95% of I/O. The S3 latency only matters for cold reads (first access after migration, or data not recently used).
+
+### Performance considerations
+
+| Workload | Bottleneck | Expected performance |
+|---|---|---|
+| Web server, app server | Mostly reads, fits in cache | Near-native SSD speed |
+| PostgreSQL (typical OLTP) | fsync on commit → WAL flush | ~53K TPS with warm cache |
+| Large sequential reads (analytics) | Cold data from S3 | Limited by S3 throughput |
+| Boot + init | Rootfs is local, no S3 | &lt;125ms boot, instant rootfs reads |
+
+Firecracker's per-drive rate limiting (bandwidth + IOPS) is applied **before** the NBD device, so it caps the VM's I/O regardless of whether the data comes from cache or S3.
+
+## Security
+
+Firecracker's security model is layered:
+
+### Layer 1 — Hardware isolation (KVM)
+
+Each VM runs in its own KVM virtual machine. The guest kernel has no direct access to host memory, devices, or other VMs. This is the same isolation used by all major cloud providers.
+
+### Layer 2 — The jailer
+
+The jailer is a companion binary that wraps each Firecracker process with OS-level isolation:
+
+```
+    jailer
+    ├── Creates new namespaces (mount, PID, network, IPC, UTS)
+    ├── Sets up a chroot jail (minimal filesystem)
+    ├── Configures cgroups (CPU, memory, I/O limits)
+    ├── Drops privileges to an unprivileged user
+    └── Executes Firecracker inside the jail
+```
+
+Even if an attacker escapes the VM (breaks out of KVM), they land inside an isolated namespace with no privileges, no filesystem access, and a restrictive seccomp filter.
+
+### Layer 3 — Seccomp (syscall filtering)
+
+A strict allowlist of system calls is enforced per-thread. Any syscall not on the list kills the process immediately. This limits what a compromised Firecracker process can do, even after a KVM escape.
+
+### Layer 4 — Minimal attack surface
+
+Firecracker emulates only 5 devices. No PCI bus, no USB, no ACPI, no legacy hardware. Every device that doesn't exist is attack surface that doesn't exist.
+
+## VM lifecycle
+
+| Operation | How | Time |
+|---|---|---|
+| **Create** | Forge calls Firecracker API via Unix socket | ~50 ms |
+| **Start** | `PUT /actions` → InstanceStart | &lt;125 ms |
+| **Stop** | `PUT /actions` → SendCtrlAltDel (graceful) or kill process (force) | Instant |
+| **Reboot** | Stop + Start | &lt;250 ms |
+| **Delete** | Kill process, cleanup TAP device, release NBD volume | Instant |
+| **Snapshot** | `PUT /snapshot/create` → saves memory + device state to files | Seconds (depends on memory size) |
+| **Restore** | Start new Firecracker, `PUT /snapshot/load` → lazy memory load | &lt;30 ms |
+
+### Snapshots
+
+Firecracker can snapshot a running VM's entire state (memory + device state) to disk. This enables:
+
+- **Fast restore**: boot a VM from a snapshot in &lt;30ms instead of cold-booting in 125ms
+- **Clone**: create multiple identical VMs from one snapshot (with care — see limitations)
+- **Backup**: save VM state for disaster recovery
+
+Memory is restored lazily — pages are loaded from the snapshot file on demand as the guest accesses them. This means the VM resumes almost instantly and pages fault in gradually.
+
+### VM migration between nodes
+
+Firecracker does not support live migration. Syfrah compensates with the storage design: since data volumes are backed by S3 (via ZeroFS), migration is a stop-move-start sequence with no data copy.
+
+```
+    Node A                                  Node B
+    ──────                                  ──────
+
+    1. Stop VM
+       ├── Firecracker process killed
+       └── ZeroFS flushes cache to S3
+                                            2. Attach volume
+                                               └── ZeroFS connects NBD
+                                                   to same S3 data
+
+                                            3. Start VM
+                                               ├── Firecracker boots (&lt;125ms)
+                                               └── Cache warms up gradually
+                                                   (first reads hit S3,
+                                                    then cached locally)
+
+    Downtime: ~5-30 seconds (flush + boot)
+    Data copied: zero (S3 is the source of truth)
+```
+
+This is possible because **compute state and storage state are separated**:
+- Firecracker manages compute (CPU, memory, devices) — ephemeral, recreated on boot
+- ZeroFS manages storage (volumes) — durable in S3, accessible from any node
+
+The only cost of migration is **cache warmup** on the new node. Active working set data loads progressively from S3 into the local SSD cache over the first minutes of operation.
+
+## Guest-host communication (vsock)
+
+Firecracker provides `virtio-vsock` for communication between the VM and the host without using the network:
+
+```
+    Host                              Guest
+    ┌──────────────┐                  ┌──────────────┐
+    │ Unix socket  │ ◄── vsock ────► │ AF_VSOCK     │
+    │ /tmp/v.sock  │                  │ port 5000    │
+    └──────────────┘                  └──────────────┘
+```
+
+Use cases:
+- **Metadata service**: deliver instance identity, configuration, secrets to the guest
+- **Agent communication**: the forge communicates with an in-VM agent for provisioning
+- **Metrics/logs**: the guest pushes metrics and logs to the host without network traffic
+
+Vsock avoids the complexity of setting up a metadata HTTP endpoint on a link-local address (like AWS's 169.254.169.254). It's a direct, low-latency channel.
+
+## Limitations
+
+| Limitation | Impact on Syfrah | Mitigation |
+|---|---|---|
+| **No GPU** | Cannot offer GPU instances | Out of scope for initial product |
+| **No live migration** | Cannot move running VMs between nodes | Stop → move volume → start on new node (see storage.md) |
+| **No Windows guests** | Linux-only VMs | Target audience runs Linux workloads |
+| **Max 32 vCPUs** | Largest VM is 32 vCPU | Sufficient for dedicated server sizes |
+| **No memory/CPU hotplug** | Cannot resize a running VM | Stop → reconfigure → start |
+| **No nested virtualization** | Cannot run VMs inside VMs | Not needed for target use cases |
+
+The most impactful limitation is **no live migration**. Syfrah mitigates this through the storage design: since volumes are backed by S3 (via ZeroFS), moving a VM between nodes only requires stopping the VM, detaching the volume, reattaching on the new node, and starting. The data doesn't need to be copied — just the cache needs to warm up.
+
+## Relationship to other concepts
+
+```
+    ┌──────────────────────────────────────────────────────┐
+    │                                                      │
+    │   Cloud Products  ◄── docs/concepts/products.md      │
+    │   Products create VMs via the forge                  │
+    │                                                      │
+    ├──────────────────────────────────────────────────────┤
+    │                                                      │
+    │   Compute         ◄── this document                  │
+    │   Firecracker microVMs on each node                  │
+    │                                                      │
+    ├──────────────────────────────────────────────────────┤
+    │                                                      │
+    │   Storage         ◄── docs/concepts/storage.md       │
+    │   ZeroFS NBD volumes attached to VMs                 │
+    │                                                      │
+    ├──────────────────────────────────────────────────────┤
+    │                                                      │
+    │   Forge           ◄── docs/concepts/forge.md         │
+    │   Manages Firecracker lifecycle on each node         │
+    │                                                      │
+    ├──────────────────────────────────────────────────────┤
+    │                                                      │
+    │   Fabric          ◄── docs/concepts/fabric.md        │
+    │   WireGuard mesh carrying overlay traffic            │
+    │                                                      │
+    └──────────────────────────────────────────────────────┘
+```

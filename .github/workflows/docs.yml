@@ -6,7 +6,7 @@ on:
     paths:
       - 'layers/*/README.md'
       - 'docs/**'
-      - 'site/**'
+      - 'documentation/**'
   workflow_dispatch:
 
 permissions:
@@ -25,16 +25,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install pandoc
-        run: sudo apt-get update && sudo apt-get install -y pandoc
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: documentation/package-lock.json
 
-      - name: Build site
-        run: ./site/build.sh
+      - name: Install dependencies
+        working-directory: documentation
+        run: npm ci
+
+      - name: Build static site
+        working-directory: documentation
+        env:
+          NEXT_PUBLIC_BASE_PATH: /syfrah
+        run: npm run build
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: site/dist
+          path: documentation/out
 
   deploy:
     name: Deploy to GitHub Pages

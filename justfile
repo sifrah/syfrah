@@ -38,8 +38,8 @@ run *ARGS:
 
 # Build documentation site
 docs:
-    ./site/build.sh
+    cd documentation && npm run build
 
-# Serve documentation locally (requires python3)
-docs-serve: docs
-    cd site/dist && python3 -m http.server 8080
+# Serve documentation locally
+docs-serve:
+    cd documentation && npm run dev
