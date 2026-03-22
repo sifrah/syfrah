@@ -1,0 +1,114 @@
+# CI/CD
+
+## Overview
+
+Syfrah uses GitHub Actions for continuous integration. The CI dynamically discovers all crates in the repository and tests each one independently — adding a new layer automatically adds it to CI.
+
+## Workflows
+
+| Workflow | File | Trigger | Purpose |
+|---|---|---|---|
+| **CI** | `.github/workflows/ci.yml` | Push/PR on `main` | Format, lint, test per layer |
+| **Documentation** | `.github/workflows/docs.yml` | Push on `main` (docs/layers change) | Build and deploy docs site |
+| **Security** | `.github/workflows/security.yml` | Weekly + Cargo.toml changes | `cargo audit` for vulnerabilities |
+
+## CI pipeline
+
+The CI pipeline has three stages:
+
+```
+    Push / PR
+         │
+    ┌────┴────────────────────────────────────────┐
+    │                                              │
+    │  1. Discover        Find all Cargo.toml      │
+    │     (3s)            in layers/ and bin/       │
+    │                                              │
+    │  2. Format          cargo fmt --check        │
+    │     (7s)            (workspace-wide, once)    │
+    │                                              │
+    └────┬────────────────────────────────────────┘
+         │
+         │  matrix: one job per crate (parallel)
+         │
+    ┌────┴──────┐  ┌────────────┐  ┌────────────┐
+    │syfrah-core│  │syfrah-     │  │syfrah-bin  │
+    │           │  │fabric      │  │            │
+    │ clippy    │  │ clippy     │  │ clippy     │
+    │ test      │  │ test       │  │ test       │
+    │    38s    │  │   1m28s    │  │   1m29s    │
+    └───────────┘  └────────────┘  └────────────┘
+```
+
+### How discovery works
+
+The `discover` job scans the repository for all `Cargo.toml` files under `layers/` and `bin/`, extracts the crate name from each, and outputs a JSON array. The `check` job uses this array as a matrix, creating one parallel job per crate.
+
+```
+    layers/core/Cargo.toml       → job: syfrah-core
+    layers/fabric/Cargo.toml     → job: syfrah-fabric
+    bin/syfrah/Cargo.toml        → job: syfrah-bin
+    layers/compute/Cargo.toml    → job: syfrah-compute  (future, automatic)
+```
+
+**Adding a new layer with a `Cargo.toml` automatically adds it to CI. No workflow edits needed.**
+
+### What each job does
+
+| Step | Command | Gate |
+|---|---|---|
+| Clippy | `cargo clippy -p {crate} --all-targets -- -D warnings` | Zero warnings allowed |
+| Test | `cargo test -p {crate}` | All tests must pass |
+
+`fail-fast: false` ensures all layers are tested even if one fails — you see all problems at once.
+
+### Format check
+
+Format is checked once, workspace-wide: `cargo fmt --check`. This runs before the per-crate jobs. If formatting fails, the per-crate jobs still run (so you see all issues), but the overall CI is red.
+
+## Documentation pipeline
+
+The documentation pipeline syncs README files from layers into the Next.js documentation site and deploys to GitHub Pages.
+
+```
+    Push on main (docs or layers changed)
+         │
+    1. scripts/sync-docs.sh     Scan layers/**/README.md
+    │                           Generate MDX pages + navigation.json
+    │
+    2. npm ci                   Install Next.js dependencies
+    │
+    3. npm run build            Static export to documentation/out/
+    │
+    4. Deploy                   GitHub Pages
+```
+
+See [documentation-strategy.md](documentation-strategy.md) for full details.
+
+## Security audit
+
+`cargo audit` runs weekly (Monday 8:00 UTC) and on any PR that modifies `Cargo.toml` or `Cargo.lock`. It fails if any known vulnerability is found in dependencies.
+
+## Running CI locally
+
+The `justfile` mirrors CI commands:
+
+```bash
+just ci           # fmt + clippy + test (same as CI)
+just fmt-check    # cargo fmt --check
+just clippy       # cargo clippy --workspace --all-targets -- -D warnings
+just test         # cargo test --workspace
+just audit        # cargo audit
+```
+
+## Integration tests
+
+Some tests require root privileges or WireGuard kernel support. These are marked `#[ignore]` and skipped in CI. Run them locally:
+
+```bash
+sudo cargo test -- --ignored
+```
+
+## Cache
+
+Each per-crate job uses `Swatinem/rust-cache` with a per-crate cache key. This means the first build of a new layer is slow, but subsequent builds reuse the cache.
