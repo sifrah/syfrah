@@ -141,7 +141,7 @@ The forge/product split has several consequences:
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │
-    │   Forge           ◄── docs/concepts/forge.md         │
+    │   Forge           ◄── forge.md         │
     │   REST API per node: VMs, volumes, interfaces        │
     │                                                      │
     ├──────────────────────────────────────────────────────┤
@@ -151,7 +151,7 @@ The forge/product split has several consequences:
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │
-    │   Fabric          ◄── docs/concepts/fabric.md        │
+    │   Fabric          ◄── fabric.md        │
     │   WireGuard mesh between all hypervisors             │
     │                                                      │
     └──────────────────────────────────────────────────────┘

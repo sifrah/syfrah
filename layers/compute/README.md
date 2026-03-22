@@ -335,7 +335,7 @@ The most impactful limitation is **no live migration**. Syfrah mitigates this th
 ```
     ┌──────────────────────────────────────────────────────┐
     │                                                      │
-    │   Cloud Products  ◄── docs/concepts/products.md      │
+    │   Cloud Products  ◄── products.md      │
     │   Products create VMs via the forge                  │
     │                                                      │
     ├──────────────────────────────────────────────────────┤
@@ -345,17 +345,17 @@ The most impactful limitation is **no live migration**. Syfrah mitigates this th
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │
-    │   Storage         ◄── docs/concepts/storage.md       │
+    │   Storage         ◄── storage.md       │
     │   ZeroFS NBD volumes attached to VMs                 │
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │
-    │   Forge           ◄── docs/concepts/forge.md         │
+    │   Forge           ◄── forge.md         │
     │   Manages Firecracker lifecycle on each node         │
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │
-    │   Fabric          ◄── docs/concepts/fabric.md        │
+    │   Fabric          ◄── fabric.md        │
     │   WireGuard mesh carrying overlay traffic            │
     │                                                      │
     └──────────────────────────────────────────────────────┘

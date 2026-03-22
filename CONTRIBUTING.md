@@ -36,7 +36,7 @@ cargo test
 
 ## Repository structure
 
-The repo is organized by architectural layer. See [docs/repository.md](docs/repository.md) for conventions.
+The repo is organized by architectural layer. See [handbook/repository.md](handbook/repository.md) for conventions.
 
 - `layers/core/` — foundation types (no I/O, no async)
 - `layers/fabric/` — WireGuard mesh (implemented)

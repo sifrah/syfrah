@@ -41,7 +41,7 @@ Three commands, one minute, encrypted WireGuard mesh between your servers.
     Dedicated Servers   ← OVH, Hetzner, Scaleway + S3 buckets
 ```
 
-Each layer is a self-contained crate in `layers/`. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
+Each layer is a self-contained crate in `layers/`. See [handbook/ARCHITECTURE.md](handbook/ARCHITECTURE.md) for the full design.
 
 ## Repository Structure
 
@@ -59,14 +59,14 @@ layers/
   products/                       Product orchestration [planned]
 
 bin/syfrah/       The CLI binary (composes all layers)
-docs/             Cross-cutting documentation
+handbook/         Project handbook (cross-cutting docs)
 ```
 
 Each layer has a `README.md` with its concept documentation. Browse any layer folder to understand it.
 
 ## Documentation
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Global architecture, design principles, non-goals, failure model
+- [handbook/ARCHITECTURE.md](handbook/ARCHITECTURE.md) — Global architecture, design principles, non-goals, failure model
 - [layers/fabric/README.md](layers/fabric/README.md) — Fabric (WireGuard mesh)
 - [layers/forge/README.md](layers/forge/README.md) — Forge (per-node control)
 - [layers/compute/README.md](layers/compute/README.md) — Compute (Firecracker)
@@ -75,8 +75,8 @@ Each layer has a `README.md` with its concept documentation. Browse any layer fo
 - [layers/controlplane/README.md](layers/controlplane/README.md) — Control Plane (Raft + gossip)
 - [layers/org/README.md](layers/org/README.md) — Organization Model
 - [layers/iam/README.md](layers/iam/README.md) — IAM
-- [docs/state-and-reconciliation.md](docs/state-and-reconciliation.md) — State ownership, reconciliation loop, resource phases
-- [docs/repository.md](docs/repository.md) — Repo structure conventions
+- [handbook/state-and-reconciliation.md](handbook/state-and-reconciliation.md) — State ownership, reconciliation loop, resource phases
+- [handbook/repository.md](handbook/repository.md) — Repo structure conventions
 
 ## Building
 

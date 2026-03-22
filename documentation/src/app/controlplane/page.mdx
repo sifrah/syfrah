@@ -287,32 +287,32 @@ The key differentiator: Syfrah's control plane is **embedded** (no external etcd
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │
-    │   Organization     ◄── docs/concepts/org-model.md    │
+    │   Organization     ◄── org-model.md    │
     │   Org/Project/Env hierarchy (stored in Raft)         │
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │
-    │   Overlay          ◄── docs/concepts/overlay.md      │
+    │   Overlay          ◄── overlay.md      │
     │   VPC config in Raft, FDB in gossip                  │
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │
-    │   Compute          ◄── docs/concepts/compute.md      │
+    │   Compute          ◄── compute.md      │
     │   VM desired state in Raft, actual state in gossip   │
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │
-    │   Storage          ◄── docs/concepts/storage.md      │
+    │   Storage          ◄── storage.md      │
     │   Volume definitions in Raft                         │
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │
-    │   Forge            ◄── docs/concepts/forge.md        │
+    │   Forge            ◄── forge.md        │
     │   Executes Raft decisions locally on each node       │
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │
-    │   Fabric           ◄── docs/concepts/fabric.md       │
+    │   Fabric           ◄── fabric.md       │
     │   WireGuard mesh carrying Raft + gossip + overlay    │
     │                                                      │
     └──────────────────────────────────────────────────────┘

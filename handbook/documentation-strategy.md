@@ -26,8 +26,8 @@ Every layer's documentation lives in its `README.md`. The documentation website 
 | Source | Generates | Example |
 |---|---|---|
 | `layers/*/README.md` | `documentation/src/app/*/page.mdx` | `layers/fabric/README.md` → `fabric/page.mdx` |
-| `docs/*.md` | `documentation/src/app/*/page.mdx` | `docs/cli.md` → `cli/page.mdx` |
-| `docs/ARCHITECTURE.md` | `documentation/src/app/page.mdx` | Homepage |
+| `handbook/*.md` | `documentation/src/app/*/page.mdx` | `docs/cli.md` → `cli/page.mdx` |
+| `handbook/ARCHITECTURE.md` | `documentation/src/app/page.mdx` | Homepage |
 
 The script:
 1. Reads each markdown file
@@ -95,7 +95,7 @@ Any depth of nesting is supported. The navigation tree is generated automaticall
 
 ### New cross-cutting doc
 
-1. Create `docs/{name}.md`
+1. Create `handbook/{name}.md`
 2. Add the doc to `scripts/sync-docs.sh` (DOCS/DOC_TITLES or REFS/REF_TITLES arrays)
 4. Run `just docs-sync` to verify
 
@@ -121,7 +121,7 @@ No need to touch anything in `documentation/`. The sync script handles everythin
 | Location | What | Edited by |
 |---|---|---|
 | `layers/*/README.md` | Layer concept documentation | Developers (source of truth) |
-| `docs/*.md` | Cross-cutting documentation | Developers (source of truth) |
+| `handbook/*.md` | Cross-cutting documentation | Developers (source of truth) |
 | `scripts/sync-docs.sh` | Sync script (README → MDX) | Rarely (only when adding pages) |
 | `documentation/src/app/*/page.mdx` | Generated MDX pages | **Nobody** (auto-generated) |
 | `documentation/src/components/Navigation.tsx` | Sidebar navigation | When adding/removing pages |

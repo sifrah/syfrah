@@ -416,7 +416,7 @@ syfrah/
 │       └── src/
 │           └── main.rs              Imports all CLIs, zero logic
 │
-├── docs/
+├── handbook/
 │   ├── state-and-reconciliation.md  Cross-cutting: reconciliation, phases
 │   └── zones-and-regions.md         Cross-cutting: topology metadata
 │
@@ -554,6 +554,6 @@ The split happens when a product needs its own dependencies, its own tests, or i
 | Command interface | `pub struct Args` + `pub async fn run(args: Args) -> Result<()>` |
 | Namespace interface | `pub enum {Name}Command` + `pub async fn run(cmd) -> Result<()>` |
 | Binary | `bin/syfrah/` — imports and dispatches, zero logic |
-| Cross-cutting docs | `docs/` |
+| Cross-cutting docs | `handbook/` |
 | CLI grouping | Infrastructure (fabric, forge) vs Resources (vm, vpc, ...) vs Identity (user, iam, ...) |
 | Dependency rule | Lower layers never depend on higher layers. All depend on core. |

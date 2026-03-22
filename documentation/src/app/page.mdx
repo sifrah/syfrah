@@ -1,4 +1,4 @@
-{/* AUTO-GENERATED from docs/ARCHITECTURE.md — do not edit */}
+{/* AUTO-GENERATED from handbook/ARCHITECTURE.md — do not edit */}
 
 export const metadata = {
   title: 'Architecture',
@@ -187,7 +187,7 @@ Raft state is **prescriptive** (what should exist). Gossip state is **descriptiv
 
 All Raft and gossip traffic travels over the WireGuard fabric — encrypted for free.
 
-**Concept docs:** [`layers/controlplane/README.md`](../layers/controlplane/README.md), [`docs/state-and-reconciliation.md`](state-and-reconciliation.md)
+**Concept docs:** [`layers/controlplane/README.md`](../layers/controlplane/README.md), [`handbook/state-and-reconciliation.md`](state-and-reconciliation.md)
 
 ### Organization model — multi-tenancy
 
@@ -246,7 +246,7 @@ Regions and availability zones are logical labels on nodes. They represent where
 - A region = a geographic area (eu-west, us-east)
 - An AZ = an isolated group within a region (eu-west-1, eu-west-ovh)
 
-**Concept doc:** [`docs/zones-and-regions.md`](zones-and-regions.md)
+**Concept doc:** [`handbook/zones-and-regions.md`](zones-and-regions.md)
 
 ## How it all connects
 
@@ -363,7 +363,7 @@ Regions and availability zones are logical labels on nodes. They represent where
 
 ## Repository structure
 
-The repo is organized by architectural layer. Each layer is a self-contained folder with its own code, documentation (README.md), and CLI commands. See [`docs/repository.md`](repository.md) for the full conventions.
+The repo is organized by architectural layer. Each layer is a self-contained folder with its own code, documentation (README.md), and CLI commands. See [`handbook/repository.md`](repository.md) for the full conventions.
 
 ```
     syfrah/
@@ -386,7 +386,7 @@ The repo is organized by architectural layer. Each layer is a self-contained fol
     ├── bin/
     │   └── syfrah/               Binary — composes all layers, zero logic
     │
-    ├── docs/
+    ├── handbook/
     │   ├── repository.md         Repo structure conventions
     │   ├── cli.md                CLI command tree
     │   ├── state-and-reconciliation.md
@@ -419,7 +419,7 @@ The architecture assumes a hostile operational environment. Nodes are rented mac
 
 - **The network may partition.** The majority Raft partition continues operating. The minority partition becomes read-only. Existing VMs on both sides keep running. When the partition heals, Raft replays and gossip converges. No split-brain.
 
-**See also:** [`docs/state-and-reconciliation.md`](state-and-reconciliation.md) for detailed phase models and reconciliation loop design.
+**See also:** [`handbook/state-and-reconciliation.md`](state-and-reconciliation.md) for detailed phase models and reconciliation loop design.
 
 ## Current status
 

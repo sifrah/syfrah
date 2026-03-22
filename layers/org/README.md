@@ -251,22 +251,22 @@ Every boundary can be opened with explicit network policies. The default is alwa
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │
-    │   Cloud Products  ◄── docs/concepts/products.md      │
+    │   Cloud Products  ◄── products.md      │
     │   Orchestrate forge primitives within an environment │
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │
-    │   Zones & Regions ◄── docs/concepts/zones-regions.md │
+    │   Zones & Regions ◄── zones-regions.md │
     │   Placement and topology for environments            │
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │
-    │   Forge           ◄── docs/concepts/forge.md         │
+    │   Forge           ◄── forge.md         │
     │   Executes primitives on behalf of an environment    │
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │
-    │   Fabric          ◄── docs/concepts/fabric.md        │
+    │   Fabric          ◄── fabric.md        │
     │   WireGuard mesh (environment-unaware)               │
     │                                                      │
     └──────────────────────────────────────────────────────┘

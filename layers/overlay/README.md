@@ -430,7 +430,7 @@ The bottleneck is WireGuard encryption (ChaCha20-Poly1305), not VXLAN encapsulat
 ```
     ┌──────────────────────────────────────────────────────┐
     │                                                      │
-    │   Organization     ◄── docs/concepts/org-model.md    │
+    │   Organization     ◄── org-model.md    │
     │   VPCs belong to projects/environments               │
     │                                                      │
     ├──────────────────────────────────────────────────────┤
@@ -440,22 +440,22 @@ The bottleneck is WireGuard encryption (ChaCha20-Poly1305), not VXLAN encapsulat
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │
-    │   Compute          ◄── docs/concepts/compute.md      │
+    │   Compute          ◄── compute.md      │
     │   Firecracker VMs connect via TAP → bridge           │
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │
-    │   Storage          ◄── docs/concepts/storage.md      │
+    │   Storage          ◄── storage.md      │
     │   ZeroFS volumes attached to VMs (independent layer) │
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │
-    │   Forge            ◄── docs/concepts/forge.md        │
+    │   Forge            ◄── forge.md        │
     │   Creates bridges, TAPs, VXLAN, nftables per node    │
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │
-    │   Fabric           ◄── docs/concepts/fabric.md       │
+    │   Fabric           ◄── fabric.md       │
     │   WireGuard mesh carrying VXLAN traffic              │
     │                                                      │
     └──────────────────────────────────────────────────────┘

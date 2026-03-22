@@ -74,10 +74,10 @@ NAV_REF='[]'
 # ── Homepage (ARCHITECTURE.md) ───────────────────────────────
 
 echo "  → index (ARCHITECTURE.md)"
-src="$REPO_ROOT/docs/ARCHITECTURE.md"
+src="$REPO_ROOT/handbook/ARCHITECTURE.md"
 content=$(tail -n +2 "$src" | escape_mdx)
 cat > "$APP_DIR/page.mdx" << MDXEOF
-{/* AUTO-GENERATED from docs/ARCHITECTURE.md — do not edit */}
+{/* AUTO-GENERATED from handbook/ARCHITECTURE.md — do not edit */}
 
 export const metadata = {
   title: 'Architecture',
@@ -177,11 +177,11 @@ first_doc=true
 for i in "${!DOCS[@]}"; do
     doc="${DOCS[$i]}"
     title="${DOC_TITLES[$i]}"
-    src="$REPO_ROOT/docs/$doc.md"
+    src="$REPO_ROOT/handbook/$doc.md"
 
     if [ -f "$src" ]; then
-        echo "  → docs/$doc"
-        generate_page "$src" "$APP_DIR/$doc" "$title" "$title" "docs/$doc.md"
+        echo "  → handbook/$doc"
+        generate_page "$src" "$APP_DIR/$doc" "$title" "$title" "handbook/$doc.md"
 
         if [ "$first_doc" = true ]; then
             first_doc=false
@@ -204,11 +204,11 @@ first_ref=true
 for i in "${!REFS[@]}"; do
     doc="${REFS[$i]}"
     title="${REF_TITLES[$i]}"
-    src="$REPO_ROOT/docs/$doc.md"
+    src="$REPO_ROOT/handbook/$doc.md"
 
     if [ -f "$src" ]; then
-        echo "  → docs/$doc"
-        generate_page "$src" "$APP_DIR/$doc" "$title" "$title" "docs/$doc.md"
+        echo "  → handbook/$doc"
+        generate_page "$src" "$APP_DIR/$doc" "$title" "$title" "handbook/$doc.md"
 
         if [ "$first_ref" = true ]; then
             first_ref=false

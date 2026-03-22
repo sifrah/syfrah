@@ -12,7 +12,7 @@ Open-source control plane to transform dedicated servers into a programmable clo
 - `layers/fabric` — `syfrah-fabric`: WireGuard mesh + peering + daemon + CLI commands
 - `bin/syfrah` — Binary that composes all layers (zero logic)
 - `layers/{forge,compute,storage,overlay,controlplane,org,iam,products}` — Future layers (README only)
-- `docs/` — Cross-cutting documentation
+- `handbook/` — Project handbook (cross-cutting docs)
 
 ## Key Modules (layers/fabric/src/)
 - `peering.rs` — TCP peering protocol (join requests, peer announcements, PIN auto-accept)
