@@ -1,0 +1,21 @@
+[package]
+name = "syfrah-core"
+description = "Core types, crypto and addressing for Syfrah mesh network"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+sha2 = "0.10"
+aes-gcm = "0.10"
+rand = "0.8"
+bs58 = "0.5"
+uuid = { version = "1", features = ["v8", "serde"] }
+ipnet = { version = "2", features = ["serde"] }
+
+[dev-dependencies]
+serde_json.workspace = true
+sha2 = "0.10"

@@ -1,0 +1,23 @@
+[package]
+name = "syfrah-cli"
+description = "CLI for Syfrah mesh network"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "syfrah"
+path = "src/main.rs"
+
+[dependencies]
+syfrah-core = { path = "../syfrah-core" }
+syfrah-net = { path = "../syfrah-net" }
+clap = { version = "4", features = ["derive"] }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+hostname = "0.4"
+wireguard-control = "1.7"
+libc = "0.2"
+dirs = "6"

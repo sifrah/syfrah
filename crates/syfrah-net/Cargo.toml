@@ -1,0 +1,24 @@
+[package]
+name = "syfrah-net"
+description = "WireGuard mesh + IPFS discovery for Syfrah"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+syfrah-core = { path = "../syfrah-core" }
+wireguard-control = "1.7"
+reqwest = { version = "0.12", features = ["json", "multipart"] }
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+data-encoding = "2"
+sha2 = "0.10"
+dirs = "6"
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
