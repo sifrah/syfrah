@@ -61,8 +61,7 @@ docker run -d \
     --name "$NODE1" \
     --network "$NETWORK" \
     --ip 172.20.0.10 \
-    --cap-add NET_ADMIN \
-    --cap-add NET_RAW \
+    --privileged \
     --hostname node-1 \
     "$IMAGE" >/dev/null
 
@@ -71,8 +70,7 @@ docker run -d \
     --name "$NODE2" \
     --network "$NETWORK" \
     --ip 172.20.0.11 \
-    --cap-add NET_ADMIN \
-    --cap-add NET_RAW \
+    --privileged \
     --hostname node-2 \
     "$IMAGE" >/dev/null
 
@@ -81,8 +79,7 @@ docker run -d \
     --name "$NODE3" \
     --network "$NETWORK" \
     --ip 172.20.0.12 \
-    --cap-add NET_ADMIN \
-    --cap-add NET_RAW \
+    --privileged \
     --hostname node-3 \
     "$IMAGE" >/dev/null
 
@@ -105,13 +102,29 @@ wait_daemon() {
     return 1
 }
 
+# ── Pre-flight: verify WireGuard works in container ───────────
+
+info "Checking WireGuard kernel module..."
+docker exec "$NODE1" bash -c "ip link add wg-test type wireguard && ip link del wg-test" 2>&1 || {
+    fail "WireGuard not available in container. Trying with wireguard-go..."
+    docker exec "$NODE1" which wg 2>&1 || true
+    docker exec "$NODE1" ls /sys/module/wireguard 2>&1 || echo "No wireguard kernel module"
+    docker exec "$NODE1" uname -r 2>&1
+}
+
 info "Initializing mesh on node-1..."
 docker exec "$NODE1" \
     syfrah fabric init \
     --name "$MESH_NAME" \
     --node-name node-1 \
     --endpoint 172.20.0.10:51820 \
-    -d
+    -d 2>&1 || true
+
+# Show logs regardless
+sleep 2
+info "node-1 daemon log:"
+docker exec "$NODE1" cat /root/.syfrah/syfrah.log 2>/dev/null || echo "(no log file)"
+docker exec "$NODE1" ls -la /root/.syfrah/ 2>/dev/null || echo "(no .syfrah dir)"
 
 wait_daemon "$NODE1"
 
