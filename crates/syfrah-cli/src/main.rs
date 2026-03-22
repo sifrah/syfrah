@@ -6,7 +6,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "syfrah", about = "Syfrah mesh network CLI", version)]
+#[command(name = "syfrah", about = "Syfrah — turn dedicated servers into a cloud", version)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -14,6 +14,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Manage the WireGuard fabric mesh
+    Fabric {
+        #[command(subcommand)]
+        command: FabricCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum FabricCommand {
     /// Create a new mesh network
     Init {
         #[arg(long)]
@@ -29,7 +38,7 @@ enum Commands {
         #[arg(long, short)]
         daemon: bool,
     },
-    /// Join an existing mesh (just pass the IP of an existing node)
+    /// Join an existing mesh
     Join {
         /// IP or IP:port of an existing node (default port: 51821)
         target: String,
@@ -56,7 +65,7 @@ enum Commands {
     Status,
     /// List all peers
     Peers,
-    /// Show the mesh secret for sharing
+    /// Show the mesh secret
     Token,
     /// Rotate the mesh secret
     Rotate,
@@ -64,7 +73,7 @@ enum Commands {
     Leave,
     /// Manage peering — accept/reject join requests
     Peering {
-        /// PIN for auto-accept mode (no manual approval needed)
+        /// PIN for auto-accept mode
         #[arg(long)]
         pin: Option<String>,
         #[command(subcommand)]
@@ -165,53 +174,52 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Init { name, node_name, port, endpoint, peering_port, daemon } => {
-            let peering_port = peering_port.unwrap_or(port + 1);
-            if daemon {
-                println!("Starting daemon in background...");
-                if daemonize()? { println!("Use 'syfrah status' to check."); return Ok(()); }
-            }
-            setup_logging(daemon);
-            commands::init::run(&name, &node_name.unwrap_or_else(default_node_name), port, endpoint, peering_port).await
-        }
-        Commands::Join { target, node_name, port, endpoint, pin, daemon } => {
-            if daemon {
-                println!("Starting daemon in background...");
-                if daemonize()? { println!("Use 'syfrah status' to check."); return Ok(()); }
-            }
-            setup_logging(daemon);
-            commands::join::run(&target, &node_name.unwrap_or_else(default_node_name), port, endpoint, pin).await
-        }
-        Commands::Start { daemon } => {
-            if daemon {
-                println!("Starting daemon in background...");
-                if daemonize()? { println!("Use 'syfrah status' to check."); return Ok(()); }
-            }
-            setup_logging(daemon);
-            commands::start::run().await
-        }
-        Commands::Stop => { setup_logging(false); commands::stop::run().await }
-        Commands::Status => { setup_logging(false); commands::status::run().await }
-        Commands::Peers => { setup_logging(false); commands::peers::run().await }
-        Commands::Token => { setup_logging(false); commands::token::run().await }
-        Commands::Rotate => { setup_logging(false); commands::rotate::run().await }
-        Commands::Leave => { setup_logging(false); commands::leave::run().await }
-        Commands::Peering { pin, action } => {
-            setup_logging(false);
-            match action {
-                None => {
-                    // Interactive mode (default when no subcommand)
-                    commands::peering::watch(pin).await
+        Commands::Fabric { command } => match command {
+            FabricCommand::Init { name, node_name, port, endpoint, peering_port, daemon } => {
+                let peering_port = peering_port.unwrap_or(port + 1);
+                if daemon {
+                    println!("Starting daemon in background...");
+                    if daemonize()? { println!("Use 'syfrah fabric status' to check."); return Ok(()); }
                 }
-                Some(PeeringAction::Start { port, pin: start_pin }) => {
-                    let port = port.unwrap_or(51821);
-                    commands::peering::start(port, pin.or(start_pin)).await
-                }
-                Some(PeeringAction::Stop) => commands::peering::stop().await,
-                Some(PeeringAction::List) => commands::peering::list().await,
-                Some(PeeringAction::Accept { request_id }) => commands::peering::accept(&request_id).await,
-                Some(PeeringAction::Reject { request_id, reason }) => commands::peering::reject(&request_id, reason).await,
+                setup_logging(daemon);
+                commands::fabric::init::run(&name, &node_name.unwrap_or_else(default_node_name), port, endpoint, peering_port).await
             }
-        }
+            FabricCommand::Join { target, node_name, port, endpoint, pin, daemon } => {
+                if daemon {
+                    println!("Starting daemon in background...");
+                    if daemonize()? { println!("Use 'syfrah fabric status' to check."); return Ok(()); }
+                }
+                setup_logging(daemon);
+                commands::fabric::join::run(&target, &node_name.unwrap_or_else(default_node_name), port, endpoint, pin).await
+            }
+            FabricCommand::Start { daemon } => {
+                if daemon {
+                    println!("Starting daemon in background...");
+                    if daemonize()? { println!("Use 'syfrah fabric status' to check."); return Ok(()); }
+                }
+                setup_logging(daemon);
+                commands::fabric::start::run().await
+            }
+            FabricCommand::Stop => { setup_logging(false); commands::fabric::stop::run().await }
+            FabricCommand::Status => { setup_logging(false); commands::fabric::status::run().await }
+            FabricCommand::Peers => { setup_logging(false); commands::fabric::peers::run().await }
+            FabricCommand::Token => { setup_logging(false); commands::fabric::token::run().await }
+            FabricCommand::Rotate => { setup_logging(false); commands::fabric::rotate::run().await }
+            FabricCommand::Leave => { setup_logging(false); commands::fabric::leave::run().await }
+            FabricCommand::Peering { pin, action } => {
+                setup_logging(false);
+                match action {
+                    None => commands::fabric::peering::watch(pin).await,
+                    Some(PeeringAction::Start { port, pin: start_pin }) => {
+                        let port = port.unwrap_or(51821);
+                        commands::fabric::peering::start(port, pin.or(start_pin)).await
+                    }
+                    Some(PeeringAction::Stop) => commands::fabric::peering::stop().await,
+                    Some(PeeringAction::List) => commands::fabric::peering::list().await,
+                    Some(PeeringAction::Accept { request_id }) => commands::fabric::peering::accept(&request_id).await,
+                    Some(PeeringAction::Reject { request_id, reason }) => commands::fabric::peering::reject(&request_id, reason).await,
+                }
+            }
+        },
     }
 }

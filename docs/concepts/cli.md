@@ -2,380 +2,461 @@
 
 ## Overview
 
-`syfrah` is the single binary that operators use to manage the platform. It handles both the fabric layer (today) and will handle all cloud operations (future).
-
-The CLI communicates with the local daemon via a Unix domain socket (`~/.syfrah/control.sock`) for operations that require a running daemon, or directly reads/writes state (`~/.syfrah/state.json`) for offline operations.
+`syfrah` is the single binary that operators use to manage the platform. The CLI is organized by **namespace**, where each namespace maps to an architectural layer and a directory in the codebase.
 
 ```
-    Operator
-       │
-       ▼
-    syfrah CLI ──► Unix socket ──► Daemon (local)
-       │
-       └──► state.json (direct read/write for offline ops)
+syfrah <namespace> <command> [flags]
 ```
 
-## Current commands (fabric layer)
+The CLI communicates with the local daemon via a Unix domain socket (`~/.syfrah/control.sock`) for runtime operations, with the Raft-based control plane (via HTTP on the fabric) for cluster-wide operations, or directly reads/writes state for offline operations.
 
-These commands are implemented today and manage the WireGuard mesh.
+## Command tree
 
-### `syfrah init`
+```
+syfrah
+│
+├── fabric                        Fabric mesh management
+│   ├── init                      Create a new mesh
+│   ├── join                      Join an existing mesh
+│   ├── start                     Restart daemon from saved state
+│   ├── stop                      Stop the daemon
+│   ├── leave                     Leave the mesh, clear state
+│   ├── status                    Show mesh and daemon status
+│   ├── peers                     List all mesh peers
+│   ├── token                     Show the mesh secret
+│   ├── rotate                    Rotate the mesh secret
+│   └── peering                   Manage join requests
+│       ├── start                 Start accepting joins
+│       ├── stop                  Stop accepting joins
+│       ├── list                  List pending requests
+│       ├── accept                Accept a request
+│       └── reject                Reject a request
+│
+├── forge                         Per-node debug and ops
+│   ├── status                    This node's health and resources
+│   ├── vms                       Firecracker processes on this node
+│   ├── bridges                   Active bridges, VXLAN, TAP devices
+│   ├── volumes                   Mounted ZeroFS volumes, cache stats
+│   ├── nftables                  Active security group rules
+│   ├── logs                      Tail daemon logs
+│   └── drain                     Prepare node for maintenance
+│
+├── org                           Organization management
+│   ├── create
+│   ├── list
+│   └── delete
+│
+├── project                       Project management
+│   ├── create
+│   ├── list
+│   └── delete
+│
+├── env                           Environment management
+│   ├── create
+│   ├── list
+│   ├── update
+│   └── destroy
+│
+├── vm                            Virtual machine management
+│   ├── create
+│   ├── list
+│   ├── start
+│   ├── stop
+│   ├── reboot
+│   ├── delete
+│   └── ssh
+│
+├── vpc                           VPC management
+│   ├── create
+│   ├── list
+│   ├── delete
+│   └── peer
+│
+├── subnet                        Subnet management
+│   ├── create
+│   └── list
+│
+├── sg                            Security group management
+│   ├── create
+│   ├── list
+│   ├── add-rule
+│   └── remove-rule
+│
+├── volume                        Volume management
+│   ├── create
+│   ├── list
+│   ├── attach
+│   ├── detach
+│   ├── delete
+│   └── snapshot
+│
+├── user                          User management
+│   ├── create
+│   ├── list
+│   └── disable
+│
+├── iam                           Role assignment
+│   ├── assign
+│   ├── list
+│   └── revoke
+│
+├── apikey                        API key management
+│   ├── create
+│   ├── list
+│   ├── rotate
+│   └── delete
+│
+├── login                         Authenticate
+└── logout                        Clear session
+```
 
-Create a new mesh and start the daemon.
+## Namespace mapping
+
+Each CLI namespace maps to an architectural layer, a source of truth, and a directory in the codebase:
+
+| Namespace | Layer | Source of truth | Code directory |
+|---|---|---|---|
+| `fabric` | Fabric | Local state + Raft | `commands/fabric/` |
+| `forge` | Forge (per-node) | Local reality (observed) | `commands/forge/` |
+| `org`, `project`, `env` | Organization | Raft (desired) | `commands/org/`, `commands/project/`, `commands/env/` |
+| `vm` | Compute | Raft (desired) | `commands/vm/` |
+| `vpc`, `subnet`, `sg` | Overlay | Raft (desired) | `commands/vpc/`, `commands/subnet/`, `commands/sg/` |
+| `volume` | Storage | Raft (desired) | `commands/volume/` |
+| `user`, `iam`, `apikey` | IAM | Raft (desired) | `commands/user/`, `commands/iam/`, `commands/apikey/` |
+| `login`, `logout` | IAM | Local session | `commands/login.rs`, `commands/logout.rs` |
+
+## `fabric` — mesh management
+
+Manages the WireGuard mesh. This is the first thing an operator uses.
+
+### `syfrah fabric init`
 
 ```bash
-syfrah init --name my-cloud
-syfrah init --name my-cloud --node-name par-hv-1 --port 51820 --endpoint 51.210.x.x:51820
-syfrah init --name my-cloud -d   # start daemon in background
+syfrah fabric init --name my-cloud
+syfrah fabric init --name my-cloud --node-name par-hv-1 --endpoint 51.210.x.x:51820
+syfrah fabric init --name my-cloud -d   # daemon in background
 ```
 
 | Flag | Default | Description |
 |---|---|---|
 | `--name` | required | Mesh name |
-| `--node-name` | hostname | This node's name in the mesh |
+| `--node-name` | hostname | This node's name |
 | `--port` | 51820 | WireGuard listen port |
-| `--endpoint` | auto-detect | Public IP:port for this node |
-| `--peering-port` | port + 1 | TCP port for peering protocol |
-| `-d, --daemon` | foreground | Run daemon in background |
+| `--endpoint` | auto-detect | Public IP:port |
+| `--peering-port` | port + 1 | TCP port for peering |
+| `-d, --daemon` | foreground | Background mode |
 
-What it does:
-1. Generates a mesh secret (`syf_sk_...`)
-2. Generates a WireGuard keypair
-3. Derives mesh IPv6 prefix (`/48`) and node address (`/128`)
-4. Creates the `syfrah0` WireGuard interface
-5. Saves state to `~/.syfrah/state.json`
-6. Starts the daemon (peering listener, health checks, metrics)
-
-Output:
-```
-Mesh 'my-cloud' created.
-  Secret: syf_sk_6gp9gu8qfV7k2nP3x8qL4jB5mK...
-  Node:   par-hv-1 (fd12:3456:7800:a1b2:c3d4:...)
-
-Run 'syfrah peering' to accept new nodes.
-Running daemon... (Ctrl+C to stop)
-```
-
-### `syfrah join`
-
-Join an existing mesh by connecting to a node.
+### `syfrah fabric join`
 
 ```bash
-syfrah join 51.210.x.x                        # uses default peering port 51821
-syfrah join 51.210.x.x:51821 --pin 1234       # auto-accept with PIN
-syfrah join 51.210.x.x --node-name fsn-hv-1 -d
+syfrah fabric join 51.210.x.x
+syfrah fabric join 51.210.x.x --pin 1234
+syfrah fabric join 51.210.x.x --node-name fsn-hv-1 -d
 ```
 
 | Flag | Default | Description |
 |---|---|---|
-| `target` | required | IP or IP:port of an existing node |
+| `target` | required | IP or IP:port of existing node |
 | `--node-name` | hostname | This node's name |
 | `--port` | 51820 | WireGuard listen port |
 | `--endpoint` | auto-detect | Public IP:port |
-| `--pin` | none | PIN for auto-accept (skips manual approval) |
-| `-d, --daemon` | foreground | Run daemon in background |
+| `--pin` | none | PIN for auto-accept |
+| `-d, --daemon` | foreground | Background mode |
 
-What it does:
-1. Generates a WireGuard keypair
-2. Sends a join request to the target node via TCP
-3. Waits for approval (manual or PIN-based)
-4. Receives: mesh secret, mesh prefix, full peer list
-5. Creates `syfrah0` interface, adds all peers
-6. Starts the daemon
-
-The joining node is announced to all existing mesh members via encrypted peer announcements.
-
-### `syfrah start`
-
-Restart the daemon from saved state. Used after a reboot or crash.
+### `syfrah fabric start` / `stop` / `leave`
 
 ```bash
-syfrah start        # foreground
-syfrah start -d     # background
+syfrah fabric start         # restart daemon from saved state
+syfrah fabric start -d      # background
+syfrah fabric stop          # stop the daemon
+syfrah fabric leave         # leave mesh, clear all state
 ```
 
-Reloads state from `~/.syfrah/state.json`, recreates the WireGuard interface, reapplies all known peers, and starts the daemon loop.
-
-### `syfrah stop`
-
-Stop the running daemon.
+### `syfrah fabric status`
 
 ```bash
-syfrah stop
+syfrah fabric status
 ```
 
-Sends SIGTERM to the daemon process. Waits 3 seconds for graceful shutdown. The WireGuard interface is torn down and the PID file is removed. State is preserved for restart.
-
-### `syfrah leave`
-
-Leave the mesh and clean up all state.
-
-```bash
-syfrah leave
-```
-
-Tears down the WireGuard interface, removes the control socket, and deletes `~/.syfrah/` entirely. This is irreversible — to rejoin, you need the mesh secret again.
-
-### `syfrah status`
-
-Show mesh and daemon status.
-
-```bash
-syfrah status
-```
-
-Output:
 ```
 Mesh:      my-cloud
 Node:      par-hv-1
 Mesh IPv6: fd12:3456:7800:a1b2:c3d4:e5f6:7890:abcd
 Prefix:    fd12:3456:7800::/48
 WG port:   51820
-Secret:    syf_sk_6gp9gu8qfV7k2nP3...
 Peering:   port 51821
-
 Daemon:    running (pid 12345)
 
 Interface: syfrah0 (up)
-Listen:    :51820
 WG peers:  3 configured, 3 with handshake
 Traffic:   rx 1.2 MiB / tx 3.4 MiB
-
-Known peers: 3
 
 Metrics:
   Uptime:          2h 30m
   Peers discovered: 3
   WG reconciles:   12
-  Peers unreached: 0
 ```
 
-### `syfrah peers`
-
-List all known peers with live WireGuard stats.
+### `syfrah fabric peers`
 
 ```bash
-syfrah peers
+syfrah fabric peers
 ```
 
-Output:
 ```
-NAME               MESH IP                                  ENDPOINT               STATUS   HANDSHAKE   TRAFFIC
+NAME               MESH IP                                  ENDPOINT             STATUS   HANDSHAKE   TRAFFIC
 ----------------------------------------------------------------------------------------------------------------
-par-hv-2           fd12:3456:7800:1111:2222:3333:4444:5555  51.210.x.y:51820      active       5s ago  1.2K↓ 3.4K↑
-fsn-hv-1           fd12:3456:7800:aaaa:bbbb:cccc:dddd:eeee  88.198.x.y:51820      active      12s ago  4.5K↓ 2.1K↑
-ams-hv-1           fd12:3456:7800:ffff:0000:1111:2222:3333  51.15.x.y:51820       unreach      1h ago  -
+par-hv-2           fd12:3456:...:5555                       51.210.x.y:51820    active       5s ago  1.2K↓ 3.4K↑
+fsn-hv-1           fd12:3456:...:eeee                       88.198.x.y:51820    active      12s ago  4.5K↓ 2.1K↑
 ```
 
-Columns:
-- **NAME**: peer node name (truncated to 17 chars)
-- **MESH IP**: IPv6 address on the mesh
-- **ENDPOINT**: public IP:port
-- **STATUS**: `active`, `unreach`, or `removed`
-- **HANDSHAKE**: time since last WireGuard handshake
-- **TRAFFIC**: RX/TX bytes (↓ down, ↑ up)
-
-### `syfrah token`
-
-Display the mesh secret.
+### `syfrah fabric token` / `rotate`
 
 ```bash
-syfrah token
-# syf_sk_6gp9gu8qfV7k2nP3x8qL4jB5mK6yR9wX2cF3tG4hJ5
+syfrah fabric token          # display mesh secret
+syfrah fabric rotate         # generate new secret (daemon must be stopped)
 ```
 
-Used to share the secret with other operators who need to join the mesh (in combination with `syfrah join --pin`).
-
-### `syfrah rotate`
-
-Rotate the mesh secret. Requires the daemon to be stopped.
+### `syfrah fabric peering`
 
 ```bash
-syfrah stop
-syfrah rotate
-syfrah start
+syfrah fabric peering                    # interactive mode
+syfrah fabric peering --pin 1234         # auto-accept mode
+syfrah fabric peering start --pin 1234   # non-interactive
+syfrah fabric peering stop
+syfrah fabric peering list
+syfrah fabric peering accept abc12345
+syfrah fabric peering reject abc12345 --reason "unknown"
 ```
 
-Generates a new mesh secret, recomputes the mesh prefix and node IPv6 address, and **clears the entire peer list**. All other nodes must rejoin with the new secret. This is a disruptive operation for security incidents.
+## `forge` — per-node debug and ops
 
-### `syfrah peering`
+Exposes the **observed state** of a specific node. While `syfrah vm list` shows what Raft thinks (desired state), `syfrah forge vms` shows what is actually running on the node (reality).
 
-Manage join requests. Has two modes: interactive (default) and non-interactive (subcommands).
+All forge commands target the **local node** by default. Use `--node` to target a remote node via the fabric.
 
-#### Interactive mode (default)
+### `syfrah forge status`
 
 ```bash
-syfrah peering                   # manual approval
-syfrah peering --pin 1234        # auto-accept with PIN
+syfrah forge status
+syfrah forge status --node fsn-hv-1
 ```
 
-Watches for incoming join requests. Prompts the operator to accept or reject each one. If a PIN is provided, matching requests are auto-accepted.
-
-Output:
 ```
-Peering active. Watching for join requests...
-Press Ctrl+C to stop.
+Node:      par-hv-1
+Health:    active
+Uptime:    5d 12h
 
-Join request from fsn-hv-1 (88.198.x.y:51820)
-  WG pubkey: AaBbCcDdEeFfGgHhIi
-  Accept? [Y/n] y
-  Accepted: fsn-hv-1 joined the mesh.
+Resources:
+  vCPU:    8 / 32 used
+  Memory:  16384 / 65536 MB used
+  Disk:    200 / 1000 GB used
+
+VMs:       4 running, 1 stopped
+Bridges:   2 active (VNI 100, VNI 205)
+Volumes:   5 mounted
+Cache:     142 GB / 200 GB (71% hit rate)
 ```
 
-If no mesh exists, `syfrah peering` auto-creates one (convenient for bootstrapping).
-
-#### Non-interactive subcommands
-
-For use with scripts or when the daemon is already running.
+### `syfrah forge vms`
 
 ```bash
-# Start accepting join requests
-syfrah peering start --pin 1234
-
-# Stop accepting
-syfrah peering stop
-
-# List pending requests
-syfrah peering list
-
-# Accept a specific request
-syfrah peering accept abc12345
-
-# Reject a specific request
-syfrah peering reject abc12345 --reason "unknown node"
+syfrah forge vms
+syfrah forge vms --node par-hv-2
 ```
 
-`syfrah peering list` output:
 ```
-ID         NAME             ENDPOINT               WG PUBKEY
-----------------------------------------------------------------------
-abc12345   fsn-hv-1         88.198.x.y:51820       AaBbCcDdEeFfGgH...
-def67890   ams-hv-1         51.15.x.y:51820        XxYyZzAaAaAaAaA...
-
-2 pending request(s)
+VM ID          NAME       vCPU  MEM(MB)  STATUS    PID     UPTIME
+─────────────────────────────────────────────────────────────────
+vm-a1b2c3      web-1      2     4096     running   14523   2d 5h
+vm-d4e5f6      web-2      2     4096     running   14601   2d 5h
+vm-g7h8i9      db-primary 4     8192     running   14780   5d 12h
+vm-j0k1l2      worker-1   1     1024     stopped   -       -
 ```
 
-## Future commands (planned)
+Shows actual Firecracker processes, not Raft desired state.
 
-These commands will be added as the corresponding layers are implemented.
+### `syfrah forge bridges`
 
-### Organization
+```bash
+syfrah forge bridges
+```
+
+```
+BRIDGE      VNI    SUBNET           TAP DEVICES        FDB ENTRIES
+────────────────────────────────────────────────────────────────────
+br-100      100    10.0.1.0/24      tap-a1b2, tap-d4e5  6
+br-205      205    10.0.2.0/24      tap-g7h8             3
+```
+
+### `syfrah forge volumes`
+
+```bash
+syfrah forge volumes
+```
+
+```
+VOLUME         SIZE     VM           NBD DEVICE   CACHE     S3 BUCKET
+──────────────────────────────────────────────────────────────────────
+vol-abc123     100 GB   web-1        /dev/nbd0    45 GB     syfrah-eu-west
+vol-def456     100 GB   db-primary   /dev/nbd1    89 GB     syfrah-eu-west
+vol-ghi789     50 GB    (detached)   -            -         syfrah-eu-west
+```
+
+### `syfrah forge nftables`
+
+```bash
+syfrah forge nftables
+syfrah forge nftables --vm web-1
+```
+
+Shows the actual nftables rules applied on the host. Useful for debugging security group issues.
+
+### `syfrah forge logs`
+
+```bash
+syfrah forge logs              # tail local daemon logs
+syfrah forge logs --follow     # continuous tail
+syfrah forge logs --lines 100  # last 100 lines
+```
+
+### `syfrah forge drain`
+
+```bash
+syfrah forge drain                    # mark this node as draining
+syfrah forge drain --node fsn-hv-1    # remote node
+```
+
+Marks the node as `Draining` in Raft. The scheduler stops placing new VMs here. Existing VMs continue running until manually migrated or stopped.
+
+## Future namespaces (planned)
+
+### `org`, `project`, `env`
 
 ```bash
 syfrah org create acme --admin-email alice@example.com
-syfrah org list
-syfrah org delete acme
-```
-
-### Projects and environments
-
-```bash
 syfrah project create backend-api --org acme
-syfrah project list --org acme
-syfrah project delete backend-api
-
 syfrah env create production --project backend-api --deletion-protection
-syfrah env create staging --project backend-api
 syfrah env create feat/auth --project backend-api --ttl 48h
 syfrah env list --project backend-api
 syfrah env destroy feat/auth
 ```
 
-### Compute
+### `vm`
 
 ```bash
-syfrah vm create --project backend-api --env production \
-  --name web-1 --vcpu 2 --memory 4096 --image ubuntu-24.04 --vpc prod
-
-syfrah vm list --project backend-api --env production
+syfrah vm create --env production --name web-1 --vcpu 2 --memory 4096 --image ubuntu-24.04
+syfrah vm list --env production
 syfrah vm start web-1
 syfrah vm stop web-1
-syfrah vm reboot web-1
 syfrah vm delete web-1
 syfrah vm ssh web-1
 ```
 
-### Networking
+### `vpc`, `subnet`, `sg`
 
 ```bash
 syfrah vpc create prod --project backend-api --cidr 10.0.0.0/16
-syfrah vpc list --project backend-api
-syfrah vpc delete prod
-
 syfrah subnet create web --vpc prod --cidr 10.0.1.0/24
-syfrah subnet list --vpc prod
-
 syfrah sg create web-sg --vpc prod
 syfrah sg add-rule web-sg --ingress --tcp --port 443 --from 0.0.0.0/0
-syfrah sg add-rule web-sg --ingress --tcp --port 22 --from 10.0.0.0/16
-syfrah sg list --vpc prod
 ```
 
-### Storage
+### `volume`
 
 ```bash
-syfrah volume create --project backend-api --env production \
-  --name data --size 100
-
-syfrah volume list --project backend-api --env production
+syfrah volume create data --env production --size 100
 syfrah volume attach data --vm web-1
-syfrah volume detach data
-syfrah volume delete data
-syfrah volume snapshot data --name daily-backup
+syfrah volume snapshot data --name daily
 ```
 
-### IAM
+### `user`, `iam`, `apikey`
 
 ```bash
 syfrah user create --email bob@example.com --name "Bob"
-syfrah user list
-syfrah user disable bob@example.com
-
 syfrah iam assign bob@example.com --role developer --project backend-api
-syfrah iam list --org acme
-syfrah iam revoke bob@example.com --project backend-api
-
-syfrah apikey create --project backend-api --role developer --name ci-deploy
-syfrah apikey list --project backend-api
-syfrah apikey rotate --project backend-api --name ci-deploy
-syfrah apikey delete --project backend-api --name ci-deploy
-
+syfrah apikey create --project backend-api --role developer --name ci
 syfrah login --email alice@example.com
-syfrah logout
 ```
+
+## Code structure
+
+The CLI codebase mirrors the command tree. One directory per namespace, one file per command.
+
+```
+crates/syfrah-cli/src/
+├── main.rs
+└── commands/
+    ├── mod.rs
+    ├── fabric/
+    │   ├── mod.rs          FabricCommand enum
+    │   ├── init.rs         Args + run()
+    │   ├── join.rs
+    │   ├── start.rs
+    │   ├── stop.rs
+    │   ├── leave.rs
+    │   ├── status.rs
+    │   ├── peers.rs
+    │   ├── token.rs
+    │   ├── rotate.rs
+    │   └── peering.rs
+    ├── forge/
+    │   ├── mod.rs          ForgeCommand enum
+    │   ├── status.rs
+    │   ├── vms.rs
+    │   ├── bridges.rs
+    │   ├── volumes.rs
+    │   ├── nftables.rs
+    │   ├── logs.rs
+    │   └── drain.rs
+    ├── org/
+    │   ├── mod.rs
+    │   ├── create.rs
+    │   ├── list.rs
+    │   └── delete.rs
+    ├── ...                 (same pattern for each namespace)
+    ├── login.rs            top-level command
+    └── logout.rs           top-level command
+```
+
+### Convention
+
+Every command file exports:
+- `pub struct Args` — clap args/flags
+- `pub async fn run(args: Args) -> Result<()>` — implementation
+
+Every namespace `mod.rs` exports:
+- `pub enum {Namespace}Command` — clap subcommand enum
+- `pub async fn run(cmd: {Namespace}Command) -> Result<()>` — dispatch
+
+Adding a new command:
+1. Create `commands/{namespace}/{command}.rs` with `Args` + `run()`
+2. Add `mod {command}` + variant in `commands/{namespace}/mod.rs`
+3. Done
 
 ## Design principles
 
-### One binary, all operations
-
-Everything goes through `syfrah`. No separate binaries for daemon, CLI, or API. The command determines the behavior.
-
-### Verb-noun ordering
-
-Commands follow `syfrah <noun> <verb>` pattern for resource management (`syfrah vm create`, `syfrah vpc list`) and `syfrah <verb>` for fabric operations (`syfrah init`, `syfrah join`, `syfrah status`).
-
-### Daemon communication
-
-Commands that modify running state (peering, VM lifecycle) communicate with the daemon via Unix domain socket (`~/.syfrah/control.sock`). Commands that only read or modify static state (status, token, rotate) access `~/.syfrah/state.json` directly.
-
-### Output
-
-- Human-readable by default (tables, aligned columns)
-- `--json` flag (future) for machine-parseable output
-- Errors go to stderr, data goes to stdout
-- No emojis, no colors by default (infrastructure tool, often used over SSH)
+- **One binary, all operations.** Everything is `syfrah`.
+- **Namespaced by resource.** `syfrah vm`, `syfrah vpc`, `syfrah fabric`.
+- **`fabric` for mesh ops.** The infrastructure bootstrap layer.
+- **`forge` for node debug.** Observed state of a specific node.
+- **Everything else for cluster ops.** Desired state via the control plane.
+- **Repo mirrors CLI.** Directory = namespace, file = command.
+- **Human-readable by default.** Tables, aligned columns. `--json` flag for machines (future).
+- **No emojis, no colors.** Infrastructure tool, used over SSH.
 
 ## Files
 
-All state lives in `~/.syfrah/`:
+All local state lives in `~/.syfrah/`:
 
 | File | Purpose |
 |---|---|
-| `state.json` | Mesh config, peers, metrics (permissions: `0600`) |
-| `control.sock` | Unix domain socket for CLI ↔ daemon (permissions: `0600`) |
+| `state.json` | Mesh config, peers, metrics (0600) |
+| `control.sock` | Unix socket for CLI ↔ daemon (0600) |
 | `daemon.pid` | Running daemon PID |
 | `syfrah.log` | Daemon logs (auto-rotated at 10 MB) |
 | `syfrah.log.old` | Previous log file |
+| `session.json` | Login session token (future) |
 
 ## Relationship to other concepts
 
@@ -383,22 +464,22 @@ All state lives in `~/.syfrah/`:
     ┌──────────────────────────────────────────────────────┐
     │                                                      │
     │   CLI              ◄── this document                 │
-    │   syfrah binary: fabric ops + future cloud ops       │
+    │   syfrah binary: fabric + forge + cloud ops          │
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │
     │   Control Plane    ◄── docs/concepts/control-plane.md│
-    │   CLI talks to local API, forwarded to Raft leader   │
+    │   Cloud commands talk to Raft via HTTP on fabric     │
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │
-    │   IAM              ◄── docs/concepts/iam.md          │
-    │   login, apikey commands                             │
+    │   Forge            ◄── docs/concepts/forge.md        │
+    │   forge commands query local node state              │
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │
     │   Fabric           ◄── docs/concepts/fabric.md       │
-    │   init, join, peering, peers, status                 │
+    │   fabric commands manage the WireGuard mesh          │
     │                                                      │
     └──────────────────────────────────────────────────────┘
 ```

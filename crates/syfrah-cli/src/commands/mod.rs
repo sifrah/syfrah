@@ -1,10 +1,1 @@
-pub mod init;
-pub mod join;
-pub mod start;
-pub mod stop;
-pub mod status;
-pub mod peers;
-pub mod token;
-pub mod rotate;
-pub mod leave;
-pub mod peering;
+pub mod fabric;
