@@ -10,23 +10,23 @@ use syfrah_core::addressing;
 use syfrah_core::mesh::{PeerRecord, PeerStatus};
 use syfrah_core::secret::MeshSecret;
 
-use crate::discovery::IpfsDiscovery;
+use crate::control::{self, ControlHandler, ControlRequest, ControlResponse};
+use crate::peering::{self, AutoAcceptConfig, PeeringState};
 use crate::store::{self, NodeState};
 use crate::wg;
 
 const UNREACHABLE_TIMEOUT: Duration = Duration::from_secs(300);
 const PERSIST_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Configuration for starting a daemon.
 pub struct DaemonConfig {
     pub mesh_name: String,
     pub node_name: String,
     pub wg_listen_port: u16,
     pub public_endpoint: Option<SocketAddr>,
-    pub ipfs_api: Option<String>,
+    pub peering_port: u16,
 }
 
-/// Run the init flow.
+/// Run the init flow: create a new mesh.
 pub async fn run_init(config: DaemonConfig) -> anyhow::Result<()> {
     if store::exists() {
         anyhow::bail!("mesh state already exists. Run 'syfrah leave' first.");
@@ -39,7 +39,6 @@ pub async fn run_init(config: DaemonConfig) -> anyhow::Result<()> {
     let mesh_ipv6 = addressing::derive_node_address(&mesh_prefix, wg_keypair.public.as_bytes());
     let endpoint = resolve_endpoint(&config);
 
-    // Setup WireGuard
     wg::setup_interface(&wg_keypair, config.wg_listen_port, mesh_ipv6)?;
     info!("wireguard interface syfrah0 up");
 
@@ -53,7 +52,7 @@ pub async fn run_init(config: DaemonConfig) -> anyhow::Result<()> {
         wg_listen_port: config.wg_listen_port,
         node_name: config.node_name.clone(),
         public_endpoint: config.public_endpoint,
-        ipfs_api: config.ipfs_api.clone(),
+        peering_port: config.peering_port,
         peers: vec![],
         metrics: Default::default(),
     };
@@ -63,37 +62,97 @@ pub async fn run_init(config: DaemonConfig) -> anyhow::Result<()> {
     println!("  Secret: {mesh_secret}");
     println!("  Node:   {} ({})", config.node_name, mesh_ipv6);
     println!();
-    println!("Share the secret with other nodes to join.");
+    println!("Run 'syfrah peering' to accept new nodes.");
     println!("Running daemon... (Ctrl+C to stop)");
 
     let my_record = build_record(&config.node_name, &wg_keypair, endpoint, mesh_ipv6);
-    let discovery = IpfsDiscovery::new(mesh_secret, config.ipfs_api);
-
-    run_daemon(discovery, my_record, &wg_keypair).await
+    run_daemon(my_record, &wg_keypair, mesh_secret, config.peering_port).await
 }
 
-/// Run the join flow.
-pub async fn run_join(secret_str: &str, config: DaemonConfig) -> anyhow::Result<()> {
+/// Auto-init: create mesh if none exists, used by `syfrah peering` on a fresh node.
+pub fn auto_init(node_name: &str, wg_port: u16, peering_port: u16) -> anyhow::Result<(MeshSecret, KeyPair)> {
+    let mesh_secret = MeshSecret::generate();
+    let wg_keypair = wg::generate_keypair();
+
+    let mesh_prefix = derive_prefix_from_secret(&mesh_secret);
+    let mesh_ipv6 = addressing::derive_node_address(&mesh_prefix, wg_keypair.public.as_bytes());
+
+    wg::setup_interface(&wg_keypair, wg_port, mesh_ipv6)?;
+
+    let state = NodeState {
+        mesh_name: node_name.to_string(),
+        mesh_secret: mesh_secret.to_string(),
+        wg_private_key: wg_keypair.private.to_base64(),
+        wg_public_key: wg_keypair.public.to_base64(),
+        mesh_ipv6,
+        mesh_prefix,
+        wg_listen_port: wg_port,
+        node_name: node_name.to_string(),
+        public_endpoint: None,
+        peering_port,
+        peers: vec![],
+        metrics: Default::default(),
+    };
+    store::save(&state)?;
+
+    println!("Mesh auto-created.");
+    println!("  Secret: {mesh_secret}");
+    println!("  Node:   {node_name} ({mesh_ipv6})");
+
+    Ok((mesh_secret, wg_keypair))
+}
+
+/// Run the join flow: request to join an existing mesh via TCP peering.
+pub async fn run_join(target: SocketAddr, config: DaemonConfig, pin: Option<String>) -> anyhow::Result<()> {
     if store::exists() {
         anyhow::bail!("mesh state already exists. Run 'syfrah leave' first.");
     }
 
-    let mesh_secret: MeshSecret = secret_str
-        .parse()
-        .map_err(|e| anyhow::anyhow!("invalid secret: {e}"))?;
-
     let wg_keypair = wg::generate_keypair();
-    let mesh_prefix = derive_prefix_from_secret(&mesh_secret);
-    let mesh_ipv6 = addressing::derive_node_address(&mesh_prefix, wg_keypair.public.as_bytes());
     let endpoint = resolve_endpoint(&config);
 
-    // Setup WireGuard
+    let request = syfrah_core::mesh::JoinRequest {
+        request_id: peering::generate_request_id(),
+        node_name: config.node_name.clone(),
+        wg_public_key: wg_keypair.public.to_base64(),
+        endpoint,
+        wg_listen_port: config.wg_listen_port,
+        pin,
+    };
+
+    println!("Sending join request to {target}...");
+    println!("Waiting for approval...");
+
+    let response = peering::send_join_request(target, request).await?;
+
+    if !response.accepted {
+        let reason = response.reason.unwrap_or_else(|| "no reason given".into());
+        anyhow::bail!("Join request rejected: {reason}");
+    }
+
+    let mesh_secret_str = response.mesh_secret
+        .ok_or_else(|| anyhow::anyhow!("accepted but no mesh secret"))?;
+    let mesh_secret: MeshSecret = mesh_secret_str.parse()
+        .map_err(|e| anyhow::anyhow!("invalid mesh secret: {e}"))?;
+    let mesh_name = response.mesh_name.unwrap_or_else(|| "mesh".into());
+    let mesh_prefix = response.mesh_prefix
+        .ok_or_else(|| anyhow::anyhow!("accepted but no mesh prefix"))?;
+
+    let mesh_ipv6 = addressing::derive_node_address(&mesh_prefix, wg_keypair.public.as_bytes());
+
     wg::setup_interface(&wg_keypair, config.wg_listen_port, mesh_ipv6)?;
     info!("wireguard interface syfrah0 up");
 
+    if !response.peers.is_empty() {
+        info!("applying {} peers from join response", response.peers.len());
+        if let Err(e) = wg::apply_peers(&wg_keypair.public, &response.peers) {
+            warn!("failed to apply peers: {e}");
+        }
+    }
+
     let state = NodeState {
-        mesh_name: config.mesh_name.clone(),
-        mesh_secret: mesh_secret.to_string(),
+        mesh_name: mesh_name.clone(),
+        mesh_secret: mesh_secret_str,
         wg_private_key: wg_keypair.private.to_base64(),
         wg_public_key: wg_keypair.public.to_base64(),
         mesh_ipv6,
@@ -101,23 +160,21 @@ pub async fn run_join(secret_str: &str, config: DaemonConfig) -> anyhow::Result<
         wg_listen_port: config.wg_listen_port,
         node_name: config.node_name.clone(),
         public_endpoint: config.public_endpoint,
-        ipfs_api: config.ipfs_api.clone(),
-        peers: vec![],
+        peering_port: config.peering_port,
+        peers: response.peers,
         metrics: Default::default(),
     };
     store::save(&state)?;
 
-    println!("Joined mesh '{}'.", config.mesh_name);
+    println!("Joined mesh '{mesh_name}'.");
     println!("  Node: {} ({})", config.node_name, mesh_ipv6);
     println!("Running daemon... (Ctrl+C to stop)");
 
     let my_record = build_record(&config.node_name, &wg_keypair, endpoint, mesh_ipv6);
-    let discovery = IpfsDiscovery::new(mesh_secret, config.ipfs_api);
-
-    run_daemon(discovery, my_record, &wg_keypair).await
+    run_daemon(my_record, &wg_keypair, mesh_secret, config.peering_port).await
 }
 
-/// Restart the daemon from saved state.
+/// Restart daemon from saved state.
 pub async fn run_start() -> anyhow::Result<()> {
     let state = store::load().map_err(|_| {
         anyhow::anyhow!("no mesh state found. Run 'syfrah init' or 'syfrah join' first.")
@@ -125,15 +182,12 @@ pub async fn run_start() -> anyhow::Result<()> {
 
     let mesh_secret: MeshSecret = state.mesh_secret.parse()
         .map_err(|e| anyhow::anyhow!("corrupt secret in state: {e}"))?;
-
     let wg_private = Key::from_base64(&state.wg_private_key)
         .map_err(|_| anyhow::anyhow!("corrupt WG private key in state"))?;
     let wg_keypair = KeyPair::from_private(wg_private);
 
-    // Setup WireGuard
     wg::setup_interface(&wg_keypair, state.wg_listen_port, state.mesh_ipv6)?;
 
-    // Apply known peers immediately
     if !state.peers.is_empty() {
         info!("applying {} known peers from state", state.peers.len());
         if let Err(e) = wg::apply_peers(&wg_keypair.public, &state.peers) {
@@ -149,74 +203,130 @@ pub async fn run_start() -> anyhow::Result<()> {
         SocketAddr::new("0.0.0.0".parse().unwrap(), state.wg_listen_port)
     });
     let my_record = build_record(&state.node_name, &wg_keypair, endpoint_addr, state.mesh_ipv6);
-
-    let discovery = IpfsDiscovery::new(mesh_secret, state.ipfs_api.clone());
-
-    // Seed discovery with known peers
-    {
-        let peers_ref = discovery.peers();
-        let mut peers = peers_ref.write().await;
-        *peers = state.peers.clone();
-    }
-
-    run_daemon(discovery, my_record, &wg_keypair).await
+    run_daemon(my_record, &wg_keypair, mesh_secret, state.peering_port).await
 }
 
-/// Broadcast departure before leaving.
+/// Leave the mesh.
 pub async fn run_leave() -> anyhow::Result<()> {
     if !store::exists() {
         println!("No mesh configured.");
         return Ok(());
     }
-
-    // Tear down WireGuard
     if let Err(e) = wg::teardown_interface() {
         eprintln!("Warning: could not tear down WireGuard interface: {e}");
     }
-
+    let _ = std::fs::remove_file(store::control_socket_path());
     store::clear()?;
     println!("Left the mesh. State cleared.");
     Ok(())
 }
 
 /// The main daemon loop.
-async fn run_daemon(
-    discovery: IpfsDiscovery,
+pub async fn run_daemon(
     my_record: PeerRecord,
     wg_keypair: &KeyPair,
+    mesh_secret: MeshSecret,
+    peering_port: u16,
 ) -> anyhow::Result<()> {
     store::write_pid()?;
 
     let wg_pubkey = wg_keypair.public.clone();
-    let peers_ref = discovery.peers();
+    let peering_state = Arc::new(PeeringState::new());
+    let enc_key = mesh_secret.encryption_key();
 
-    // Metrics
     let metrics_received = Arc::new(AtomicU64::new(0));
     let metrics_reconciliations = Arc::new(AtomicU64::new(0));
     let metrics_unreachable = Arc::new(AtomicU64::new(0));
     let daemon_started = now();
 
-    // Callback: when a peer is discovered/updated, upsert WG
-    let wg_pubkey_cb = wg_pubkey.clone();
-    let recv_counter = metrics_received.clone();
-    let recon_counter = metrics_reconciliations.clone();
-    let on_change: Arc<dyn Fn(&PeerRecord) + Send + Sync> = Arc::new(move |record| {
-        recv_counter.fetch_add(1, Ordering::Relaxed);
-        let pubkey = wg_pubkey_cb.clone();
-        let record = record.clone();
-        let recon = recon_counter.clone();
+    // on_accepted callback: when a peer is accepted (manual or PIN), add to WG + store + announce
+    let accepted_wg_pubkey = wg_pubkey.clone();
+    let accepted_recv = metrics_received.clone();
+    let accepted_recon = metrics_reconciliations.clone();
+    let accepted_enc_key = enc_key;
+    let accepted_peering_port = peering_port;
+    let on_accepted: peering::OnAccepted = Arc::new(move |new_record| {
+        accepted_recv.fetch_add(1, Ordering::Relaxed);
+        let pubkey = accepted_wg_pubkey.clone();
+        let recon = accepted_recon.clone();
+        let record = new_record.clone();
+        let enc = accepted_enc_key;
+        let pp = accepted_peering_port;
         tokio::spawn(async move {
+            // Add to WG
             if let Err(e) = wg::upsert_peer(&pubkey, &record) {
-                warn!("failed to upsert wireguard peer {}: {e}", record.name);
+                warn!("failed to add peer to WG: {e}");
             } else {
                 recon.fetch_add(1, Ordering::Relaxed);
-                info!("wireguard peer upserted: {}", record.name);
+                info!("wireguard peer added: {}", record.name);
+            }
+            // Save to store
+            if let Ok(mut state) = store::load() {
+                if !state.peers.iter().any(|p| p.wg_public_key == record.wg_public_key) {
+                    let known = state.peers.clone();
+                    state.peers.push(record.clone());
+                    let _ = store::save(&state);
+                    // Announce to existing peers
+                    peering::announce_peer_to_mesh(&record, &known, &enc, pp).await;
+                }
             }
         });
     });
 
-    // Persist peers + metrics
-    let persist_peers = peers_ref.clone();
+    // Control handler
+    let ctrl_handler = Arc::new(DaemonControlHandler {
+        peering_state: peering_state.clone(),
+        mesh_secret: mesh_secret.clone(),
+        my_record: my_record.clone(),
+        wg_pubkey: wg_pubkey.clone(),
+        peering_port,
+        on_accepted: on_accepted.clone(),
+    });
+
+    let control_path = store::control_socket_path();
+    let control_handler: Arc<dyn ControlHandler> = ctrl_handler;
+    let control_task = tokio::spawn(async move {
+        control::start_control_listener(&control_path, control_handler).await;
+    });
+
+    // on_announce callback: when a peer announce arrives from existing mesh member
+    let announce_wg_pubkey = wg_pubkey.clone();
+    let announce_recv = metrics_received.clone();
+    let announce_recon = metrics_reconciliations.clone();
+    let on_announce: Arc<dyn Fn(PeerRecord) + Send + Sync> = Arc::new(move |record| {
+        announce_recv.fetch_add(1, Ordering::Relaxed);
+        let pubkey = announce_wg_pubkey.clone();
+        let recon = announce_recon.clone();
+        let record = record.clone();
+        tokio::spawn(async move {
+            if let Err(e) = wg::upsert_peer(&pubkey, &record) {
+                warn!("failed to upsert peer {}: {e}", record.name);
+            } else {
+                recon.fetch_add(1, Ordering::Relaxed);
+                info!("wireguard peer upserted via announce: {}", record.name);
+            }
+            // Save to store
+            if let Ok(mut state) = store::load() {
+                if !state.peers.iter().any(|p| p.wg_public_key == record.wg_public_key) {
+                    state.peers.push(record);
+                    let _ = store::save(&state);
+                }
+            }
+        });
+    });
+
+    // Peering listener
+    let listener_state = peering_state.clone();
+    let peering_task = tokio::spawn(async move {
+        if let Err(e) = listener_state
+            .run_listener(peering_port, Some(enc_key), on_announce, on_accepted)
+            .await
+        {
+            warn!("peering listener error: {e}");
+        }
+    });
+
+    // Persist metrics
     let persist_recv = metrics_received.clone();
     let persist_recon = metrics_reconciliations.clone();
     let persist_unreach = metrics_unreachable.clone();
@@ -224,9 +334,7 @@ async fn run_daemon(
         let mut interval = tokio::time::interval(PERSIST_INTERVAL);
         loop {
             interval.tick().await;
-            let peer_list = persist_peers.read().await;
             if let Ok(mut state) = store::load() {
-                state.peers = peer_list.clone();
                 state.metrics.peers_discovered = persist_recv.load(Ordering::Relaxed);
                 state.metrics.wg_reconciliations = persist_recon.load(Ordering::Relaxed);
                 state.metrics.peers_marked_unreachable = persist_unreach.load(Ordering::Relaxed);
@@ -239,42 +347,38 @@ async fn run_daemon(
     };
 
     // Unreachable detection
-    let unreachable_peers = peers_ref.clone();
     let unreachable_wg_pubkey = wg_pubkey.clone();
     let unreachable_counter = metrics_unreachable.clone();
     let unreachable_check = async {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
             interval.tick().await;
-            let current = now();
-            let mut peer_list = unreachable_peers.write().await;
-            let mut stale = vec![];
-            for peer in peer_list.iter_mut() {
-                if peer.status == PeerStatus::Active
-                    && current.saturating_sub(peer.last_seen) > UNREACHABLE_TIMEOUT.as_secs()
-                {
-                    info!("marking peer {} as unreachable", peer.name);
-                    peer.status = PeerStatus::Unreachable;
-                    unreachable_counter.fetch_add(1, Ordering::Relaxed);
-                    stale.push(peer.clone());
+            if let Ok(mut state) = store::load() {
+                let current = now();
+                let mut changed = false;
+                for peer in state.peers.iter_mut() {
+                    if peer.status == PeerStatus::Active
+                        && current.saturating_sub(peer.last_seen) > UNREACHABLE_TIMEOUT.as_secs()
+                    {
+                        info!("marking peer {} as unreachable", peer.name);
+                        peer.status = PeerStatus::Unreachable;
+                        unreachable_counter.fetch_add(1, Ordering::Relaxed);
+                        if let Err(e) = wg::upsert_peer(&unreachable_wg_pubkey, peer) {
+                            warn!("failed to remove unreachable peer {}: {e}", peer.name);
+                        }
+                        changed = true;
+                    }
                 }
-            }
-            drop(peer_list);
-            for peer in &stale {
-                if let Err(e) = wg::upsert_peer(&unreachable_wg_pubkey, peer) {
-                    warn!("failed to remove unreachable peer {}: {e}", peer.name);
+                if changed {
+                    let _ = store::save(&state);
                 }
             }
         }
     };
 
-    // Run discovery + persist + unreachable + ctrl-c
     tokio::select! {
-        result = discovery.run(my_record.clone(), on_change) => {
-            if let Err(e) = result {
-                warn!("discovery loop ended: {e}");
-            }
-        }
+        _ = control_task => {}
+        _ = peering_task => {}
         _ = persist => {}
         _ = unreachable_check => {}
         _ = tokio::signal::ctrl_c() => {
@@ -282,19 +386,108 @@ async fn run_daemon(
         }
     }
 
+    let _ = std::fs::remove_file(store::control_socket_path());
     wg::teardown_interface()?;
     store::remove_pid();
     info!("daemon stopped");
-
     Ok(())
 }
 
-fn build_record(
-    name: &str,
-    wg_keypair: &KeyPair,
-    endpoint: SocketAddr,
-    mesh_ipv6: std::net::Ipv6Addr,
-) -> PeerRecord {
+/// Control handler for the daemon.
+struct DaemonControlHandler {
+    peering_state: Arc<PeeringState>,
+    mesh_secret: MeshSecret,
+    my_record: PeerRecord,
+    wg_pubkey: Key,
+    peering_port: u16,
+    on_accepted: peering::OnAccepted,
+}
+
+#[async_trait::async_trait]
+impl ControlHandler for DaemonControlHandler {
+    async fn handle(&self, req: ControlRequest) -> ControlResponse {
+        match req {
+            ControlRequest::PeeringStart { port: _, pin } => {
+                if let Some(pin_val) = pin {
+                    let state = match store::load() {
+                        Ok(s) => s,
+                        Err(e) => return ControlResponse::Error { message: format!("{e}") },
+                    };
+                    self.peering_state.set_auto_accept(Some(AutoAcceptConfig {
+                        pin: pin_val,
+                        mesh_name: state.mesh_name,
+                        mesh_secret_str: state.mesh_secret,
+                        mesh_prefix: state.mesh_prefix,
+                        my_record: self.my_record.clone(),
+                        wg_pubkey: self.wg_pubkey.clone(),
+                        encryption_key: self.mesh_secret.encryption_key(),
+                        peering_port: self.peering_port,
+                    })).await;
+                }
+                self.peering_state.set_active(true).await;
+                ControlResponse::Ok
+            }
+            ControlRequest::PeeringStop => {
+                self.peering_state.set_active(false).await;
+                self.peering_state.set_auto_accept(None).await;
+                ControlResponse::Ok
+            }
+            ControlRequest::PeeringList => {
+                let requests = self.peering_state.list_pending().await;
+                ControlResponse::PeeringList { requests }
+            }
+            ControlRequest::PeeringAccept { request_id } => {
+                let state = match store::load() {
+                    Ok(s) => s,
+                    Err(e) => return ControlResponse::Error { message: format!("{e}") },
+                };
+
+                let mut all_peers = state.peers.clone();
+                all_peers.push(self.my_record.clone());
+
+                let response = syfrah_core::mesh::JoinResponse {
+                    accepted: true,
+                    mesh_name: Some(state.mesh_name.clone()),
+                    mesh_secret: Some(state.mesh_secret.clone()),
+                    mesh_prefix: Some(state.mesh_prefix),
+                    peers: all_peers,
+                    reason: None,
+                };
+
+                match self.peering_state.accept(&request_id, response).await {
+                    Ok(info) => {
+                        let new_wg_pub = match Key::from_base64(&info.wg_public_key) {
+                            Ok(k) => k,
+                            Err(_) => return ControlResponse::Error { message: "invalid WG key".into() },
+                        };
+                        let new_mesh_ipv6 = addressing::derive_node_address(
+                            &state.mesh_prefix, new_wg_pub.as_bytes(),
+                        );
+                        let new_record = PeerRecord {
+                            name: info.node_name.clone(),
+                            wg_public_key: info.wg_public_key,
+                            endpoint: info.endpoint,
+                            mesh_ipv6: new_mesh_ipv6,
+                            last_seen: now(),
+                            status: PeerStatus::Active,
+                        };
+                        (self.on_accepted)(new_record);
+                        ControlResponse::PeeringAccepted { peer_name: info.node_name }
+                    }
+                    Err(e) => ControlResponse::Error { message: e.to_string() },
+                }
+            }
+            ControlRequest::PeeringReject { request_id, reason } => {
+                match self.peering_state.reject(&request_id, reason).await {
+                    Ok(()) => ControlResponse::Ok,
+                    Err(e) => ControlResponse::Error { message: e.to_string() },
+                }
+            }
+        }
+    }
+}
+
+fn build_record(name: &str, wg_keypair: &KeyPair, endpoint: SocketAddr, mesh_ipv6: std::net::Ipv6Addr) -> PeerRecord {
     PeerRecord {
         name: name.to_string(),
         wg_public_key: wg_keypair.public.to_base64(),
@@ -302,13 +495,11 @@ fn build_record(
         mesh_ipv6,
         last_seen: now(),
         status: PeerStatus::Active,
-        iroh_node_id: None,
     }
 }
 
 fn resolve_endpoint(config: &DaemonConfig) -> SocketAddr {
-    config
-        .public_endpoint
+    config.public_endpoint
         .unwrap_or_else(|| SocketAddr::new("0.0.0.0".parse().unwrap(), config.wg_listen_port))
 }
 
@@ -324,8 +515,5 @@ pub fn derive_prefix_from_secret(secret: &MeshSecret) -> std::net::Ipv6Addr {
 }
 
 fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
 }

@@ -398,7 +398,6 @@ mod tests {
             mesh_ipv6: "fd12:3456:7800::1".parse().unwrap(),
             last_seen: 0,
             status: syfrah_core::mesh::PeerStatus::Active,
-            iroh_node_id: None,
         };
 
         apply_peers(&kp.public, &[peer]).unwrap();

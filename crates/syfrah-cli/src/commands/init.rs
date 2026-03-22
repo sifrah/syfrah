@@ -2,12 +2,12 @@ use std::net::SocketAddr;
 use anyhow::Result;
 use syfrah_net::daemon::{self, DaemonConfig};
 
-pub async fn run(name: &str, node_name: &str, port: u16, endpoint: Option<SocketAddr>, ipfs_api: Option<String>) -> Result<()> {
+pub async fn run(name: &str, node_name: &str, port: u16, endpoint: Option<SocketAddr>, peering_port: u16) -> Result<()> {
     daemon::run_init(DaemonConfig {
         mesh_name: name.to_string(),
         node_name: node_name.to_string(),
         wg_listen_port: port,
         public_endpoint: endpoint,
-        ipfs_api,
+        peering_port,
     }).await
 }

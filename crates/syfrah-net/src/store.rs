@@ -31,12 +31,20 @@ pub struct NodeState {
     pub node_name: String,
     #[serde(default)]
     pub public_endpoint: Option<std::net::SocketAddr>,
-    /// IPFS API endpoint (optional, defaults to localhost:5001)
-    #[serde(default)]
-    pub ipfs_api: Option<String>,
+    #[serde(default = "default_peering_port")]
+    pub peering_port: u16,
     pub peers: Vec<PeerRecord>,
     #[serde(default)]
     pub metrics: Metrics,
+}
+
+fn default_peering_port() -> u16 {
+    51821
+}
+
+/// Path to the Unix domain socket for CLI-daemon control.
+pub fn control_socket_path() -> std::path::PathBuf {
+    state_dir().join("control.sock")
 }
 
 /// Simple counters for observability.
@@ -163,7 +171,7 @@ mod tests {
             wg_listen_port: 51820,
             node_name: "node-1".into(),
             public_endpoint: None,
-            ipfs_api: None,
+            peering_port: 51821,
             peers: vec![],
             metrics: Default::default(),
         };

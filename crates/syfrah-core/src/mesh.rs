@@ -24,7 +24,7 @@ pub enum PeerStatus {
     Removed,
 }
 
-/// Record published on DHT and exchanged via gossip.
+/// Record exchanged between mesh peers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerRecord {
     pub name: String,
@@ -33,9 +33,46 @@ pub struct PeerRecord {
     pub mesh_ipv6: Ipv6Addr,
     pub last_seen: u64,
     pub status: PeerStatus,
-    /// iroh PublicKey (hex) for multi-bootstrap. Optional for backwards compat.
+}
+
+// --- Peering protocol types ---
+
+/// A request from a new node wanting to join the mesh.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JoinRequest {
+    pub request_id: String,
+    pub node_name: String,
+    pub wg_public_key: String,
+    pub endpoint: SocketAddr,
+    pub wg_listen_port: u16,
+    /// Optional PIN for auto-accept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin: Option<String>,
+}
+
+/// Response sent back to a new node after acceptance or rejection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JoinResponse {
+    pub accepted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh_secret: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh_prefix: Option<Ipv6Addr>,
     #[serde(default)]
-    pub iroh_node_id: Option<String>,
+    pub peers: Vec<PeerRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Wire protocol message envelope for TCP peering.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PeeringMessage {
+    JoinRequest(JoinRequest),
+    JoinResponse(JoinResponse),
+    /// Encrypted PeerRecord announcement (ciphertext, uses mesh secret).
+    PeerAnnounce(Vec<u8>),
 }
 
 /// Encrypt a PeerRecord with AES-256-GCM using the mesh encryption key.
@@ -84,7 +121,7 @@ mod tests {
             endpoint: "203.0.113.1:51820".parse::<SocketAddr>().unwrap(),
             mesh_ipv6: Ipv6Addr::new(0xfd12, 0x3456, 0x7800, 0, 0, 0, 0, 1),
             last_seen: 1700000000,
-            status: PeerStatus::Active, iroh_node_id: None,
+            status: PeerStatus::Active,
         }
     }
 

@@ -8,103 +8,90 @@ Take dedicated servers from OVHcloud, Hetzner, Scaleway or any provider and turn
 
 Cloud providers are powerful but expensive. Dedicated servers are cheap but raw. Syfrah bridges the gap: a control plane, encrypted mesh networking, compute orchestration and a modern API on top of bare metal you already rent.
 
-## Current State
-
-The first building block is implemented: a **decentralized WireGuard mesh network** with auto-discovery, encrypted gossip, and full operational tooling.
+## Quick Start
 
 ```bash
-# Node 1: create a mesh
+# Server 1: create a mesh and start accepting peers
 $ syfrah init --name production
-Mesh 'production' created.
-  Secret: syf_sk_5HueCGU8rMjxEXxiPuD5BDku4MkFq...
-  Node:   node-1 (fd9a:bc12:7800::a1f3:1)
-Share the secret with other nodes to join.
+$ syfrah peering --pin 4829
+Peering active (auto-accept with PIN: 4829)
+New nodes can join with: syfrah join <this-ip> --pin 4829
 
-# Node 2: join with just the secret
-$ syfrah join syf_sk_5HueCGU8rMjxEXxiPuD5BDku4MkFq...
-Joined mesh 'mesh'.
+# Server 2: join with just the IP
+$ syfrah join 203.0.113.1 --pin 4829
+Joined mesh 'production'.
   Node: node-2 (fd9a:bc12:7800::b2e4:2)
 
-# Monitor
-$ syfrah status
-Mesh:      production
-Node:      node-1
-Daemon:    running (pid 12345)
-Interface: syfrah0 (up)
-WG peers:  2 configured, 2 with handshake
-Traffic:   rx 12.3 MiB / tx 8.7 MiB
-Metrics:
-  Uptime:          2h 15m
-  Gossip received: 342
+# Server 3: same thing
+$ syfrah join 203.0.113.1 --pin 4829
+Joined mesh 'production'.
+  Node: node-3 (fd9a:bc12:7800::c5d6:3)
+```
 
+That's it. All servers now have encrypted WireGuard tunnels and can reach each other via IPv6.
+
+```bash
 $ syfrah peers
 NAME               MESH IP                                  ENDPOINT               STATUS   HANDSHAKE    TRAFFIC
 ----------------------------------------------------------------------------------------------------------------
-node-2             fd9a:bc12:7800::b2e4:2                   198.51.100.5:51820       active     12s ago  4K~ 2K~
-node-3             fd9a:bc12:7800::c5d6:3                   192.0.2.10:51820         active      3m ago  1M~ 800K~
+node-2             fd9a:bc12:7800::b2e4:2                   198.51.100.5:51820       active     12s ago  4K↓ 2K↑
+node-3             fd9a:bc12:7800::c5d6:3                   192.0.2.10:51820         active      3s ago  1M↓ 800K↑
 ```
 
 ## How It Works
+
+### Manual Peering
+
+Syfrah uses a **manual peering** model. No automatic discovery, no DHT, no gossip. An operator explicitly approves each node that joins the mesh.
+
+1. **Init**: creates a mesh with a shared secret and WireGuard interface
+2. **Peering**: the operator starts listening for join requests (`syfrah peering`)
+3. **Join**: a new node connects to an existing node and sends a join request
+4. **Accept/Reject**: the operator approves or denies (or uses a PIN for auto-accept)
+5. **Propagation**: when accepted, all existing mesh members are automatically notified of the new peer
 
 ### Two planes
 
 | Layer | Role | Technology |
 |-------|------|------------|
-| **Control plane** | Peer discovery, key exchange, state sync | [iroh](https://iroh.computer) (PKARR/DHT + gossip) |
-| **Data plane** | Encrypted tunnels, IPv6 mesh | WireGuard via [wireguard-control](https://crates.io/crates/wireguard-control) |
-
-### One secret rules them all
-
-A single shared secret (`syf_sk_...`) derives everything:
-
-```
-mesh_secret (256 bits)
-  |-- mesh_id           identifies the mesh
-  |-- dht_topic_key     DHT lookup key
-  |-- encryption_key    AES-256-GCM for gossip records
-  |-- gossip_topic      iroh-gossip topic
-  |-- mesh_prefix       deterministic fd::/48 ULA prefix
-```
-
-The token also embeds the bootstrap node's iroh PublicKey, so joining nodes find the mesh on the DHT automatically.
-
-### Auto-discovery flow
-
-1. **Init**: creates iroh endpoint, auto-publishes to PKARR/DHT, subscribes to gossip
-2. **Join**: parses token, resolves bootstrap node via DHT (30s timeout), joins gossip
-3. **Gossip**: encrypted `PeerRecord` broadcasts (WG pubkey, endpoint, mesh IPv6)
-4. **Reconciliation**: each gossip event triggers WireGuard interface update
-5. **Heartbeat**: every 60s, each node re-broadcasts with updated `last_seen`
-6. **Unreachable detection**: peers silent for 5+ minutes are marked unreachable
+| **Control plane** | Peering, key exchange, peer announcements | TCP + AES-256-GCM |
+| **Data plane** | Encrypted tunnels, IPv6 mesh | WireGuard |
 
 ### Security
 
 | Threat | Mitigation |
 |--------|-----------|
-| Eavesdropping on DHT | Records encrypted with AES-256-GCM |
-| Unauthorized mesh join | Requires the shared secret |
-| NAT/firewall blocking | iroh relay servers (~100% traversal) |
+| Unauthorized mesh join | Manual operator approval or PIN |
+| Eavesdropping on peer records | AES-256-GCM encryption (mesh secret) |
 | Key compromise | `syfrah rotate` + rejoin all peers |
 | State file exposure | Permissions 0600, contains private keys |
+| Control socket access | Unix domain socket, mode 0600 |
 
 ## CLI Reference
 
 | Command | Description |
 |---------|-------------|
-| `syfrah init --name <mesh>` | Create a new mesh, display the token, run daemon |
-| `syfrah join <token>` | Join a mesh using the shared token, run daemon |
-| `syfrah start` | Restart daemon from saved state (after stop/crash) |
-| `syfrah stop` | Stop the running daemon (SIGTERM) |
-| `syfrah status` | Show mesh info, daemon status, WG stats, metrics |
+| `syfrah init --name <mesh>` | Create a new mesh, run daemon |
+| `syfrah join <ip>` | Join a mesh via an existing node |
+| `syfrah join <ip> --pin <pin>` | Join with auto-accept PIN |
+| `syfrah peering` | Interactive mode: watch and accept/reject requests |
+| `syfrah peering --pin <pin>` | Auto-accept mode with PIN |
+| `syfrah peering start` | Start peering listener (non-interactive) |
+| `syfrah peering list` | List pending join requests |
+| `syfrah peering accept <id>` | Accept a pending request |
+| `syfrah peering reject <id>` | Reject a pending request |
+| `syfrah start` | Restart daemon from saved state |
+| `syfrah stop` | Stop the running daemon |
+| `syfrah status` | Show mesh info, daemon status, WG stats |
 | `syfrah peers` | List peers with handshake times and traffic |
-| `syfrah token` | Display the mesh token for sharing |
-| `syfrah rotate` | Rotate the mesh secret (all peers must rejoin) |
-| `syfrah leave` | Announce departure, tear down interface, clear state |
+| `syfrah token` | Display the mesh secret |
+| `syfrah leave` | Tear down interface, clear state |
 
 Options for `init` and `join`:
 - `--node-name <name>` — node name (defaults to hostname)
 - `--port <port>` — WireGuard listen port (default: 51820)
 - `--endpoint <ip:port>` — public endpoint for WireGuard
+- `--peering-port <port>` — TCP peering port (default: WG port + 1)
 
 ## Architecture
 
@@ -113,17 +100,18 @@ syfrah/
   crates/
     syfrah-core/          Pure types, crypto, addressing (no I/O)
       src/
-        secret.rs         MeshSecret + MeshToken (key derivation)
+        secret.rs         MeshSecret (key derivation)
         identity.rs       NodeIdentity
         addressing.rs     ULA IPv6 prefix + node address derivation
-        mesh.rs           PeerRecord, AES-256-GCM encrypt/decrypt
+        mesh.rs           PeerRecord, JoinRequest/Response, encryption
 
-    syfrah-net/           Network layer (WireGuard + iroh + daemon)
+    syfrah-net/           Network layer (WireGuard + peering + daemon)
       src/
         wg.rs             WireGuard interface management
-        discovery.rs      iroh DHT + gossip (MeshNode)
+        peering.rs        TCP peering protocol + peer announcements
+        control.rs        Unix domain socket (CLI <-> daemon)
         daemon.rs         Daemon loop, init/join/start/leave flows
-        store.rs          State persistence + PID file (~/.syfrah/)
+        store.rs          State persistence (~/.syfrah/)
 
     syfrah-cli/           CLI binary
       src/
@@ -131,6 +119,7 @@ syfrah/
         commands/
           init.rs         syfrah init
           join.rs         syfrah join
+          peering.rs      syfrah peering (interactive + subcommands)
           start.rs        syfrah start
           stop.rs         syfrah stop
           status.rs       syfrah status
@@ -138,20 +127,6 @@ syfrah/
           token.rs        syfrah token
           rotate.rs       syfrah rotate
           leave.rs        syfrah leave
-
-  doc/
-    01-core-types.md      Secret, token, identity, addressing, encryption
-    02-wireguard-wrapper.md  WireGuard interface management
-    03-discovery.md       iroh DHT + gossip architecture
-    04-init-join.md       Init/join flows, daemon loop
-    05-daemon-commands.md Status, peers, leave commands
-    06-operations.md      Full operations guide (all commands, lifecycle, security)
-
-  tests/
-    e2e/
-      Dockerfile          Docker image with syfrah + WireGuard
-      docker-compose.yml  3-node test setup
-      run.sh              Automated E2E test script
 ```
 
 ## Building
@@ -160,8 +135,7 @@ Requires Rust 1.89+.
 
 ```bash
 cargo build
-cargo test       # 32 tests
-cargo clippy     # 0 warnings
+cargo clippy
 ```
 
 Run the CLI:
@@ -169,22 +143,15 @@ Run the CLI:
 cargo run --bin syfrah -- init --name test
 cargo run --bin syfrah -- status
 cargo run --bin syfrah -- peers
-cargo run --bin syfrah -- token
-```
-
-E2E test (requires Docker):
-```bash
-bash tests/e2e/run.sh
 ```
 
 ## Roadmap
 
-- [x] **Mesh networking** — WireGuard mesh with auto-discovery via iroh DHT/gossip
+- [x] **Mesh networking** — WireGuard mesh with manual peering
 - [x] **Daemon management** — start/stop/restart, PID file, graceful shutdown
-- [x] **Peer lifecycle** — heartbeat, unreachable detection, departure announcement
-- [x] **Secret rotation** — rotate mesh secret with `syfrah rotate`
-- [x] **Observability** — metrics (gossip, reconciliations, uptime), live WG stats
-- [x] **E2E testing** — Docker-based 3-node test setup
+- [x] **Peer lifecycle** — heartbeat, unreachable detection, peer announcements
+- [x] **Peering UX** — interactive mode, PIN auto-accept, auto-init
+- [x] **Observability** — metrics, live WG stats
 - [ ] **Compute** — Firecracker microVM orchestration
 - [ ] **VPC/Subnets** — Network isolation, security rules
 - [ ] **Load balancers** — L4 load balancing across VMs
@@ -195,8 +162,8 @@ bash tests/e2e/run.sh
 ## Tech Stack
 
 - **Language**: Rust
-- **Networking**: WireGuard (wireguard-control), iroh 0.97 (QUIC/DHT/gossip)
-- **Crypto**: AES-256-GCM, x25519, ed25519, SHA-256
+- **Networking**: WireGuard (wireguard-control)
+- **Crypto**: AES-256-GCM, x25519, SHA-256
 - **Addressing**: IPv6 ULA (fd::/8)
 - **CLI**: clap
 - **Async**: tokio

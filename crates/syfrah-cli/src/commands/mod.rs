@@ -7,3 +7,4 @@ pub mod peers;
 pub mod token;
 pub mod rotate;
 pub mod leave;
+pub mod peering;

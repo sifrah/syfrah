@@ -24,24 +24,24 @@ enum Commands {
         port: u16,
         #[arg(long)]
         endpoint: Option<SocketAddr>,
-        /// IPFS API endpoint (default: http://127.0.0.1:5001)
         #[arg(long)]
-        ipfs_api: Option<String>,
+        peering_port: Option<u16>,
         #[arg(long, short)]
         daemon: bool,
     },
-    /// Join an existing mesh network
+    /// Join an existing mesh (just pass the IP of an existing node)
     Join {
-        /// Mesh secret (syf_sk_...)
-        secret: String,
+        /// IP or IP:port of an existing node (default port: 51821)
+        target: String,
         #[arg(long)]
         node_name: Option<String>,
         #[arg(long, default_value = "51820")]
         port: u16,
         #[arg(long)]
         endpoint: Option<SocketAddr>,
+        /// PIN for auto-accept (skip manual approval)
         #[arg(long)]
-        ipfs_api: Option<String>,
+        pin: Option<String>,
         #[arg(long, short)]
         daemon: bool,
     },
@@ -58,10 +58,41 @@ enum Commands {
     Peers,
     /// Show the mesh secret for sharing
     Token,
-    /// Rotate the mesh secret (all peers must rejoin)
+    /// Rotate the mesh secret
     Rotate,
     /// Leave the mesh, tear down interface, clear state
     Leave,
+    /// Manage peering — accept/reject join requests
+    Peering {
+        /// PIN for auto-accept mode (no manual approval needed)
+        #[arg(long)]
+        pin: Option<String>,
+        #[command(subcommand)]
+        action: Option<PeeringAction>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PeeringAction {
+    /// Start accepting join requests (non-interactive)
+    Start {
+        #[arg(long)]
+        port: Option<u16>,
+        #[arg(long)]
+        pin: Option<String>,
+    },
+    /// Stop accepting join requests
+    Stop,
+    /// List pending join requests
+    List,
+    /// Accept a join request
+    Accept { request_id: String },
+    /// Reject a join request
+    Reject {
+        request_id: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
 }
 
 fn default_node_name() -> String {
@@ -134,21 +165,22 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Init { name, node_name, port, endpoint, ipfs_api, daemon } => {
+        Commands::Init { name, node_name, port, endpoint, peering_port, daemon } => {
+            let peering_port = peering_port.unwrap_or(port + 1);
             if daemon {
                 println!("Starting daemon in background...");
                 if daemonize()? { println!("Use 'syfrah status' to check."); return Ok(()); }
             }
             setup_logging(daemon);
-            commands::init::run(&name, &node_name.unwrap_or_else(default_node_name), port, endpoint, ipfs_api).await
+            commands::init::run(&name, &node_name.unwrap_or_else(default_node_name), port, endpoint, peering_port).await
         }
-        Commands::Join { secret, node_name, port, endpoint, ipfs_api, daemon } => {
+        Commands::Join { target, node_name, port, endpoint, pin, daemon } => {
             if daemon {
                 println!("Starting daemon in background...");
                 if daemonize()? { println!("Use 'syfrah status' to check."); return Ok(()); }
             }
             setup_logging(daemon);
-            commands::join::run(&secret, &node_name.unwrap_or_else(default_node_name), port, endpoint, ipfs_api).await
+            commands::join::run(&target, &node_name.unwrap_or_else(default_node_name), port, endpoint, pin).await
         }
         Commands::Start { daemon } => {
             if daemon {
@@ -164,5 +196,22 @@ async fn main() -> Result<()> {
         Commands::Token => { setup_logging(false); commands::token::run().await }
         Commands::Rotate => { setup_logging(false); commands::rotate::run().await }
         Commands::Leave => { setup_logging(false); commands::leave::run().await }
+        Commands::Peering { pin, action } => {
+            setup_logging(false);
+            match action {
+                None => {
+                    // Interactive mode (default when no subcommand)
+                    commands::peering::watch(pin).await
+                }
+                Some(PeeringAction::Start { port, pin: start_pin }) => {
+                    let port = port.unwrap_or(51821);
+                    commands::peering::start(port, pin.or(start_pin)).await
+                }
+                Some(PeeringAction::Stop) => commands::peering::stop().await,
+                Some(PeeringAction::List) => commands::peering::list().await,
+                Some(PeeringAction::Accept { request_id }) => commands::peering::accept(&request_id).await,
+                Some(PeeringAction::Reject { request_id, reason }) => commands::peering::reject(&request_id, reason).await,
+            }
+        }
     }
 }

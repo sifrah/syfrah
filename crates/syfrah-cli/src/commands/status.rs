@@ -12,6 +12,7 @@ pub async fn run() -> Result<()> {
     println!("Prefix:    {}/48", state.mesh_prefix);
     println!("WG port:   {}", state.wg_listen_port);
     println!("Secret:    {}", state.mesh_secret);
+    println!("Peering:   port {}", state.peering_port);
 
     match store::daemon_running() {
         Some(pid) => println!("Daemon:    running (pid {pid})"),
