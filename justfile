@@ -36,10 +36,14 @@ audit:
 run *ARGS:
     cargo run --bin syfrah -- {{ARGS}}
 
-# Build documentation site
-docs:
+# Sync READMEs into documentation site pages
+docs-sync:
+    ./scripts/sync-docs.sh
+
+# Build documentation site (sync + build)
+docs: docs-sync
     cd documentation && npm run build
 
-# Serve documentation locally
+# Serve documentation locally (dev server)
 docs-serve:
     cd documentation && npm run dev

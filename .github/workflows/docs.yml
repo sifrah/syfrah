@@ -31,6 +31,9 @@ jobs:
           cache: 'npm'
           cache-dependency-path: documentation/package-lock.json
 
+      - name: Sync docs from READMEs
+        run: ./scripts/sync-docs.sh
+
       - name: Install dependencies
         working-directory: documentation
         run: npm ci
