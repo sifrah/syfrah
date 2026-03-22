@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: '0 4 * * 1'  # Weekly Monday 4am UTC
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'layers/*/src/**'
+      - 'bin/*/src/**'
+      - 'tests/**'
   pull_request:
     branches: [main]
     paths:
