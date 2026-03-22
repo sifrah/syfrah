@@ -2,7 +2,7 @@
 
 Syfrah is an open-source control plane that turns rented dedicated servers into a programmable cloud. You rent servers from OVH, Hetzner, Scaleway, or any provider — Syfrah connects them, orchestrates them, and exposes cloud services on top.
 
-This document describes the global architecture. Each layer has a detailed concept doc in [`docs/concepts/`](docs/concepts/).
+This document describes the global architecture. Each layer has its own `README.md` with detailed documentation. Browse [`layers/`](layers/) to explore.
 
 ## Design principles
 
@@ -98,7 +98,7 @@ The **fabric** is a WireGuard full-mesh connecting all nodes. It replaces the ph
 - Manual peering: operator approves every join request (PIN or manual accept)
 - No central coordinator — the mesh is fully decentralized
 
-**Concept doc:** [`docs/concepts/fabric.md`](docs/concepts/fabric.md)
+**Concept doc:** [`layers/fabric/README.md`](layers/fabric/README.md)
 
 ### Forge — per-node control
 
@@ -113,7 +113,7 @@ The forge is the bridge between the control plane and the local hardware. It man
 
 The forge is intentionally generic: it manages compute, storage, and networking primitives, not product semantics. It creates VMs, volumes, and network interfaces. Products add the domain knowledge on top.
 
-**Concept doc:** [`docs/concepts/forge.md`](docs/concepts/forge.md)
+**Concept doc:** [`layers/forge/README.md`](layers/forge/README.md)
 
 ### Compute — Firecracker microVMs
 
@@ -126,7 +126,7 @@ Every workload runs as a **Firecracker microVM**. Firecracker provides hardware-
 - Snapshots with lazy memory restore (<30ms)
 - VM migration via stop → move volume → start (no live migration)
 
-**Concept doc:** [`docs/concepts/compute.md`](docs/concepts/compute.md)
+**Concept doc:** [`layers/compute/README.md`](layers/compute/README.md)
 
 ### Storage — ZeroFS + S3
 
@@ -140,7 +140,7 @@ Block storage is backed by **S3-compatible object storage** (from the same provi
 
 No Ceph, no GlusterFS, no storage cluster. The S3 provider handles durability and replication.
 
-**Concept doc:** [`docs/concepts/storage.md`](docs/concepts/storage.md)
+**Concept doc:** [`layers/storage/README.md`](layers/storage/README.md)
 
 ### Overlay — tenant networking
 
@@ -157,7 +157,7 @@ The **overlay** provides VPCs, subnets, and network isolation for tenant VMs. It
 - Direct public IPv6 (no NAT) via the fabric's IPv6-native design
 - Private DNS: CoreDNS per node, `{vm}.{vpc}.syfrah.internal`, auto-registered
 
-**Concept doc:** [`docs/concepts/overlay.md`](docs/concepts/overlay.md)
+**Concept doc:** [`layers/overlay/README.md`](layers/overlay/README.md)
 
 ### Control plane — distributed brain
 
@@ -179,7 +179,7 @@ Raft state is **prescriptive** (what should exist). Gossip state is **descriptiv
 
 All Raft and gossip traffic travels over the WireGuard fabric — encrypted for free.
 
-**Concept docs:** [`docs/concepts/control-plane.md`](docs/concepts/control-plane.md), [`docs/concepts/state-and-reconciliation.md`](docs/concepts/state-and-reconciliation.md)
+**Concept docs:** [`layers/controlplane/README.md`](layers/controlplane/README.md), [`docs/state-and-reconciliation.md`](docs/state-and-reconciliation.md)
 
 ### Organization model — multi-tenancy
 
@@ -198,7 +198,7 @@ Three levels, no more:
 
 Environments are first-class with custom names. No tiers, no categories. Just a name + optional TTL (auto-destroy) + optional deletion protection. Cost rolls up automatically through the hierarchy — no tags needed.
 
-**Concept doc:** [`docs/concepts/organization-model.md`](docs/concepts/organization-model.md)
+**Concept doc:** [`layers/org/README.md`](layers/org/README.md)
 
 ### IAM — permissions
 
@@ -215,7 +215,7 @@ API keys are scoped to one project with a role. Format: `syf_key_{project}_{rand
 
 No custom roles. No per-environment permissions. No policy language. One permission table.
 
-**Concept doc:** [`docs/concepts/iam.md`](docs/concepts/iam.md)
+**Concept doc:** [`layers/iam/README.md`](layers/iam/README.md)
 
 ### Cloud products — the services tenants use
 
@@ -227,7 +227,7 @@ Products are opinionated compositions of generic infrastructure primitives. Ever
 
 A managed database is a VM + volume + database software configured inside. A load balancer is a VM + reverse proxy configured inside. The forge provides the infrastructure; the product provides the intelligence.
 
-**Concept doc:** [`docs/concepts/products.md`](docs/concepts/products.md)
+**Concept doc:** [`layers/products/README.md`](layers/products/README.md)
 
 ### Zones and regions — topology
 
@@ -238,7 +238,7 @@ Regions and availability zones are logical labels on nodes. They represent where
 - A region = a geographic area (eu-west, us-east)
 - An AZ = an isolated group within a region (eu-west-1, eu-west-ovh)
 
-**Concept doc:** [`docs/concepts/zones-and-regions.md`](docs/concepts/zones-and-regions.md)
+**Concept doc:** [`docs/zones-and-regions.md`](docs/zones-and-regions.md)
 
 ## How it all connects
 
@@ -409,7 +409,7 @@ The architecture assumes a hostile operational environment. Nodes are rented mac
 
 - **The network may partition.** The majority Raft partition continues operating. The minority partition becomes read-only. Existing VMs on both sides keep running. When the partition heals, Raft replays and gossip converges. No split-brain.
 
-**See also:** [`docs/concepts/state-and-reconciliation.md`](docs/concepts/state-and-reconciliation.md) for detailed phase models and reconciliation loop design.
+**See also:** [`docs/state-and-reconciliation.md`](docs/state-and-reconciliation.md) for detailed phase models and reconciliation loop design.
 
 ## Current status
 
