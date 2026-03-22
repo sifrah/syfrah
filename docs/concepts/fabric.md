@@ -1,0 +1,439 @@
+# Fabric
+
+## What is the fabric?
+
+The **fabric** is Syfrah's infrastructure network. It connects all hypervisors (nodes) into a single encrypted mesh, regardless of where they are hosted — OVH, Hetzner, Scaleway, or any other provider.
+
+In traditional cloud providers like AWS, GCP, or Azure, the fabric is the physical network inside datacenters: fiber optics, top-of-rack switches, spine switches, and cross-datacenter links. This hardware fabric allows any hypervisor to reach any other hypervisor with low latency and high bandwidth.
+
+Syfrah doesn't own datacenters. Instead, it builds its fabric over the public internet using **WireGuard tunnels** between nodes. Each pair of nodes establishes an encrypted point-to-point tunnel, forming a full-mesh topology. The result is functionally equivalent to a physical fabric: every node can reach every other node over a private, encrypted network.
+
+```
+                              The Fabric
+
+  ┌────────────────────────────────────────────────────────────────┐
+  │                                                                │
+  │   OVH Paris              Hetzner Falkenstein       Scaleway    │
+  │  ┌──────────┐            ┌──────────┐           ┌──────────┐  │
+  │  │  Node A  │◄──────────►│  Node C  │◄─────────►│  Node E  │  │
+  │  │ par-hv-1 │       ┌───►│ fsn-hv-1 │◄───┐      │ par-hv-3 │  │
+  │  └────┬─────┘       │    └────┬─────┘    │      └────┬─────┘  │
+  │       │             │         │          │           │         │
+  │       │    WireGuard│         │WireGuard │  WireGuard│         │
+  │       │             │         │          │           │         │
+  │  ┌────┴─────┐       │    ┌────┴─────┐    │      ┌────┴─────┐  │
+  │  │  Node B  │◄──────┘    │  Node D  │◄───┘      │  Node F  │  │
+  │  │ par-hv-2 │◄──────────►│ fsn-hv-2 │◄─────────►│ ams-hv-1 │  │
+  │  └──────────┘            └──────────┘           └──────────┘  │
+  │       ▲                       ▲                      ▲        │
+  │       └───────────────────────┴──────────────────────┘        │
+  │              Every node connects to every other node.          │
+  │              All links are encrypted WireGuard tunnels.        │
+  │              6 nodes = 15 tunnels (full mesh).                 │
+  │                                                                │
+  └────────────────────────────────────────────────────────────────┘
+```
+
+## Role of the fabric
+
+The fabric serves three purposes:
+
+1. **Node-to-node connectivity** — Every hypervisor can communicate with every other hypervisor. This is the foundation for all higher-level features: VM migration, distributed storage, overlay networking, control plane coordination.
+
+2. **Transport for the overlay** — Tenant networks (VPCs, subnets) are built *on top of* the fabric. The fabric carries encapsulated tenant traffic between hypervisors transparently.
+
+3. **Control plane transport** — The fabric provides a secure channel for nodes to exchange control messages: peer announcements, health checks, state synchronization.
+
+## Components
+
+The fabric is built from four components:
+
+### WireGuard tunnels
+
+Each node runs a WireGuard interface (`syfrah0`) configured with a unique keypair. Every other node in the mesh is added as a WireGuard peer with a persistent keepalive of 25 seconds. Traffic between nodes is encrypted with Noise protocol (Curve25519, ChaCha20-Poly1305).
+
+### IPv6 ULA addressing
+
+Each node gets a deterministic IPv6 address derived from the mesh prefix and the node's WireGuard public key. The mesh uses a ULA (Unique Local Address) `/48` prefix, giving each mesh its own private address space with room for 2^80 node addresses.
+
+```
+    Mesh prefix:     fd12:3456:7800::/48
+                     └──────┬──────┘
+                     derived from
+                     mesh secret
+
+    Node address:    fd12:3456:7800:a1b2:c3d4:e5f6:7890:abcd/128
+                     └──────┬──────┘└──────────┬──────────────┘
+                     mesh prefix     derived from WG public key
+                     (3 segments)    (5 segments, SHA-256)
+```
+
+### TCP peering protocol
+
+Nodes discover each other through a manual peering process. A new node sends a join request to an existing node; the operator approves (manually or via a PIN), and the joining node receives the mesh secret, the peer list, and the mesh prefix. The new node is then announced to all existing members via encrypted peer announcements.
+
+### Mesh secret
+
+A single secret (`syf_sk_...`) bootstraps the entire fabric. It is a 32-byte cryptographically random value, encoded in base58. From this secret, Syfrah derives:
+
+- The mesh IPv6 prefix (`/48`) via `SHA-256("mesh-prefix:" || secret)`
+- The encryption key for peer announcements via `SHA-256("encrypt:" || secret)`
+- The mesh identifier via `SHA-256(secret)[0..16]`
+
+The mesh secret is shared with new nodes upon accepted join requests. It is the root of trust for the fabric.
+
+## Fabric vs. Overlay
+
+The fabric and the overlay are two distinct network layers with different audiences and purposes:
+
+```
+    ┌─────────────────────────────────────────────────┐
+    │                   Tenant VMs                     │
+    │  ┌─────┐  ┌─────┐  ┌─────┐  ┌─────┐  ┌─────┐  │
+    │  │VM A1│  │VM A2│  │VM B1│  │VM B2│  │VM B3│  │
+    │  └──┬──┘  └──┬──┘  └──┬──┘  └──┬──┘  └──┬──┘  │
+    ├─────┴────────┴───────┴────────┴────────┴──────┤
+    │              Overlay (VPC / Subnets)            │
+    │                                                 │
+    │  Tenant A: VPC 10.0.0.0/16                     │
+    │  Tenant B: VPC 10.0.0.0/16  (same range, OK)  │
+    │                                                 │
+    │  Isolation, routing, security groups            │
+    ├─────────────────────────────────────────────────┤
+    │                    Fabric                        │
+    │                                                 │
+    │  WireGuard mesh between hypervisors             │
+    │  IPv6 ULA addressing (fd00::/48)               │
+    │  Encrypted, authenticated, full-mesh            │
+    ├─────────────────────────────────────────────────┤
+    │               Public Internet                    │
+    │                                                 │
+    │  OVH ←──────→ Hetzner ←──────→ Scaleway        │
+    └─────────────────────────────────────────────────┘
+```
+
+| | **Fabric** | **Overlay** |
+|---|---|---|
+| **Audience** | Platform operators | Tenants (end users) |
+| **Purpose** | Connect hypervisors | Isolate tenant networks |
+| **Addressing** | IPv6 ULA (per mesh) | IPv4/IPv6 (per VPC, per tenant) |
+| **Scope** | All nodes in the mesh | VMs within a VPC |
+| **Encryption** | WireGuard (always on) | Inherited from fabric |
+| **Visibility** | Invisible to tenants | Visible to tenants |
+| **Managed by** | `syfrah init/join/peering` | Tenant API (future) |
+| **Multi-tenant** | No (single mesh = single operator) | Yes (VPC per project) |
+| **Analogy** | Datacenter switches and fiber | AWS VPC / GCP VPC |
+
+Key insight: **tenants never see the fabric**. They interact with VPCs, subnets, and security groups. The fabric is the invisible infrastructure underneath, just like tenants on AWS never see Amazon's physical network.
+
+### Packet flow through the layers
+
+When a tenant VM on one node sends a packet to a tenant VM on another node, the packet traverses the full stack:
+
+```
+    Node 1 (OVH Paris)                          Node 2 (Hetzner Falkenstein)
+    ──────────────────                           ───────────────────────────
+
+    ┌──────────┐                                        ┌──────────┐
+    │  VM A1   │  src: 10.0.1.10                        │  VM A2   │
+    │          │  dst: 10.0.1.20                        │          │
+    └────┬─────┘                                        └────▲─────┘
+         │ 1. VM sends packet                                │ 7. Packet delivered
+         ▼                                                   │     to VM
+    ┌──────────┐                                        ┌────┴─────┐
+    │ Overlay  │  2. Encapsulate in                     │ Overlay  │  6. Decapsulate,
+    │ (bridge/ │     overlay header                     │ (bridge/ │     deliver to
+    │  VXLAN)  │     (VXLAN/tunnel)                     │  VXLAN)  │     local bridge
+    └────┬─────┘                                        └────▲─────┘
+         │                                                   │
+         ▼                                                   │
+    ┌──────────┐                                        ┌────┴─────┐
+    │ Fabric   │  3. Route via syfrah0                  │ Fabric   │  5. WireGuard
+    │ (syfrah0)│     WireGuard encrypts                 │ (syfrah0)│     decrypts
+    └────┬─────┘     (ChaCha20-Poly1305)                └────▲─────┘
+         │                                                   │
+         ▼                                                   │
+    ┌──────────┐  4. Encrypted packet          ┌────────────┴┐
+    │ Internet │────travels over the──────────►│  Internet    │
+    │ (public) │    public internet             │  (public)    │
+    └──────────┘    (opaque to observers)       └──────────────┘
+```
+
+## Lifecycle
+
+Setting up the fabric follows a simple sequence:
+
+```
+    Operator A                              Operator A (or B)
+    ──────────                              ─────────────────
+
+    1. syfrah init --name prod              3. syfrah join <node-A>:51821
+       ├─ Generate mesh secret                 ├─ Send join request via TCP
+       ├─ Generate WG keypair                  ├─ Wait for approval
+       ├─ Derive mesh prefix (/48)             │
+       ├─ Derive node IPv6 (/128)              │
+       ├─ Create syfrah0 interface             │
+       └─ Start daemon                         │
+                                               │
+    2. syfrah peering [--pin 1234]          4. Operator A approves (or PIN matches)
+       └─ Listen for join requests             ├─ New node receives:
+                                               │   mesh secret
+                                               │   mesh prefix (/48)
+                                               │   full peer list
+                                               ├─ Derive node IPv6 (/128)
+                                               ├─ Create syfrah0 interface
+                                               ├─ Add all peers to WG
+                                               ├─ Start daemon
+                                               └─ Existing nodes notified
+                                                   (encrypted peer announce)
+
+    Result: Node A ◄──── WireGuard ────► Node B
+            Both nodes can communicate over fd::/48
+```
+
+Each additional node repeats steps 3-4. The mesh grows incrementally, one node at a time, with explicit operator approval for every join.
+
+## Security model
+
+### Root of trust
+
+The mesh secret is the single root of trust for the entire fabric. Anyone who possesses the secret can:
+- Derive the encryption key and decrypt peer announcements
+- Derive the mesh prefix and enumerate the address space
+- Join the mesh (if they can reach a node accepting peers)
+
+The secret is stored locally in `~/.syfrah/state.json` with file permissions `0600` (owner read/write only). It is never sent to any external service.
+
+### Encryption layers
+
+The fabric uses two encryption layers:
+
+| Layer | Algorithm | Protects | Scope |
+|---|---|---|---|
+| **WireGuard tunnels** | Noise (Curve25519 + ChaCha20-Poly1305) | All node-to-node traffic | Every packet on syfrah0 |
+| **Peer announcements** | AES-256-GCM (key derived from mesh secret) | Peer records during propagation | PeerAnnounce messages only |
+
+WireGuard provides per-tunnel encryption with forward secrecy. Peer announcements are additionally encrypted so that even if an attacker can observe the TCP peering port, they cannot read which nodes are in the mesh.
+
+### What is NOT encrypted
+
+The TCP peering channel itself (port 51821 by default) is **not TLS-encrypted**. This means:
+- **JoinRequest** messages (node name, WG public key, endpoint) are sent in plaintext
+- **JoinResponse** messages (including the mesh secret) are sent in plaintext
+- Only **PeerAnnounce** messages are encrypted (AES-256-GCM payload)
+
+This is a known trade-off for simplicity in early development. The join ceremony requires the operator to be present (manual approval or PIN), which limits the attack window. In practice, the WireGuard public key exchange during join is comparable to SSH's "trust on first use" model.
+
+### PIN auto-accept
+
+The PIN mechanism allows unattended node enrollment. The operator starts peering with a PIN (`syfrah peering --pin 1234`), and new nodes can join without manual approval by providing the same PIN (`syfrah join <ip> --pin 1234`).
+
+The PIN is a 4-digit code (1000-9999) transmitted in the JoinRequest. It is designed for convenience during initial cluster bootstrap, not as a long-term security mechanism. Best practice: use PIN mode only during initial setup, then switch to manual approval.
+
+### Secret rotation
+
+If the mesh secret is compromised, the operator can rotate it:
+
+```
+syfrah stop          # stop the daemon
+syfrah rotate        # generate new secret, clear peer list
+syfrah start         # restart with new secret
+```
+
+Rotation generates a new secret, recomputes the mesh prefix and node IPv6 address, and **clears all peers**. Every other node must rejoin with the new secret. This is a disruptive operation by design — it ensures a clean break from the compromised state.
+
+### Threat model summary
+
+| Threat | Mitigation | Residual risk |
+|---|---|---|
+| Traffic interception between nodes | WireGuard encryption (always on) | None — all traffic encrypted |
+| Rogue node joining the mesh | Manual approval or PIN required | PIN is brute-forceable (4 digits) |
+| Mesh secret compromise | Rotation via `syfrah rotate` | Disruptive — all nodes must rejoin |
+| Eavesdropping on peering port | Peer announcements encrypted (AES-256-GCM) | Join ceremony is plaintext TCP |
+| State file theft | File permissions 0600 | No encryption at rest |
+| Forged peer announcements | AES-256-GCM authenticated encryption | Requires mesh secret |
+
+## Health and failure modes
+
+### WireGuard keepalive
+
+Every peer is configured with a **25-second persistent keepalive**. This serves two purposes:
+- Maintains NAT mappings for nodes behind NAT/firewalls
+- Provides a baseline liveness signal at the WireGuard layer
+
+### Unreachable detection
+
+The daemon checks peer health every **60 seconds**. If a peer's `last_seen` timestamp is older than **5 minutes** (300 seconds), it is marked as `Unreachable`.
+
+```
+    Timeline of a failing peer:
+
+    T+0s         Peer stops responding
+    T+0-25s      WireGuard keepalive fails silently
+    T+300s       Unreachable threshold exceeded (5 min)
+    T+300-360s   Next health check detects the failure
+                 Peer marked Unreachable in state
+                 WireGuard config updated
+
+    Worst-case detection time: ~6 minutes
+```
+
+Unreachable peers remain in the WireGuard configuration (they are not removed). Only peers explicitly marked as `Removed` are deleted from the interface. This allows automatic recovery if the peer comes back online.
+
+### Daemon crash and restart
+
+If the daemon crashes:
+1. The WireGuard interface (`syfrah0`) remains up (it's a kernel/userspace interface, not tied to the daemon process)
+2. All state is persisted in `~/.syfrah/state.json` (saved every 30 seconds)
+3. `syfrah start` reloads state, recreates the interface, reapplies all known peers, and resumes the daemon loop
+
+The daemon writes a PID file (`~/.syfrah/daemon.pid`). On restart, stale PID files are detected by checking if the process is still alive (via `kill -0`).
+
+### Network partitions
+
+During a network partition:
+- Nodes on each side continue operating independently
+- After 5 minutes, unreachable peers are marked `Unreachable`
+- When connectivity is restored, WireGuard re-establishes tunnels automatically (keepalive)
+- Peer state is eventually consistent through future announcements
+
+There is currently no automatic re-announcement or gossip heartbeat. If a partition causes missed announcements, the operator may need to manually trigger a rejoin.
+
+### Failure mode summary
+
+| Failure | Detection | Recovery |
+|---|---|---|
+| Node goes down | ~6 min (unreachable timeout) | Automatic when node restarts (`syfrah start`) |
+| Network partition | ~6 min per side | WireGuard reconnects; may need manual re-announce |
+| Daemon crash | Immediate (PID file check) | `syfrah start` restores from state |
+| WireGuard interface lost | Next daemon operation | `syfrah start` recreates interface |
+| State file corrupted | On next `store::load()` | Manual recovery needed |
+
+## Scalability
+
+### Full-mesh topology
+
+The fabric uses a full-mesh topology: every node connects to every other node. For N nodes, this means:
+- **N-1 peers per node** (each node has a tunnel to every other node)
+- **N×(N-1)/2 total tunnels** in the mesh
+
+| Nodes | Tunnels | Peers per node |
+|---|---|---|
+| 3 | 3 | 2 |
+| 10 | 45 | 9 |
+| 50 | 1,225 | 49 |
+| 100 | 4,950 | 99 |
+
+### Bandwidth overhead
+
+WireGuard keepalive (25-second interval) generates a small but constant bandwidth overhead per peer:
+
+| Nodes | Keepalive per node | Daily per node |
+|---|---|---|
+| 10 | ~53 bytes/sec | ~4.5 MB/day |
+| 50 | ~290 bytes/sec | ~25 MB/day |
+| 100 | ~586 bytes/sec | ~50 MB/day |
+
+This overhead is negligible for dedicated servers with gigabit connections.
+
+### Join convergence time
+
+When a new node joins, it is announced to all existing peers sequentially (one TCP connection per peer). For large meshes, this takes longer:
+
+| Mesh size | Announcement time |
+|---|---|
+| 10 nodes | ~1 second |
+| 50 nodes | ~6 seconds |
+| 100 nodes | ~13 seconds |
+
+### Current limits
+
+The fabric is designed for meshes of **10 to ~100 nodes**. At this scale:
+- WireGuard handles the peer count comfortably
+- State fits in a single JSON file
+- Sequential announcements complete in seconds
+- Keepalive overhead is negligible
+
+Beyond ~100 nodes, the following become bottlenecks:
+- Sequential peer announcements (O(N) per join)
+- Single JSON state file (full rewrite every 30 seconds)
+- Per-peer route system calls (one `ip route` per peer)
+
+Future work could address these limits with parallel announcements, database-backed state, and netlink-based route management.
+
+## Observability
+
+### CLI commands
+
+| Command | Purpose |
+|---|---|
+| `syfrah status` | Show mesh info, daemon state, interface stats, metrics |
+| `syfrah peers` | List all peers with live WireGuard stats (handshake, traffic) |
+| `syfrah token` | Display the mesh secret |
+
+### Metrics
+
+The daemon tracks four counters, persisted every 30 seconds to `~/.syfrah/state.json`:
+
+| Metric | Description |
+|---|---|
+| `peers_discovered` | Total peers accepted or received via announcement |
+| `wg_reconciliations` | Total WireGuard interface updates |
+| `peers_marked_unreachable` | Peers that failed the 5-minute health check |
+| `daemon_started_at` | Unix timestamp of daemon start (used for uptime) |
+
+### WireGuard live stats
+
+`syfrah peers` displays real-time stats from the WireGuard kernel interface:
+- **Last handshake** — time since last successful cryptographic handshake
+- **RX/TX bytes** — traffic counters per peer
+- **Endpoint** — current resolved endpoint address
+
+### Logging
+
+The daemon logs to `~/.syfrah/syfrah.log` (auto-rotated at 10 MB). Log level is controlled via the `RUST_LOG` environment variable. Key events logged:
+- Peering listener start/stop
+- Join requests received
+- Peers accepted/rejected
+- Peer announcements sent/received
+- Unreachable peer detection
+- WireGuard interface operations
+
+## Properties
+
+The fabric has several important properties by design:
+
+- **Encrypted** — All traffic between nodes is encrypted by WireGuard. There is no plaintext data traffic over the public internet.
+
+- **Decentralized** — No central coordinator. Any node can accept join requests. The mesh secret is the only shared state required to bootstrap.
+
+- **Multi-provider** — Nodes can be hosted at different providers. The fabric abstracts away the physical location and treats all nodes as equal members.
+
+- **IPv6-native** — The fabric uses IPv6 ULA internally. This avoids IPv4 address exhaustion issues and provides a clean, large address space.
+
+- **Manual trust** — Every new node must be explicitly approved by an operator. There is no automatic discovery. This is a deliberate security choice: the operator controls exactly which machines join the fabric.
+
+## Future: Zones and Regions
+
+Today, the fabric treats all nodes as equal members of a flat mesh. There is no concept of locality — a node in Paris and a node in Singapore are peers with the same status.
+
+In the future, Syfrah will introduce **regions** and **availability zones** (AZ) as logical groupings of nodes:
+
+```
+    Region: eu-west                    Region: eu-central
+    ┌────────────────────┐             ┌────────────────────┐
+    │  AZ: par-1         │             │  AZ: fsn-1         │
+    │  ┌──────┐┌──────┐  │             │  ┌──────┐┌──────┐  │
+    │  │Node A││Node B│  │             │  │Node E││Node F│  │
+    │  └──────┘└──────┘  │             │  └──────┘└──────┘  │
+    │                    │             │                    │
+    │  AZ: par-2         │  ◄─fabric─► │  AZ: fsn-2         │
+    │  ┌──────┐┌──────┐  │             │  ┌──────┐          │
+    │  │Node C││Node D│  │             │  │Node G│          │
+    │  └──────┘└──────┘  │             │  └──────┘          │
+    └────────────────────┘             └────────────────────┘
+```
+
+The fabric will remain the same full-mesh WireGuard network connecting all nodes. Regions and zones will be logical metadata used by higher layers (control plane, overlay, placement) to make topology-aware decisions: prefer intra-AZ traffic, place replicas across AZs, route overlay traffic efficiently within a region.
+
+The fabric itself won't change — it's the overlay and control plane that will use zone/region information.
