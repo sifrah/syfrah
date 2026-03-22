@@ -37,7 +37,8 @@ async fn join_with_pin_auto_accept() {
 
     // Leader's WireGuard keypair (we just need the public key for the protocol)
     let leader_keypair = syfrah_fabric::wg::generate_keypair();
-    let leader_ipv6 = addressing::derive_node_address(&mesh_prefix, leader_keypair.public.as_bytes());
+    let leader_ipv6 =
+        addressing::derive_node_address(&mesh_prefix, leader_keypair.public.as_bytes());
     let leader_endpoint: SocketAddr = format!("127.0.0.1:{}", free_port()).parse().unwrap();
 
     let leader_record = PeerRecord {
@@ -125,10 +126,7 @@ async fn join_with_pin_auto_accept() {
         "response should contain at least the leader peer"
     );
     assert!(
-        response
-            .peers
-            .iter()
-            .any(|p| p.name == "leader"),
+        response.peers.iter().any(|p| p.name == "leader"),
         "leader should be in the peer list"
     );
 
@@ -154,7 +152,8 @@ async fn join_with_wrong_pin_falls_to_pending() {
     let mesh_prefix = syfrah_fabric::daemon::derive_prefix_from_secret(&mesh_secret);
 
     let leader_keypair = syfrah_fabric::wg::generate_keypair();
-    let leader_ipv6 = addressing::derive_node_address(&mesh_prefix, leader_keypair.public.as_bytes());
+    let leader_ipv6 =
+        addressing::derive_node_address(&mesh_prefix, leader_keypair.public.as_bytes());
 
     let leader_record = PeerRecord {
         name: "leader".to_string(),
@@ -238,7 +237,8 @@ async fn join_without_pin_goes_to_pending() {
     let mesh_prefix = syfrah_fabric::daemon::derive_prefix_from_secret(&mesh_secret);
 
     let leader_keypair = syfrah_fabric::wg::generate_keypair();
-    let leader_ipv6 = addressing::derive_node_address(&mesh_prefix, leader_keypair.public.as_bytes());
+    let leader_ipv6 =
+        addressing::derive_node_address(&mesh_prefix, leader_keypair.public.as_bytes());
 
     let leader_record = PeerRecord {
         name: "leader".to_string(),
@@ -300,7 +300,10 @@ async fn join_without_pin_goes_to_pending() {
     )
     .await;
 
-    assert!(result.is_err(), "no-pin request should not be auto-accepted");
+    assert!(
+        result.is_err(),
+        "no-pin request should not be auto-accepted"
+    );
 
     // Verify it's pending
     let pending = peering_state.list_pending().await;
