@@ -98,7 +98,10 @@ wait_daemon() {
         i=$((i + 1))
     done
     fail "daemon on $container did not start within ${max_wait}s"
-    docker exec "$container" cat /root/.syfrah/syfrah.log 2>/dev/null || true
+    info "Docker logs for $container:"
+    docker logs "$container" 2>&1 | tail -30 || true
+    info "Files in .syfrah:"
+    docker exec "$container" ls -la /root/.syfrah/ 2>/dev/null || true
     return 1
 }
 
@@ -112,19 +115,12 @@ docker exec "$NODE1" bash -c "ip link add wg-test type wireguard && ip link del 
     docker exec "$NODE1" uname -r 2>&1
 }
 
-info "Initializing mesh on node-1..."
-docker exec "$NODE1" \
+info "Initializing mesh on node-1 (foreground, backgrounded in container)..."
+docker exec -d "$NODE1" \
     syfrah fabric init \
     --name "$MESH_NAME" \
     --node-name node-1 \
-    --endpoint 172.20.0.10:51820 \
-    -d 2>&1 || true
-
-# Show logs regardless
-sleep 2
-info "node-1 daemon log:"
-docker exec "$NODE1" cat /root/.syfrah/syfrah.log 2>/dev/null || echo "(no log file)"
-docker exec "$NODE1" ls -la /root/.syfrah/ 2>/dev/null || echo "(no .syfrah dir)"
+    --endpoint 172.20.0.10:51820
 
 wait_daemon "$NODE1"
 
@@ -135,22 +131,20 @@ docker exec "$NODE1" \
 # ── Join from node-2 and node-3 ──────────────────────────────
 
 info "Node-2 joining mesh..."
-docker exec "$NODE2" \
+docker exec -d "$NODE2" \
     syfrah fabric join 172.20.0.10:51821 \
     --node-name node-2 \
     --endpoint 172.20.0.11:51820 \
-    --pin "$PIN" \
-    -d
+    --pin "$PIN"
 
 wait_daemon "$NODE2"
 
 info "Node-3 joining mesh..."
-docker exec "$NODE3" \
+docker exec -d "$NODE3" \
     syfrah fabric join 172.20.0.10:51821 \
     --node-name node-3 \
     --endpoint 172.20.0.12:51820 \
-    --pin "$PIN" \
-    -d
+    --pin "$PIN"
 
 wait_daemon "$NODE3"
 
