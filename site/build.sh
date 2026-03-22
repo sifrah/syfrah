@@ -32,7 +32,7 @@ convert() {
         --template "$TEMPLATE" \
         --variable "title:$title" \
         --variable "root:$root" \
-        --syntax-highlighting=none \
+        --no-highlight \
         -o "$output"
 }
 
