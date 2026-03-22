@@ -88,6 +88,23 @@ docker run -d \
 
 # ── Init mesh on node-1 ──────────────────────────────────────
 
+# Helper: wait for the syfrah daemon to be ready (control socket exists)
+wait_daemon() {
+    local container="$1"
+    local max_wait=30
+    local i=0
+    while [ $i -lt $max_wait ]; do
+        if docker exec "$container" test -S /root/.syfrah/control.sock 2>/dev/null; then
+            return 0
+        fi
+        sleep 1
+        i=$((i + 1))
+    done
+    fail "daemon on $container did not start within ${max_wait}s"
+    docker exec "$container" cat /root/.syfrah/syfrah.log 2>/dev/null || true
+    return 1
+}
+
 info "Initializing mesh on node-1..."
 docker exec "$NODE1" \
     syfrah fabric init \
@@ -96,8 +113,7 @@ docker exec "$NODE1" \
     --endpoint 172.20.0.10:51820 \
     -d
 
-# Wait for daemon to start
-sleep 2
+wait_daemon "$NODE1"
 
 info "Starting peering on node-1 with PIN $PIN..."
 docker exec "$NODE1" \
@@ -113,7 +129,7 @@ docker exec "$NODE2" \
     --pin "$PIN" \
     -d
 
-sleep 2
+wait_daemon "$NODE2"
 
 info "Node-3 joining mesh..."
 docker exec "$NODE3" \
@@ -123,7 +139,9 @@ docker exec "$NODE3" \
     --pin "$PIN" \
     -d
 
-# Wait for mesh to converge
+wait_daemon "$NODE3"
+
+# Wait for mesh to converge (peer announcements propagate)
 info "Waiting for mesh convergence..."
 sleep 5
 
