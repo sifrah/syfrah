@@ -35,3 +35,11 @@ audit:
 # Run the CLI
 run *ARGS:
     cargo run --bin syfrah -- {{ARGS}}
+
+# Build documentation site
+docs:
+    ./site/build.sh
+
+# Serve documentation locally (requires python3)
+docs-serve: docs
+    cd site/dist && python3 -m http.server 8080

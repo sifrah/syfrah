@@ -1,4 +1,5 @@
 /target
+/site/dist
 **/*.rs.bk
 *.swp
 *.swo
