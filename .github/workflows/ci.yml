@@ -10,6 +10,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # ── Format check (workspace-wide, once) ──────────────────
   fmt:
     name: Format
     runs-on: ubuntu-latest
@@ -20,33 +21,51 @@ jobs:
           components: rustfmt
       - run: cargo fmt --check
 
-  clippy:
-    name: Clippy
+  # ── Discover all crates dynamically ──────────────────────
+  discover:
+    name: Discover crates
     runs-on: ubuntu-latest
+    outputs:
+      crates: ${{ steps.find.outputs.crates }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: find
+        run: |
+          # Find all Cargo.toml in layers/ and bin/, extract crate names
+          crates="[]"
+          for toml in $(find layers bin -name Cargo.toml 2>/dev/null | sort); do
+            dir=$(dirname "$toml")
+            name=$(grep '^name' "$toml" | head -1 | sed 's/name *= *"\(.*\)"/\1/')
+            if [ -n "$name" ]; then
+              crates=$(echo "$crates" | jq -c --arg name "$name" --arg dir "$dir" '. + [{"name": $name, "dir": $dir}]')
+            fi
+          done
+          echo "crates=$crates" >> "$GITHUB_OUTPUT"
+          echo "Found crates:"
+          echo "$crates" | jq .
+
+  # ── Clippy + Test per crate (parallel) ───────────────────
+  check:
+    name: ${{ matrix.crate.name }}
+    needs: [fmt, discover]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: ${{ fromJson(needs.discover.outputs.crates) }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+        with:
+          key: ${{ matrix.crate.name }}
 
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace
+      - name: Clippy
+        run: cargo clippy -p ${{ matrix.crate.name }} --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test -p ${{ matrix.crate.name }}
         # Note: integration tests requiring root/WireGuard are #[ignore]d
-        # and not run in CI. Run them locally with: sudo cargo test -- --ignored
-
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --workspace
+        # and not run in CI. Run locally with: sudo cargo test -- --ignored
