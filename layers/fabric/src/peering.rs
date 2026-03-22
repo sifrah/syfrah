@@ -73,6 +73,12 @@ pub struct PeeringState {
     auto_accept: Arc<RwLock<Option<AutoAcceptConfig>>>,
 }
 
+impl Default for PeeringState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PeeringState {
     pub fn new() -> Self {
         Self {
@@ -133,7 +139,8 @@ impl PeeringState {
         Ok(())
     }
 
-    /// Run the peering TCP listener.
+    /// Run the peering TCP listener. Runs forever.
+    #[allow(unreachable_code)]
     pub async fn run_listener(
         &self,
         port: u16,
