@@ -1,4 +1,12 @@
+{/* AUTO-GENERATED from docs/documentation-strategy.md — do not edit */}
+
+export const metadata = {
+  title: 'Documentation Strategy',
+  description: 'Documentation Strategy',
+}
+
 # Documentation Strategy
+
 
 ## Principle: README is the source of truth
 
@@ -31,7 +39,7 @@ Every layer's documentation lives in its `README.md`. The documentation website 
 
 The script:
 1. Reads each markdown file
-2. Escapes MDX-incompatible characters (`<5` → `&lt;5`, `{word}` → `&#123;word&#125;`)
+2. Escapes MDX-incompatible characters (`&lt;5` → `&lt;5`, `&#123;word&#125;` → `&#123;word&#125;`)
 3. Adds an `export const metadata` block (title, description)
 4. Adds a `{/* AUTO-GENERATED */}` comment
 5. Writes the result as a `.mdx` page file
@@ -62,7 +70,7 @@ For quick iteration, edit the MDX page directly and use `just docs-serve`. The s
 
 ### New layer
 
-1. Create `layers/{name}/README.md` with the standard template
+1. Create `layers/&#123;name&#125;/README.md` with the standard template
 2. Run `just docs-sync` to verify
 3. The layer appears automatically in the sidebar
 
@@ -70,7 +78,7 @@ No manual edits to the navigation or sync script needed — the script scans `la
 
 ### Sub-page within a layer
 
-1. Create `layers/{layer}/{topic}/README.md`
+1. Create `layers/&#123;layer&#125;/&#123;topic&#125;/README.md`
 2. Run `just docs-sync`
 3. The sub-page appears as a collapsible child under the parent layer in the sidebar
 
@@ -95,7 +103,7 @@ Any depth of nesting is supported. The navigation tree is generated automaticall
 
 ### New cross-cutting doc
 
-1. Create `docs/{name}.md`
+1. Create `docs/&#123;name&#125;.md`
 2. Add the doc to `scripts/sync-docs.sh` (DOCS/DOC_TITLES or REFS/REF_TITLES arrays)
 4. Run `just docs-sync` to verify
 
