@@ -22,15 +22,14 @@ env:
 
 jobs:
   e2e:
-    name: E2E Tests
+    name: E2E Tests (Docker)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
+
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install WireGuard
-        run: sudo apt-get update && sudo apt-get install -y wireguard-tools
-
       - name: Run E2E tests
-        run: sudo -E cargo test --test '*' -- --ignored
+        run: ./tests/e2e/run.sh

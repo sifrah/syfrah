@@ -1,4 +1,5 @@
 /target
+/tests/e2e/syfrah
 /documentation/node_modules
 /documentation/.next
 /documentation/out
