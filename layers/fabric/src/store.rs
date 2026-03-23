@@ -255,21 +255,16 @@ pub fn clear() -> Result<(), StoreError> {
 // ── Atomic peer operations (new, fixes race condition) ──────
 
 /// Add a peer atomically. If the peer already exists (by WG key), it's updated.
+///
+/// Writes to redb (atomic, single source of truth), then regenerates the
+/// legacy JSON export from redb. This eliminates the race condition where
+/// concurrent upserts could overwrite each other's JSON changes.
 pub fn upsert_peer(peer: &PeerRecord) -> Result<(), StoreError> {
     let db = open_db()?;
     db.set("peers", &peer.wg_public_key, peer)?;
 
-    // Also update legacy JSON
-    if let Ok(mut state) = load() {
-        if let Some(existing) = state
-            .peers
-            .iter_mut()
-            .find(|p| p.wg_public_key == peer.wg_public_key)
-        {
-            *existing = peer.clone();
-        } else {
-            state.peers.push(peer.clone());
-        }
+    // Regenerate JSON from redb (single source of truth)
+    if let Ok(state) = load_from_redb() {
         let _ = save_json_only(&state);
     }
     Ok(())
