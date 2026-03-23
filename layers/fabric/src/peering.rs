@@ -234,7 +234,9 @@ async fn handle_incoming(
             // Reject if node name already in active peers
             {
                 let peers = crate::store::get_peers().unwrap_or_default();
-                if peers.iter().any(|p| p.name == req.node_name && p.status == syfrah_core::mesh::PeerStatus::Active) {
+                if peers.iter().any(|p| {
+                    p.name == req.node_name && p.status == syfrah_core::mesh::PeerStatus::Active
+                }) {
                     info!(node = %req.node_name, "rejecting join: node already in mesh");
                     let rejection = JoinResponse {
                         accepted: false,
@@ -242,7 +244,9 @@ async fn handle_incoming(
                         mesh_secret: None,
                         mesh_prefix: None,
                         peers: vec![],
-                        reason: Some("node already in mesh, run 'syfrah fabric leave' first".into()),
+                        reason: Some(
+                            "node already in mesh, run 'syfrah fabric leave' first".into(),
+                        ),
                         approved_by: None,
                     };
                     write_message(&mut stream, &PeeringMessage::JoinResponse(rejection)).await?;
