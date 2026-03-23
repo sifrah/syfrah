@@ -108,7 +108,13 @@ pub async fn run_init(config: DaemonConfig) -> anyhow::Result<()> {
     println!();
     println!("Run 'syfrah peering' to accept new nodes.");
     println!("Running daemon... (Ctrl+C to stop)");
-    run_daemon(ready.my_record, &ready.wg_keypair, ready.mesh_secret, ready.peering_port).await
+    run_daemon(
+        ready.my_record,
+        &ready.wg_keypair,
+        ready.mesh_secret,
+        ready.peering_port,
+    )
+    .await
 }
 
 /// Auto-init: create mesh if none exists, used by `syfrah peering` on a fresh node.
@@ -267,7 +273,13 @@ pub async fn run_join(
 ) -> anyhow::Result<()> {
     let ready = setup_join(target, &config, pin).await?;
     println!("Running daemon... (Ctrl+C to stop)");
-    run_daemon(ready.my_record, &ready.wg_keypair, ready.mesh_secret, ready.peering_port).await
+    run_daemon(
+        ready.my_record,
+        &ready.wg_keypair,
+        ready.mesh_secret,
+        ready.peering_port,
+    )
+    .await
 }
 
 /// Setup restart from saved state: load state, setup WG, print info.
@@ -324,7 +336,13 @@ pub fn setup_start() -> anyhow::Result<DaemonReady> {
 pub async fn run_start() -> anyhow::Result<()> {
     let ready = setup_start()?;
     println!("Running daemon... (Ctrl+C to stop)");
-    run_daemon(ready.my_record, &ready.wg_keypair, ready.mesh_secret, ready.peering_port).await
+    run_daemon(
+        ready.my_record,
+        &ready.wg_keypair,
+        ready.mesh_secret,
+        ready.peering_port,
+    )
+    .await
 }
 
 /// Leave the mesh.
