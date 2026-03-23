@@ -10,6 +10,8 @@ redb = "3"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+anyhow.workspace = true
+clap = { version = "4", features = ["derive"] }
 dirs = "6"
 
 [dev-dependencies]

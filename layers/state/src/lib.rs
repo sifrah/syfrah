@@ -7,6 +7,8 @@
 //! - Typed get/set/delete/list operations
 //! - Arc-safe database handle for async sharing
 
+pub mod cli;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 

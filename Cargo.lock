@@ -1067,6 +1067,7 @@ dependencies = [
  "libc",
  "syfrah-core",
  "syfrah-fabric",
+ "syfrah-state",
  "tokio",
  "tracing-subscriber",
 ]
@@ -1112,6 +1113,8 @@ dependencies = [
 name = "syfrah-state"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "clap",
  "dirs",
  "redb",
  "serde",

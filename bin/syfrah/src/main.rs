@@ -4,6 +4,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use syfrah_fabric::cli;
+use syfrah_state::cli::StateCommand;
 
 #[derive(Parser)]
 #[command(
@@ -22,6 +23,11 @@ enum Commands {
     Fabric {
         #[command(subcommand)]
         command: FabricCommand,
+    },
+    /// Inspect and manage layer state databases
+    State {
+        #[command(subcommand)]
+        command: StateCommand,
     },
 }
 
@@ -299,5 +305,6 @@ async fn main() -> Result<()> {
                 }
             }
         },
+        Commands::State { command } => syfrah_state::cli::run(command).await,
     }
 }
