@@ -30,13 +30,21 @@ jobs:
         options: --privileged
         env:
           DOCKER_TLS_CERTDIR: ""
-    env:
-      DOCKER_HOST: tcp://dind:2375
     steps:
-      - uses: actions/checkout@v4
+      - name: Resolve DinD IP
+        run: |
+          # Workaround: runner DNS may not resolve service aliases on self-hosted (actions/runner#4038)
+          DIND_IP=$(getent hosts dind | awk '{print $1}' || docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $(docker ps -qf "ancestor=docker:27-dind") 2>/dev/null)
+          if [ -z "$DIND_IP" ]; then
+            echo "Could not resolve DinD IP" >&2; exit 1
+          fi
+          echo "DOCKER_HOST=tcp://${DIND_IP}:2375" >> "$GITHUB_ENV"
+          echo "Resolved DinD at ${DIND_IP}"
 
       - name: Wait for DinD
         run: until docker info >/dev/null 2>&1; do sleep 1; done
+
+      - uses: actions/checkout@v4
 
       - name: Build Docker image
         run: docker build -t syfrah-e2e-test -f tests/e2e/Dockerfile . --quiet
@@ -88,18 +96,25 @@ jobs:
         options: --privileged
         env:
           DOCKER_TLS_CERTDIR: ""
-    env:
-      DOCKER_HOST: tcp://dind:2375
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         layer: ${{ fromJson(needs.discover.outputs.layers) }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Resolve DinD IP
+        run: |
+          DIND_IP=$(getent hosts dind | awk '{print $1}' || docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $(docker ps -qf "ancestor=docker:27-dind") 2>/dev/null)
+          if [ -z "$DIND_IP" ]; then
+            echo "Could not resolve DinD IP" >&2; exit 1
+          fi
+          echo "DOCKER_HOST=tcp://${DIND_IP}:2375" >> "$GITHUB_ENV"
+          echo "Resolved DinD at ${DIND_IP}"
 
       - name: Wait for DinD
         run: until docker info >/dev/null 2>&1; do sleep 1; done
+
+      - uses: actions/checkout@v4
 
       - name: Download image
         uses: actions/download-artifact@v4
