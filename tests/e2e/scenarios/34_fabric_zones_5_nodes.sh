@@ -16,8 +16,19 @@ init_mesh "e2e-z5-1" "172.20.0.10" "node-1"
 start_peering "e2e-z5-1"
 
 for i in $(seq 2 5); do
+    # Wait until leader sees expected number of peers before joining next node
+    expected=$((i - 2))
+    if [ "$expected" -gt 0 ]; then
+        for attempt in $(seq 1 15); do
+            count=$(docker exec "e2e-z5-1" syfrah fabric peers 2>&1 | grep -c "active" || echo "0")
+            if [ "$count" -ge "$expected" ]; then
+                debug "leader sees $count peer(s), proceeding with node-$i"
+                break
+            fi
+            sleep 1
+        done
+    fi
     join_mesh "e2e-z5-$i" "172.20.0.10" "172.20.0.$((9+i))" "node-$i"
-    sleep 5  # wait for peer record to propagate before next join
 done
 
 sleep 5

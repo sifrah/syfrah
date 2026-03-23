@@ -15,7 +15,23 @@ start_node "e2e-zinc-3" "172.20.0.12"
 init_mesh "e2e-zinc-1" "172.20.0.10" "node-1"
 start_peering "e2e-zinc-1"
 join_mesh "e2e-zinc-2" "172.20.0.10" "172.20.0.11" "node-2"
-sleep 5  # wait for node-2's peer record to propagate to leader
+
+# Wait until leader sees node-2 before next join (zone generation depends on peer list)
+for attempt in $(seq 1 15); do
+    count=$(docker exec "e2e-zinc-1" syfrah fabric peers 2>&1 | grep -c "active" || echo "0")
+    if [ "$count" -ge 1 ]; then
+        debug "leader sees $count peer(s) after ${attempt}s"
+        break
+    fi
+    sleep 1
+done
+
+# Debug: show leader's state before node-3 joins
+debug "leader peers before node-3 join:"
+docker exec "e2e-zinc-1" syfrah fabric peers 2>&1 || true
+debug "leader state.json peer count:"
+docker exec "e2e-zinc-1" cat /root/.syfrah/state.json 2>/dev/null | jq '.peers | length' || echo "(no json)"
+
 join_mesh "e2e-zinc-3" "172.20.0.10" "172.20.0.12" "node-3"
 
 sleep 3
