@@ -67,7 +67,7 @@ pub fn db_path(layer: &str) -> PathBuf {
 /// db.set("peers", "key1", &Peer { name: "a".into(), endpoint: "1.2.3.4:51820".into() }).unwrap();
 /// let peer: Option<Peer> = db.get("peers", "key1").unwrap();
 /// ```
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct LayerDb {
     db: Arc<Database>,
     layer: String,
