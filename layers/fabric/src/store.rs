@@ -164,7 +164,11 @@ pub fn load() -> Result<NodeState, StoreError> {
 /// Load state from redb.
 fn load_from_redb() -> Result<NodeState, StoreError> {
     let db = open_db()?;
+    load_from_redb_with(&db)
+}
 
+/// Load state from an existing redb connection.
+fn load_from_redb_with(db: &LayerDb) -> Result<NodeState, StoreError> {
     let mesh_name: String = db
         .get("config", "mesh_name")?
         .ok_or_else(|| StoreError::NotFound(syfrah_state::db_path(LAYER_NAME)))?;
@@ -264,7 +268,8 @@ pub fn upsert_peer(peer: &PeerRecord) -> Result<(), StoreError> {
     db.set("peers", &peer.wg_public_key, peer)?;
 
     // Regenerate JSON from redb (single source of truth)
-    if let Ok(state) = load_from_redb() {
+    // Reuse the same db connection to avoid file lock contention
+    if let Ok(state) = load_from_redb_with(&db) {
         let _ = save_json_only(&state);
     }
     Ok(())

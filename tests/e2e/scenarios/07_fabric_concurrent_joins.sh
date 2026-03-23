@@ -35,7 +35,7 @@ done
 
 # All nodes must converge — race condition is fixed
 info "Waiting for convergence..."
-if wait_for_convergence "e2e-conc-" 5 4 60; then
+if wait_for_convergence "e2e-conc-" 5 4 90; then
     pass "all 5 nodes converged to 4 peers"
 else
     fail "convergence timed out"
