@@ -269,7 +269,8 @@ assert_cannot_ping() {
 assert_command_fails() {
     local container="$1"
     shift
-    if docker exec "$container" "$@" >/dev/null 2>&1; then
+    debug "assert_command_fails: $container $*"
+    if timeout 15 docker exec "$container" "$@" >/dev/null 2>&1; then
         fail "command should have failed: $*"
     else
         pass "command failed as expected: $*"
@@ -280,7 +281,8 @@ assert_command_fails() {
 assert_command_succeeds() {
     local container="$1"
     shift
-    if docker exec "$container" "$@" >/dev/null 2>&1; then
+    debug "assert_command_succeeds: $container $*"
+    if timeout 15 docker exec "$container" "$@" >/dev/null 2>&1; then
         pass "command succeeded: $*"
     else
         fail "command failed: $*"
