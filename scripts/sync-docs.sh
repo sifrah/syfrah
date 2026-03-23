@@ -195,8 +195,8 @@ done
 NAV_OPS_JSON="$NAV_OPS_JSON]"
 
 # Reference docs
-declare -a REFS=(repository documentation-strategy ci testing)
-declare -a REF_TITLES=("Repository Structure" "Documentation Strategy" "CI/CD" "Testing")
+declare -a REFS=(repository documentation-strategy ci testing storage-engine)
+declare -a REF_TITLES=("Repository Structure" "Documentation Strategy" "CI/CD" "Testing" "Storage Engine")
 
 NAV_REF_JSON="["
 first_ref=true
