@@ -143,6 +143,16 @@ pub async fn run_join(
     let wg_keypair = wg::generate_keypair();
     let endpoint = resolve_endpoint(&config);
 
+    // Compute region/zone before sending so the leader receives them.
+    let region = config
+        .region
+        .clone()
+        .unwrap_or_else(|| "region-1".to_string());
+    let zone = config
+        .zone
+        .clone()
+        .unwrap_or_else(|| store::generate_zone(&region, &[]));
+
     let request = syfrah_core::mesh::JoinRequest {
         request_id: peering::generate_request_id(),
         node_name: config.node_name.clone(),
@@ -150,6 +160,8 @@ pub async fn run_join(
         endpoint,
         wg_listen_port: config.wg_listen_port,
         pin,
+        region: Some(region.clone()),
+        zone: Some(zone.clone()),
     };
 
     println!("Sending join request to {target}...");
@@ -174,16 +186,6 @@ pub async fn run_join(
         .ok_or_else(|| anyhow::anyhow!("accepted but no mesh prefix"))?;
 
     let mesh_ipv6 = addressing::derive_node_address(&mesh_prefix, wg_keypair.public.as_bytes());
-
-    // Region/zone: use provided or auto-generate from existing peers
-    let region = config
-        .region
-        .clone()
-        .unwrap_or_else(|| "region-1".to_string());
-    let zone = config
-        .zone
-        .clone()
-        .unwrap_or_else(|| store::generate_zone(&region, &response.peers));
 
     wg::setup_interface(&wg_keypair, config.wg_listen_port, mesh_ipv6)?;
     info!(flow = "join", node = %config.node_name, "wireguard interface up");
@@ -717,8 +719,8 @@ impl ControlHandler for DaemonControlHandler {
                             mesh_ipv6: new_mesh_ipv6,
                             last_seen: now(),
                             status: PeerStatus::Active,
-                            region: None,
-                            zone: None,
+                            region: info.region,
+                            zone: info.zone,
                         };
                         events::emit(
                             EventType::JoinManuallyAccepted,

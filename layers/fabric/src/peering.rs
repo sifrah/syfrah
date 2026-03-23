@@ -46,6 +46,10 @@ pub struct JoinRequestInfo {
     pub endpoint: SocketAddr,
     pub wg_listen_port: u16,
     pub received_at: u64,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub zone: Option<String>,
 }
 
 struct PendingJoin {
@@ -262,6 +266,8 @@ async fn handle_incoming(
                 endpoint: req.endpoint,
                 wg_listen_port: req.wg_listen_port,
                 received_at: now(),
+                region: req.region,
+                zone: req.zone,
             };
 
             {
@@ -345,8 +351,8 @@ fn build_auto_accept_response(
         mesh_ipv6: new_mesh_ipv6,
         last_seen: now(),
         status: syfrah_core::mesh::PeerStatus::Active,
-        region: None,
-        zone: None,
+        region: req.region.clone(),
+        zone: req.zone.clone(),
     };
 
     // Load current peers from store + our own record
