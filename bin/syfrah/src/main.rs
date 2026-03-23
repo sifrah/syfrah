@@ -55,6 +55,9 @@ enum FabricCommand {
         /// Run daemon in foreground instead of backgrounding
         #[arg(long, short)]
         foreground: bool,
+        /// Start peering with auto-accept PIN after init
+        #[arg(long)]
+        peering: bool,
     },
     /// Join an existing mesh
     Join {
@@ -105,6 +108,11 @@ enum FabricCommand {
     Leave,
     /// Run diagnostic checks on the fabric
     Diagnose,
+    /// Manage the systemd service
+    Service {
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
     /// Manage peering — accept/reject join requests
     Peering {
         /// PIN for auto-accept mode
@@ -136,6 +144,16 @@ enum PeeringAction {
         #[arg(long)]
         reason: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum ServiceAction {
+    /// Install and enable the systemd service
+    Install,
+    /// Disable and remove the systemd service
+    Uninstall,
+    /// Show systemd service status
+    Status,
 }
 
 fn default_node_name() -> String {
@@ -315,6 +333,7 @@ async fn run() -> Result<()> {
                 region,
                 zone,
                 foreground,
+                peering,
             } => {
                 let peering_port = peering_port.unwrap_or(port + 1);
                 let config = DaemonConfig {
@@ -331,7 +350,12 @@ async fn run() -> Result<()> {
                     daemon::run_init(config).await
                 } else {
                     daemon::setup_init(&config)?;
-                    background_daemon()
+                    background_daemon()?;
+                    if peering {
+                        cli::init::wait_and_start_peering(endpoint, peering_port).await
+                    } else {
+                        Ok(())
+                    }
                 }
             }
             FabricCommand::Join {
@@ -417,6 +441,14 @@ async fn run() -> Result<()> {
             FabricCommand::Diagnose => {
                 setup_logging(false);
                 cli::diagnose::run().await
+            }
+            FabricCommand::Service { action } => {
+                setup_logging(false);
+                match action {
+                    ServiceAction::Install => cli::service::install().await,
+                    ServiceAction::Uninstall => cli::service::uninstall().await,
+                    ServiceAction::Status => cli::service::status().await,
+                }
             }
             FabricCommand::Peering { pin, action } => {
                 setup_logging(false);

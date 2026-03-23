@@ -24,7 +24,9 @@ dirs = "6"
 libc = "0.2"
 rand = "0.8"
 clap = { version = "4", features = ["derive"] }
+console = "0.15"
 hostname = "0.4"
+indicatif = "0.17"
 toml = "0.8"
 
 [dev-dependencies]

@@ -1,10 +1,9 @@
-use crate::{store, wg};
+use crate::{store, ui, wg};
 use anyhow::Result;
 use syfrah_state::LayerDb;
 
 pub async fn run() -> Result<()> {
-    println!("Syfrah Fabric Diagnostics");
-    println!("=========================");
+    ui::heading("Syfrah Fabric Diagnostics");
     println!();
 
     let mut pass_count = 0u32;
@@ -12,10 +11,10 @@ pub async fn run() -> Result<()> {
 
     let mut check = |name: &str, result: bool, detail: &str| {
         if result {
-            println!("  [PASS] {name}");
+            ui::check_pass(name);
             pass_count += 1;
         } else {
-            println!("  [FAIL] {name}: {detail}");
+            ui::check_fail(name, detail);
             fail_count += 1;
         }
     };
@@ -131,9 +130,11 @@ pub async fn run() -> Result<()> {
     // -- Summary --
     let total = pass_count + fail_count;
     if fail_count == 0 {
-        println!("{pass_count}/{total} checks passed. Fabric is healthy.");
+        ui::success(&format!(
+            "{pass_count}/{total} checks passed. Fabric is healthy."
+        ));
     } else {
-        println!("{fail_count}/{total} checks failed.");
+        ui::warn(&format!("{fail_count}/{total} checks failed."));
     }
 
     Ok(())

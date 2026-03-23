@@ -46,6 +46,10 @@ pub struct JoinRequestInfo {
     pub endpoint: SocketAddr,
     pub wg_listen_port: u16,
     pub received_at: u64,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub zone: Option<String>,
 }
 
 struct PendingJoin {
@@ -137,6 +141,7 @@ impl PeeringState {
             mesh_prefix: None,
             peers: vec![],
             reason,
+            approved_by: None,
         });
         Ok(())
     }
@@ -230,6 +235,19 @@ async fn handle_incoming(
                 None,
             );
 
+            // Warn if node name already in active peers (the node likely left and is rejoining)
+            {
+                let peers = crate::store::get_peers().unwrap_or_default();
+                if peers.iter().any(|p| {
+                    p.name == req.node_name && p.status == syfrah_core::mesh::PeerStatus::Active
+                }) {
+                    warn!(
+                        node = %req.node_name,
+                        "node name already in mesh — accepting will replace the old peer entry"
+                    );
+                }
+            }
+
             // Check PIN auto-accept
             if let Some(ref req_pin) = req.pin {
                 let auto = auto_accept.read().await;
@@ -262,10 +280,22 @@ async fn handle_incoming(
                 endpoint: req.endpoint,
                 wg_listen_port: req.wg_listen_port,
                 received_at: now(),
+                region: req.region,
+                zone: req.zone,
             };
 
             {
                 let mut map = pending.write().await;
+                // Dedup: if there's already a pending request from the same node name,
+                // remove it (the joiner retried with a new key).
+                let stale_id = map
+                    .values()
+                    .find(|p| p.info.node_name == info.node_name)
+                    .map(|p| p.info.request_id.clone());
+                if let Some(old_id) = stale_id {
+                    info!(node = %info.node_name, old_request_id = %old_id, "replacing stale join request");
+                    map.remove(&old_id);
+                }
                 map.insert(
                     req.request_id.clone(),
                     PendingJoin {
@@ -299,6 +329,7 @@ async fn handle_incoming(
                         mesh_prefix: None,
                         peers: vec![],
                         reason: Some("request timed out".into()),
+                        approved_by: None,
                     }
                 }
             };
@@ -338,6 +369,19 @@ fn build_auto_accept_response(
         .map_err(|_| PeeringError::Protocol("invalid WG public key".into()))?;
     let new_mesh_ipv6 = addressing::derive_node_address(&config.mesh_prefix, new_wg_pub.as_bytes());
 
+    // Load current peers from store + our own record
+    let mut all_peers = crate::store::load().map(|s| s.peers).unwrap_or_default();
+    all_peers.push(config.my_record.clone());
+
+    // Use the joiner's region/zone from the request. If zone was not
+    // provided, auto-generate one using the leader's peer list so the
+    // joiner gets a unique zone.
+    let region = req.region.clone().unwrap_or_else(|| "region-1".to_string());
+    let zone = req
+        .zone
+        .clone()
+        .unwrap_or_else(|| crate::store::generate_zone(&region, &all_peers));
+
     let new_record = PeerRecord {
         name: req.node_name.clone(),
         wg_public_key: req.wg_public_key.clone(),
@@ -345,13 +389,9 @@ fn build_auto_accept_response(
         mesh_ipv6: new_mesh_ipv6,
         last_seen: now(),
         status: syfrah_core::mesh::PeerStatus::Active,
-        region: None,
-        zone: None,
+        region: Some(region),
+        zone: Some(zone),
     };
-
-    // Load current peers from store + our own record
-    let mut all_peers = crate::store::load().map(|s| s.peers).unwrap_or_default();
-    all_peers.push(config.my_record.clone());
 
     let response = JoinResponse {
         accepted: true,
@@ -360,6 +400,7 @@ fn build_auto_accept_response(
         mesh_prefix: Some(config.mesh_prefix),
         peers: all_peers,
         reason: None,
+        approved_by: Some("pin".into()),
     };
 
     Ok((response, new_record))

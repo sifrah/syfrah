@@ -6,7 +6,9 @@ use syfrah_core::mesh::PeerStatus;
 
 pub async fn run() -> Result<()> {
     let state = store::load().map_err(|_| {
-        anyhow::anyhow!("no mesh configured. Run 'syfrah init' or 'syfrah join' first.")
+        anyhow::anyhow!(
+            "no mesh configured. Run 'syfrah fabric init' or 'syfrah fabric join' first."
+        )
     })?;
 
     if state.peers.is_empty() {
@@ -70,6 +72,10 @@ pub async fn run() -> Result<()> {
 }
 
 fn format_ago(time: SystemTime) -> String {
+    if time == std::time::UNIX_EPOCH {
+        return "never".into();
+    }
+
     let elapsed = SystemTime::now()
         .duration_since(time)
         .unwrap_or_default()
