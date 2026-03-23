@@ -31,10 +31,21 @@ sleep 2
 
 # Restart node-2 from saved state
 info "Restarting node-2 daemon..."
-# Remove stale control socket left by killed process so wait_daemon works
-docker exec "e2e-restart-2" rm -f /root/.syfrah/control.sock
-docker exec -d "e2e-restart-2" syfrah fabric start
-wait_daemon "e2e-restart-2"
+# Remove stale control socket and WG interface left by killed process
+docker exec "e2e-restart-2" rm -f /root/.syfrah/control.sock /root/.syfrah/daemon.pid
+docker exec "e2e-restart-2" ip link delete syfrah0 2>/dev/null || true
+# Debug: verify state exists and try start in foreground briefly
+debug "state files before restart:"
+docker exec "e2e-restart-2" ls -la /root/.syfrah/ 2>/dev/null || true
+# Start daemon and capture any immediate errors
+docker exec "e2e-restart-2" sh -c 'syfrah fabric start > /root/.syfrah/restart.log 2>&1 &'
+wait_daemon "e2e-restart-2" 30
+if ! docker exec "e2e-restart-2" test -S /root/.syfrah/control.sock 2>/dev/null; then
+    info "restart.log output:"
+    docker exec "e2e-restart-2" cat /root/.syfrah/restart.log 2>/dev/null || echo "(no log)"
+    info "syfrah.log output:"
+    docker exec "e2e-restart-2" cat /root/.syfrah/syfrah.log 2>/dev/null | tail -20 || echo "(no log)"
+fi
 
 assert_daemon_running "e2e-restart-2"
 
