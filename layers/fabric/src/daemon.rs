@@ -72,12 +72,15 @@ pub async fn run_init(config: DaemonConfig) -> anyhow::Result<()> {
     store::save(&state)?;
 
     println!("Mesh '{}' created.", config.mesh_name);
-    println!("  Secret: {mesh_secret}");
-    println!("  Node:   {} ({})", config.node_name, mesh_ipv6);
+    println!("  \u{2713} Secret: {mesh_secret}");
+    println!("  \u{2713} Node:   {} ({})", config.node_name, mesh_ipv6);
     println!("  Region: {region}");
     println!("  Zone:   {zone}");
     println!();
-    println!("Run 'syfrah peering' to accept new nodes.");
+    println!("  \u{26a0} Peering is not active. New nodes cannot join yet.");
+    println!("    To accept nodes with a PIN:  syfrah fabric peering start --pin <PIN>");
+    println!("    To approve manually:         syfrah fabric peering start");
+    println!();
     println!("Running daemon... (Ctrl+C to stop)");
 
     let my_record = build_record(
@@ -218,9 +221,19 @@ pub async fn run_join(
     store::save(&state)?;
 
     println!("Joined mesh '{mesh_name}'.");
+    match response.approved_by.as_deref() {
+        Some("pin") => println!("  \u{2713} PIN accepted by the target node"),
+        Some("manual") => println!("  \u{2713} Approved by the target node (manual approval)"),
+        _ => println!("  \u{2713} Approved by the target node"),
+    }
+    println!("  \u{2713} Mesh secret received and stored");
     println!("  Node:   {} ({})", config.node_name, mesh_ipv6);
     println!("  Region: {region}");
     println!("  Zone:   {zone}");
+    println!();
+    println!("  \u{26a0} The mesh secret is stored in ~/.syfrah/state.json");
+    println!("    Keep this file safe — it grants full mesh access.");
+    println!();
     println!("Running daemon... (Ctrl+C to stop)");
 
     let my_record = build_record(
@@ -694,6 +707,7 @@ impl ControlHandler for DaemonControlHandler {
                     mesh_prefix: Some(state.mesh_prefix),
                     peers: all_peers,
                     reason: None,
+                    approved_by: Some("manual".into()),
                 };
 
                 match self.peering_state.accept(&request_id, response).await {

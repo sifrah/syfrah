@@ -66,11 +66,13 @@ pub async fn watch(pin: Option<String>) -> Result<()> {
     }
 
     if let Some(ref p) = pin {
-        println!("Peering active (auto-accept with PIN: {p})");
-        println!("New nodes can join with: syfrah join <this-ip> --pin {p}");
+        println!("\u{2713} Peering active");
+        println!("  Mode: auto-accept with PIN");
+        println!("  Nodes can join with: syfrah fabric join <this-ip> --pin {p}");
     } else {
-        println!("Peering active. Watching for join requests...");
-        println!("Press Ctrl+C to stop.");
+        println!("\u{2713} Peering active");
+        println!("  Mode: manual approval (you will be prompted for each join request)");
+        println!("  Press Ctrl+C to stop.");
     }
     println!();
 
@@ -144,9 +146,12 @@ pub async fn start(port: u16, pin: Option<String>) -> Result<()> {
     match resp {
         ControlResponse::Ok => {
             if let Some(p) = pin {
-                println!("Peering started on port {port} (auto-accept PIN: {p}).");
+                println!("\u{2713} Peering started on port {port}");
+                println!("  Mode: auto-accept with PIN");
+                println!("  Nodes can join with: syfrah fabric join <this-ip> --pin {p}");
             } else {
-                println!("Peering started on port {port}.");
+                println!("\u{2713} Peering started on port {port}");
+                println!("  Mode: manual approval (you must accept each join request)");
             }
         }
         ControlResponse::Error { message } => anyhow::bail!("{message}"),
