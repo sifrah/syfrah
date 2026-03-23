@@ -221,9 +221,13 @@ fn load_from_redb() -> Result<NodeState, StoreError> {
 
 /// Generate a zone name based on region and existing peers.
 /// Format: {region}-zone-{next_index}
+///
+/// The index is the greater of:
+/// - max zone index found in peers with matching zone prefix, or
+/// - total peer count (to handle peers whose zone is unknown to the leader)
 pub fn generate_zone(region: &str, existing_peers: &[PeerRecord]) -> String {
     let prefix = format!("{region}-zone-");
-    let max_index = existing_peers
+    let max_zone_index = existing_peers
         .iter()
         .filter_map(|p| {
             p.zone.as_ref().and_then(|z| {
@@ -233,7 +237,10 @@ pub fn generate_zone(region: &str, existing_peers: &[PeerRecord]) -> String {
         })
         .max()
         .unwrap_or(0);
-    format!("{prefix}{}", max_index + 1)
+    // Also account for peers with no zone — they still occupy a slot
+    let peer_count = existing_peers.len() as u32;
+    let next_index = max_zone_index.max(peer_count) + 1;
+    format!("{prefix}{next_index}")
 }
 
 /// Delete all state (redb + JSON + entire directory).

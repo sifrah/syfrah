@@ -38,9 +38,9 @@ fn generate_zone_different_region_ignored() {
         make_peer("a", Some("region-1"), Some("region-1-zone-1")),
         make_peer("b", Some("region-2"), Some("region-2-zone-1")),
     ];
-    // Only counts region-1 zones
+    // max zone index for region-1 = 1, peer count = 2 → max(1,2)+1 = 3
     let zone = generate_zone("region-1", &peers);
-    assert_eq!(zone, "region-1-zone-2");
+    assert_eq!(zone, "region-1-zone-3");
 }
 
 #[test]
@@ -57,9 +57,9 @@ fn generate_zone_with_gaps() {
 #[test]
 fn generate_zone_no_matching_region() {
     let peers = vec![make_peer("a", Some("region-2"), Some("region-2-zone-5"))];
-    // No region-1 zones exist, starts at 1
+    // No region-1 zone prefix, but 1 peer → max(0,1)+1 = 2
     let zone = generate_zone("region-1", &peers);
-    assert_eq!(zone, "region-1-zone-1");
+    assert_eq!(zone, "region-1-zone-2");
 }
 
 #[test]
@@ -68,9 +68,9 @@ fn generate_zone_peers_without_zone() {
         make_peer("a", None, None),
         make_peer("b", Some("region-1"), None),
     ];
-    // Peers with no zone are ignored in counting
+    // No zone prefixes found, but 2 peers → max(0,2)+1 = 3
     let zone = generate_zone("region-1", &peers);
-    assert_eq!(zone, "region-1-zone-1");
+    assert_eq!(zone, "region-1-zone-3");
 }
 
 #[test]
