@@ -1102,6 +1102,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "syfrah-core",
+ "syfrah-state",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
