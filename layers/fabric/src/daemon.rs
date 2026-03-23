@@ -333,7 +333,10 @@ pub async fn run_daemon(
             }
             // Announce to existing peers
             let known = store::get_peers().unwrap_or_default();
-            peering::announce_peer_to_mesh(&record, &known, &enc, pp).await;
+            let (_ok, failed) = peering::announce_peer_to_mesh(&record, &known, &enc, pp).await;
+            if failed > 0 {
+                let _ = store::inc_metric("announcements_failed", failed as u64);
+            }
         });
     });
 

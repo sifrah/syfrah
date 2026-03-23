@@ -360,6 +360,9 @@ pub async fn send_join_request(
 }
 
 /// Announce a new peer to an existing mesh member.
+/// Maximum retry attempts for transient announcement failures.
+const ANNOUNCE_MAX_RETRIES: u32 = 3;
+
 pub async fn announce_peer(
     target_endpoint: SocketAddr,
     peering_port: u16,
@@ -369,31 +372,71 @@ pub async fn announce_peer(
     let target = SocketAddr::new(target_endpoint.ip(), peering_port);
     let ciphertext = encrypt_record(record, encryption_key)?;
 
+    let mut last_err = None;
+    for attempt in 0..ANNOUNCE_MAX_RETRIES {
+        if attempt > 0 {
+            let delay = Duration::from_secs(1 << (attempt - 1)); // 1s, 2s, 4s
+            tokio::time::sleep(delay).await;
+        }
+        match try_announce(&target, &ciphertext).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                // Only retry on transient errors (Io, Timeout)
+                match &e {
+                    PeeringError::Io(_) | PeeringError::Timeout => {
+                        debug!(
+                            "announce attempt {}/{} to {target} failed: {e}",
+                            attempt + 1,
+                            ANNOUNCE_MAX_RETRIES
+                        );
+                        last_err = Some(e);
+                    }
+                    _ => return Err(e), // Non-transient: fail immediately
+                }
+            }
+        }
+    }
+    Err(last_err.unwrap_or(PeeringError::Timeout))
+}
+
+async fn try_announce(target: &SocketAddr, ciphertext: &[u8]) -> Result<(), PeeringError> {
     let mut stream = tokio::time::timeout(EXCHANGE_TIMEOUT, TcpStream::connect(target))
         .await
         .map_err(|_| PeeringError::Timeout)??;
-
-    write_message(&mut stream, &PeeringMessage::PeerAnnounce(ciphertext)).await?;
+    write_message(
+        &mut stream,
+        &PeeringMessage::PeerAnnounce(ciphertext.to_vec()),
+    )
+    .await?;
     Ok(())
 }
 
 /// Announce a new peer to all known mesh members.
+/// Returns (succeeded, failed) counts.
 pub async fn announce_peer_to_mesh(
     record: &PeerRecord,
     known_peers: &[PeerRecord],
     encryption_key: &[u8; 32],
     peering_port: u16,
-) {
+) -> (usize, usize) {
+    let mut succeeded = 0;
+    let mut failed = 0;
     for peer in known_peers {
         if peer.wg_public_key == record.wg_public_key {
             continue;
         }
         if let Err(e) = announce_peer(peer.endpoint, peering_port, record, encryption_key).await {
-            warn!("failed to announce to {}: {e}", peer.name);
+            warn!(
+                "failed to announce {} to {} after {ANNOUNCE_MAX_RETRIES} attempts: {e}",
+                record.name, peer.name
+            );
+            failed += 1;
         } else {
             debug!("announced {} to {}", record.name, peer.name);
+            succeeded += 1;
         }
     }
+    (succeeded, failed)
 }
 
 // --- Wire protocol helpers ---

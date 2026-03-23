@@ -64,6 +64,7 @@ pub struct Metrics {
     pub peers_discovered: u64,
     pub wg_reconciliations: u64,
     pub peers_marked_unreachable: u64,
+    pub announcements_failed: u64,
     pub daemon_started_at: u64,
 }
 
@@ -110,6 +111,7 @@ pub fn save(state: &NodeState) -> Result<(), StoreError> {
             "peers_marked_unreachable",
             state.metrics.peers_marked_unreachable,
         )?;
+        w.set_metric("announcements_failed", state.metrics.announcements_failed)?;
         w.set_metric("daemon_started_at", state.metrics.daemon_started_at)?;
         Ok(())
     })?;
@@ -202,6 +204,7 @@ fn load_from_redb_with(db: &LayerDb) -> Result<NodeState, StoreError> {
         peers_discovered: db.get_metric("peers_discovered")?,
         wg_reconciliations: db.get_metric("wg_reconciliations")?,
         peers_marked_unreachable: db.get_metric("peers_marked_unreachable")?,
+        announcements_failed: db.get_metric("announcements_failed")?,
         daemon_started_at: db.get_metric("daemon_started_at")?,
     };
 
