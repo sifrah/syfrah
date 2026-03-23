@@ -83,6 +83,9 @@ enum FabricCommand {
     Start {
         #[arg(long, short)]
         daemon: bool,
+        /// Run in foreground (for systemd)
+        #[arg(long)]
+        foreground: bool,
     },
     /// Stop the running daemon
     Stop,
@@ -104,6 +107,11 @@ enum FabricCommand {
     Leave,
     /// Run diagnostic checks on the fabric
     Diagnose,
+    /// Manage the systemd service
+    Service {
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
     /// Manage peering — accept/reject join requests
     Peering {
         /// PIN for auto-accept mode
@@ -135,6 +143,16 @@ enum PeeringAction {
         #[arg(long)]
         reason: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum ServiceAction {
+    /// Install and enable the systemd service
+    Install,
+    /// Disable and remove the systemd service
+    Uninstall,
+    /// Show systemd service status
+    Status,
 }
 
 fn default_node_name() -> String {
@@ -326,16 +344,26 @@ async fn run() -> Result<()> {
                 )
                 .await
             }
-            FabricCommand::Start { daemon } => {
-                if daemon {
+            FabricCommand::Start {
+                daemon,
+                foreground,
+            } => {
+                if foreground {
+                    // Foreground mode for systemd: log to stderr, don't fork
+                    setup_logging(false);
+                    cli::start::run().await
+                } else if daemon {
                     println!("Starting daemon in background...");
                     if daemonize()? {
                         println!("Use 'syfrah fabric status' to check.");
                         return Ok(());
                     }
+                    setup_logging(true);
+                    cli::start::run().await
+                } else {
+                    setup_logging(false);
+                    cli::start::run().await
                 }
-                setup_logging(daemon);
-                cli::start::run().await
             }
             FabricCommand::Stop => {
                 setup_logging(false);
@@ -368,6 +396,14 @@ async fn run() -> Result<()> {
             FabricCommand::Diagnose => {
                 setup_logging(false);
                 cli::diagnose::run().await
+            }
+            FabricCommand::Service { action } => {
+                setup_logging(false);
+                match action {
+                    ServiceAction::Install => cli::service::install().await,
+                    ServiceAction::Uninstall => cli::service::uninstall().await,
+                    ServiceAction::Status => cli::service::status().await,
+                }
             }
             FabricCommand::Peering { pin, action } => {
                 setup_logging(false);
