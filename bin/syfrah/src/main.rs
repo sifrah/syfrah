@@ -4,6 +4,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use syfrah_fabric::cli;
+use syfrah_fabric::daemon::{self, DaemonConfig, DaemonReady};
 use syfrah_state::cli::StateCommand;
 
 #[derive(Parser)]
@@ -51,8 +52,9 @@ enum FabricCommand {
         /// Zone label for this node (auto-incremented if not set)
         #[arg(long)]
         zone: Option<String>,
+        /// Run daemon in foreground instead of backgrounding
         #[arg(long, short)]
-        daemon: bool,
+        foreground: bool,
     },
     /// Join an existing mesh
     Join {
@@ -73,13 +75,15 @@ enum FabricCommand {
         /// Zone label for this node (auto-incremented if not set)
         #[arg(long)]
         zone: Option<String>,
+        /// Run daemon in foreground instead of backgrounding
         #[arg(long, short)]
-        daemon: bool,
+        foreground: bool,
     },
     /// Restart the daemon from saved state
     Start {
+        /// Run daemon in foreground instead of backgrounding
         #[arg(long, short)]
-        daemon: bool,
+        foreground: bool,
     },
     /// Stop the running daemon
     Stop,
@@ -226,7 +230,37 @@ fn daemonize() -> Result<bool> {
 
 #[cfg(not(unix))]
 fn daemonize() -> Result<bool> {
-    anyhow::bail!("--daemon is only supported on Unix");
+    anyhow::bail!("background daemon is only supported on Unix");
+}
+
+/// Fork to background and start the daemon loop. Returns Ok(()) in the parent.
+fn background_daemon(ready: DaemonReady) -> Result<()> {
+    // Print PID hint before forking so the user sees it
+    if daemonize()? {
+        // Parent process: the child will write its own PID file once it starts
+        // We need to wait briefly for the child to write its PID
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        if let Some(pid) = syfrah_fabric::store::read_pid() {
+            println!("Daemon started (pid {pid}).");
+        } else {
+            println!("Daemon starting in background...");
+        }
+        println!("Run 'syfrah fabric status' to check.");
+        return Ok(());
+    }
+    // Child process: set up logging to file and run daemon
+    setup_logging(true);
+    // Build a mini runtime for the child (the parent's runtime is gone after fork)
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(daemon::run_daemon(
+            ready.my_record,
+            &ready.wg_keypair,
+            ready.mesh_secret,
+            ready.peering_port,
+        ))?;
+    std::process::exit(0);
 }
 
 #[tokio::main]
@@ -250,27 +284,25 @@ async fn run() -> Result<()> {
                 peering_port,
                 region,
                 zone,
-                daemon,
+                foreground,
             } => {
                 let peering_port = peering_port.unwrap_or(port + 1);
-                if daemon {
-                    println!("Starting daemon in background...");
-                    if daemonize()? {
-                        println!("Use 'syfrah fabric status' to check.");
-                        return Ok(());
-                    }
-                }
-                setup_logging(daemon);
-                cli::init::run(
-                    &name,
-                    &node_name.unwrap_or_else(default_node_name),
-                    port,
-                    endpoint,
+                let config = DaemonConfig {
+                    mesh_name: name,
+                    node_name: node_name.unwrap_or_else(default_node_name),
+                    wg_listen_port: port,
+                    public_endpoint: endpoint,
                     peering_port,
                     region,
                     zone,
-                )
-                .await
+                };
+                if foreground {
+                    setup_logging(false);
+                    daemon::run_init(config).await
+                } else {
+                    let ready = daemon::setup_init(&config)?;
+                    background_daemon(ready)
+                }
             }
             FabricCommand::Join {
                 target,
@@ -280,37 +312,43 @@ async fn run() -> Result<()> {
                 pin,
                 region,
                 zone,
-                daemon,
+                foreground,
             } => {
-                if daemon {
-                    println!("Starting daemon in background...");
-                    if daemonize()? {
-                        println!("Use 'syfrah fabric status' to check.");
-                        return Ok(());
-                    }
-                }
-                setup_logging(daemon);
-                cli::join::run(
-                    &target,
-                    &node_name.unwrap_or_else(default_node_name),
-                    port,
-                    endpoint,
-                    pin,
+                let config = DaemonConfig {
+                    mesh_name: String::new(),
+                    node_name: node_name.unwrap_or_else(default_node_name),
+                    wg_listen_port: port,
+                    public_endpoint: endpoint,
+                    peering_port: port + 1,
                     region,
                     zone,
-                )
-                .await
-            }
-            FabricCommand::Start { daemon } => {
-                if daemon {
-                    println!("Starting daemon in background...");
-                    if daemonize()? {
-                        println!("Use 'syfrah fabric status' to check.");
-                        return Ok(());
-                    }
+                };
+                // Parse target: "1.2.3.4" -> "1.2.3.4:51821", or "1.2.3.4:9999" as-is
+                let target_addr: SocketAddr = if target.contains(':') {
+                    target
+                        .parse()
+                        .map_err(|e| anyhow::anyhow!("invalid target address '{target}': {e}"))?
+                } else {
+                    format!("{target}:51821")
+                        .parse()
+                        .map_err(|e| anyhow::anyhow!("invalid target address '{target}': {e}"))?
+                };
+                if foreground {
+                    setup_logging(false);
+                    daemon::run_join(target_addr, config, pin).await
+                } else {
+                    let ready = daemon::setup_join(target_addr, &config, pin).await?;
+                    background_daemon(ready)
                 }
-                setup_logging(daemon);
-                cli::start::run().await
+            }
+            FabricCommand::Start { foreground } => {
+                if foreground {
+                    setup_logging(false);
+                    cli::start::run().await
+                } else {
+                    let ready = daemon::setup_start()?;
+                    background_daemon(ready)
+                }
             }
             FabricCommand::Stop => {
                 setup_logging(false);
