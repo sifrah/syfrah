@@ -5,4 +5,5 @@ pub mod daemon;
 pub mod events;
 pub mod peering;
 pub mod store;
+pub mod ui;
 pub mod wg;
