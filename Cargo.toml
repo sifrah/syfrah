@@ -11,6 +11,9 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
+repository = "https://github.com/sifrah/syfrah"
+keywords = ["cloud", "wireguard", "mesh", "control-plane", "infrastructure"]
+categories = ["network-programming", "command-line-utilities"]
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
