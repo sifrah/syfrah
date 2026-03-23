@@ -55,6 +55,7 @@ jobs:
     container:
       image: rust:latest
     strategy:
+      max-parallel: 4
       fail-fast: false
       matrix:
         crate: ${{ fromJson(needs.discover.outputs.crates) }}
