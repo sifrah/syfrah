@@ -195,72 +195,48 @@ fn setup_logging(daemon_mode: bool) {
     }
 }
 
-#[cfg(unix)]
-fn daemonize() -> Result<bool> {
-    let pid = unsafe { libc::fork() };
-    if pid < 0 {
-        anyhow::bail!("fork failed");
-    }
-    if pid > 0 {
-        return Ok(true);
-    }
-    if unsafe { libc::setsid() } < 0 {
-        anyhow::bail!("setsid failed");
-    }
-    let pid2 = unsafe { libc::fork() };
-    if pid2 < 0 {
-        anyhow::bail!("second fork failed");
-    }
-    if pid2 > 0 {
-        std::process::exit(0);
-    }
-    unsafe {
-        let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
-        if devnull >= 0 {
-            libc::dup2(devnull, 0);
-            libc::dup2(devnull, 1);
-            libc::dup2(devnull, 2);
-            if devnull > 2 {
-                libc::close(devnull);
-            }
-        }
-    }
-    Ok(false)
-}
+/// Spawn the daemon in background via re-exec with `start --foreground`.
+/// State must already be saved before calling this.
+fn background_daemon(_ready: DaemonReady) -> Result<()> {
+    let exe = std::env::current_exe()?;
 
-#[cfg(not(unix))]
-fn daemonize() -> Result<bool> {
-    anyhow::bail!("background daemon is only supported on Unix");
-}
-
-/// Fork to background and start the daemon loop. Returns Ok(()) in the parent.
-fn background_daemon(ready: DaemonReady) -> Result<()> {
-    // Print PID hint before forking so the user sees it
-    if daemonize()? {
-        // Parent process: the child will write its own PID file once it starts
-        // We need to wait briefly for the child to write its PID
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        if let Some(pid) = syfrah_fabric::store::read_pid() {
-            println!("Daemon started (pid {pid}).");
-        } else {
-            println!("Daemon starting in background...");
+    #[cfg(unix)]
+    let child = {
+        use std::os::unix::process::CommandExt;
+        let mut cmd = std::process::Command::new(exe);
+        cmd.args(["fabric", "start", "--foreground"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        // Create a new session so the daemon survives terminal close
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
         }
-        println!("Run 'syfrah fabric status' to check.");
-        return Ok(());
+        cmd.spawn()?
+    };
+
+    #[cfg(not(unix))]
+    let child = std::process::Command::new(exe)
+        .args(["fabric", "start", "--foreground"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+
+    // The child process will write its own PID file via run_daemon -> store::write_pid
+    // Wait briefly for it to start and write the PID file
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    if let Some(pid) = syfrah_fabric::store::read_pid() {
+        println!("Daemon started (pid {pid}).");
+    } else {
+        // Use the spawned child PID as fallback
+        println!("Daemon started (pid {}).", child.id());
     }
-    // Child process: set up logging to file and run daemon
-    setup_logging(true);
-    // Build a mini runtime for the child (the parent's runtime is gone after fork)
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?
-        .block_on(daemon::run_daemon(
-            ready.my_record,
-            &ready.wg_keypair,
-            ready.mesh_secret,
-            ready.peering_port,
-        ))?;
-    std::process::exit(0);
+    println!("Run 'syfrah fabric status' to check.");
+    Ok(())
 }
 
 #[tokio::main]
@@ -297,7 +273,7 @@ async fn run() -> Result<()> {
                     zone,
                 };
                 if foreground {
-                    setup_logging(false);
+                    setup_logging(true);
                     daemon::run_init(config).await
                 } else {
                     let ready = daemon::setup_init(&config)?;
@@ -334,7 +310,7 @@ async fn run() -> Result<()> {
                         .map_err(|e| anyhow::anyhow!("invalid target address '{target}': {e}"))?
                 };
                 if foreground {
-                    setup_logging(false);
+                    setup_logging(true);
                     daemon::run_join(target_addr, config, pin).await
                 } else {
                     let ready = daemon::setup_join(target_addr, &config, pin).await?;
@@ -343,7 +319,8 @@ async fn run() -> Result<()> {
             }
             FabricCommand::Start { foreground } => {
                 if foreground {
-                    setup_logging(false);
+                    // Log to file when running as daemon (foreground or background)
+                    setup_logging(true);
                     cli::start::run().await
                 } else {
                     let ready = daemon::setup_start()?;
