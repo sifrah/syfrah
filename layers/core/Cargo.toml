@@ -4,6 +4,9 @@ description = "Core types, crypto and addressing for Syfrah mesh network"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 serde.workspace = true
