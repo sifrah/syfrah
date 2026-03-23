@@ -68,6 +68,9 @@ pub struct JoinResponse {
     pub peers: Vec<PeerRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// How the join was approved: "pin" or "manual". None if rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_by: Option<String>,
 }
 
 /// Wire protocol message envelope for TCP peering.
