@@ -231,6 +231,25 @@ async fn handle_incoming(
                 None,
             );
 
+            // Reject if node name already in active peers
+            {
+                let peers = crate::store::get_peers().unwrap_or_default();
+                if peers.iter().any(|p| p.name == req.node_name && p.status == syfrah_core::mesh::PeerStatus::Active) {
+                    info!(node = %req.node_name, "rejecting join: node already in mesh");
+                    let rejection = JoinResponse {
+                        accepted: false,
+                        mesh_name: None,
+                        mesh_secret: None,
+                        mesh_prefix: None,
+                        peers: vec![],
+                        reason: Some("node already in mesh, run 'syfrah fabric leave' first".into()),
+                        approved_by: None,
+                    };
+                    write_message(&mut stream, &PeeringMessage::JoinResponse(rejection)).await?;
+                    return Ok(());
+                }
+            }
+
             // Check PIN auto-accept
             if let Some(ref req_pin) = req.pin {
                 let auto = auto_accept.read().await;
@@ -267,6 +286,16 @@ async fn handle_incoming(
 
             {
                 let mut map = pending.write().await;
+                // Dedup: if there's already a pending request from the same node name,
+                // remove it (the joiner retried with a new key).
+                let stale_id = map
+                    .values()
+                    .find(|p| p.info.node_name == info.node_name)
+                    .map(|p| p.info.request_id.clone());
+                if let Some(old_id) = stale_id {
+                    info!(node = %info.node_name, old_request_id = %old_id, "replacing stale join request");
+                    map.remove(&old_id);
+                }
                 map.insert(
                     req.request_id.clone(),
                     PendingJoin {
