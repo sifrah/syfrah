@@ -7,7 +7,7 @@ pub async fn run() -> Result<()> {
     let mut state = store::load().map_err(|_| anyhow::anyhow!("no mesh configured."))?;
 
     if store::daemon_running().is_some() {
-        anyhow::bail!("daemon is running. Stop it first with 'syfrah stop'.");
+        anyhow::bail!("daemon is running. Stop it first with 'syfrah fabric stop'.");
     }
 
     let sp = ui::spinner("Rotating mesh secret...");
@@ -31,6 +31,6 @@ pub async fn run() -> Result<()> {
     ui::info_line("New IPv6", &new_ipv6.to_string());
     println!();
     println!("All peers must rejoin with the new secret.");
-    println!("Restart this node with 'syfrah start'.");
+    println!("Restart this node with 'syfrah fabric start'.");
     Ok(())
 }

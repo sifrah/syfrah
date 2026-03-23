@@ -31,7 +31,7 @@ pub struct DaemonConfig {
 /// Run the init flow: create a new mesh.
 pub async fn run_init(config: DaemonConfig) -> anyhow::Result<()> {
     if store::exists() {
-        anyhow::bail!("mesh state already exists. Run 'syfrah leave' first.");
+        anyhow::bail!("mesh state already exists. Run 'syfrah fabric leave' first.");
     }
 
     let sp = ui::spinner("Generating mesh secret...");
@@ -81,7 +81,7 @@ pub async fn run_init(config: DaemonConfig) -> anyhow::Result<()> {
     ui::info_line("Region", &region);
     ui::info_line("Zone", &zone);
     println!();
-    println!("Run 'syfrah peering' to accept new nodes.");
+    println!("Run 'syfrah fabric peering' to accept new nodes.");
     println!("Running daemon... (Ctrl+C to stop)");
 
     let my_record = build_record(
@@ -95,7 +95,7 @@ pub async fn run_init(config: DaemonConfig) -> anyhow::Result<()> {
     run_daemon(my_record, &wg_keypair, mesh_secret, config.peering_port).await
 }
 
-/// Auto-init: create mesh if none exists, used by `syfrah peering` on a fresh node.
+/// Auto-init: create mesh if none exists, used by `syfrah fabric peering` on a fresh node.
 pub fn auto_init(
     node_name: &str,
     wg_port: u16,
@@ -144,7 +144,7 @@ pub async fn run_join(
     pin: Option<String>,
 ) -> anyhow::Result<()> {
     if store::exists() {
-        anyhow::bail!("mesh state already exists. Run 'syfrah leave' first.");
+        anyhow::bail!("mesh state already exists. Run 'syfrah fabric leave' first.");
     }
 
     let sp = ui::spinner(&format!("Connecting to {target}..."));
@@ -251,7 +251,9 @@ pub async fn run_join(
 /// Restart daemon from saved state.
 pub async fn run_start() -> anyhow::Result<()> {
     let state = store::load().map_err(|_| {
-        anyhow::anyhow!("no mesh state found. Run 'syfrah init' or 'syfrah join' first.")
+        anyhow::anyhow!(
+            "no mesh state found. Run 'syfrah fabric init' or 'syfrah fabric join' first."
+        )
     })?;
 
     let mesh_secret: MeshSecret = state

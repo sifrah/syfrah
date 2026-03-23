@@ -260,7 +260,7 @@ pub async fn reject(request_id: &str, reason: Option<String>) -> Result<()> {
 async fn send_request(req: ControlRequest) -> Result<ControlResponse> {
     let path = store::control_socket_path();
     if !path.exists() {
-        anyhow::bail!("daemon not running. Start with 'syfrah start' first.");
+        anyhow::bail!("daemon not running. Start with 'syfrah fabric start' first.");
     }
     let resp = send_control_request(&path, &req)
         .await
