@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tracing::{info, warn};
 use wireguard_control::{Key, KeyPair};
@@ -10,14 +10,11 @@ use syfrah_core::addressing;
 use syfrah_core::mesh::{PeerRecord, PeerStatus};
 use syfrah_core::secret::MeshSecret;
 
+use crate::config::{self, Tuning};
 use crate::control::{self, ControlHandler, ControlRequest, ControlResponse};
 use crate::peering::{self, AutoAcceptConfig, PeeringState};
 use crate::store::{self, NodeState};
 use crate::wg;
-
-const UNREACHABLE_TIMEOUT: Duration = Duration::from_secs(300);
-const PERSIST_INTERVAL: Duration = Duration::from_secs(30);
-const RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
 
 pub struct DaemonConfig {
     pub mesh_name: String,
@@ -295,6 +292,18 @@ pub async fn run_daemon(
     mesh_secret: MeshSecret,
     peering_port: u16,
 ) -> anyhow::Result<()> {
+    let tuning = config::load_tuning().unwrap_or_else(|e| {
+        warn!("failed to load config.toml: {e}, using defaults");
+        Tuning::default()
+    });
+    info!(
+        "daemon tuning: health_check={}s reconcile={}s persist={}s unreachable={}s",
+        tuning.health_check_interval.as_secs(),
+        tuning.reconcile_interval.as_secs(),
+        tuning.persist_interval.as_secs(),
+        tuning.unreachable_timeout.as_secs(),
+    );
+
     store::write_pid()?;
 
     let wg_pubkey = wg_keypair.public.clone();
@@ -392,7 +401,7 @@ pub async fn run_daemon(
     let persist_recon = metrics_reconciliations.clone();
     let persist_unreach = metrics_unreachable.clone();
     let persist = async {
-        let mut interval = tokio::time::interval(PERSIST_INTERVAL);
+        let mut interval = tokio::time::interval(tuning.persist_interval);
         loop {
             interval.tick().await;
             let _ = store::set_metric("peers_discovered", persist_recv.load(Ordering::Relaxed));
@@ -406,10 +415,11 @@ pub async fn run_daemon(
     };
 
     // Health check: unreachable detection + recovery + last_seen update
+    let unreachable_timeout_secs = tuning.unreachable_timeout.as_secs();
     let health_counter = metrics_unreachable.clone();
     let health_recon = metrics_reconciliations.clone();
     let health_check = async {
-        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        let mut interval = tokio::time::interval(tuning.health_check_interval);
         loop {
             interval.tick().await;
 
@@ -440,7 +450,7 @@ pub async fn run_daemon(
 
                 // Recovery: unreachable → active if recent handshake
                 if peer.status == PeerStatus::Unreachable
-                    && current.saturating_sub(peer.last_seen) < UNREACHABLE_TIMEOUT.as_secs()
+                    && current.saturating_sub(peer.last_seen) < unreachable_timeout_secs
                 {
                     info!(
                         "peer {} recovered (recent handshake), marking active",
@@ -452,7 +462,7 @@ pub async fn run_daemon(
 
                 // Detection: active → unreachable if no handshake for too long
                 if peer.status == PeerStatus::Active
-                    && current.saturating_sub(peer.last_seen) > UNREACHABLE_TIMEOUT.as_secs()
+                    && current.saturating_sub(peer.last_seen) > unreachable_timeout_secs
                 {
                     info!("marking peer {} as unreachable", peer.name);
                     peer.status = PeerStatus::Unreachable;
@@ -474,14 +484,17 @@ pub async fn run_daemon(
     let reconcile_wg_pubkey = wg_pubkey.clone();
     let reconcile_recon = health_recon;
     let reconcile = async {
-        let mut interval = tokio::time::interval(RECONCILE_INTERVAL);
+        let mut interval = tokio::time::interval(tuning.reconcile_interval);
         loop {
             interval.tick().await;
 
             let stored_peers = store::get_peers().unwrap_or_default();
             let wg_summary = match wg::interface_summary() {
                 Ok(s) => s,
-                Err(_) => continue,
+                Err(e) => {
+                    warn!("reconciliation: WireGuard interface unavailable: {e}");
+                    continue;
+                }
             };
 
             // For each stored peer, ensure it's in WireGuard
