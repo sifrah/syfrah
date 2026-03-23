@@ -9,6 +9,7 @@ set -euo pipefail
 E2E_IMAGE="${E2E_IMAGE:-syfrah-e2e-test}"
 E2E_NETWORK="${E2E_NETWORK:-syfrah-e2e}"
 E2E_SUBNET="${E2E_SUBNET:-172.20.0.0/24}"
+E2E_IP_PREFIX="${E2E_IP_PREFIX:-172.20.0}"
 E2E_PIN="${E2E_PIN:-4829}"
 E2E_MESH="${E2E_MESH:-e2e-test}"
 E2E_CONTAINERS=()

@@ -8,15 +8,15 @@ echo "── Zones: Manual Override ──"
 
 create_network
 
-start_node "e2e-zman-1" "172.20.0.10"
-start_node "e2e-zman-2" "172.20.0.11"
+start_node "e2e-zman-1" "${E2E_IP_PREFIX}.10"
+start_node "e2e-zman-2" "${E2E_IP_PREFIX}.11"
 
 # Init with custom region/zone
 docker exec -d "e2e-zman-1" \
     syfrah fabric init \
     --name test-mesh \
     --node-name node-1 \
-    --endpoint 172.20.0.10:51820 \
+    --endpoint ${E2E_IP_PREFIX}.10:51820 \
     --region eu-west \
     --zone eu-west-paris-1
 
@@ -41,9 +41,9 @@ fi
 # Join with custom region/zone
 start_peering "e2e-zman-1"
 docker exec -d "e2e-zman-2" \
-    syfrah fabric join 172.20.0.10:51821 \
+    syfrah fabric join ${E2E_IP_PREFIX}.10:51821 \
     --node-name node-2 \
-    --endpoint 172.20.0.11:51820 \
+    --endpoint ${E2E_IP_PREFIX}.11:51820 \
     --pin "$E2E_PIN" \
     --region eu-central \
     --zone eu-central-frankfurt-1

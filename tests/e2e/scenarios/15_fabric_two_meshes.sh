@@ -10,24 +10,24 @@ echo "── Two Independent Meshes ──"
 create_network
 
 # Mesh Alpha: nodes 1-2
-start_node "e2e-alpha-1" "172.20.0.10"
-start_node "e2e-alpha-2" "172.20.0.11"
+start_node "e2e-alpha-1" "${E2E_IP_PREFIX}.10"
+start_node "e2e-alpha-2" "${E2E_IP_PREFIX}.11"
 
 # Mesh Beta: nodes 3-4 (different ports to avoid conflicts)
-start_node "e2e-beta-1" "172.20.0.20"
-start_node "e2e-beta-2" "172.20.0.21"
+start_node "e2e-beta-1" "${E2E_IP_PREFIX}.20"
+start_node "e2e-beta-2" "${E2E_IP_PREFIX}.21"
 
 # Init mesh Alpha on node-1
 E2E_MESH="alpha-mesh"
-init_mesh "e2e-alpha-1" "172.20.0.10" "alpha-1"
+init_mesh "e2e-alpha-1" "${E2E_IP_PREFIX}.10" "alpha-1"
 E2E_PIN="1111"
 start_peering "e2e-alpha-1"
 
 # Join Alpha mesh
 docker exec -d "e2e-alpha-2" \
-    syfrah fabric join 172.20.0.10:51821 \
+    syfrah fabric join ${E2E_IP_PREFIX}.10:51821 \
     --node-name alpha-2 \
-    --endpoint 172.20.0.11:51820 \
+    --endpoint ${E2E_IP_PREFIX}.11:51820 \
     --pin "1111"
 wait_daemon "e2e-alpha-2"
 
@@ -36,7 +36,7 @@ docker exec -d "e2e-beta-1" \
     syfrah fabric init \
     --name "beta-mesh" \
     --node-name beta-1 \
-    --endpoint 172.20.0.20:51830 \
+    --endpoint ${E2E_IP_PREFIX}.20:51830 \
     --port 51830 \
     --peering-port 51831
 wait_daemon "e2e-beta-1"
@@ -45,9 +45,9 @@ docker exec "e2e-beta-1" \
     syfrah fabric peering start --pin "2222"
 
 docker exec -d "e2e-beta-2" \
-    syfrah fabric join 172.20.0.20:51831 \
+    syfrah fabric join ${E2E_IP_PREFIX}.20:51831 \
     --node-name beta-2 \
-    --endpoint 172.20.0.21:51830 \
+    --endpoint ${E2E_IP_PREFIX}.21:51830 \
     --port 51830 \
     --pin "2222"
 wait_daemon "e2e-beta-2"

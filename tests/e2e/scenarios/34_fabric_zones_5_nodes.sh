@@ -9,10 +9,10 @@ echo "── Zones: 5 Nodes All Unique ──"
 create_network
 
 for i in $(seq 1 5); do
-    start_node "e2e-z5-$i" "172.20.0.$((9+i))"
+    start_node "e2e-z5-$i" "${E2E_IP_PREFIX}.$((9+i))"
 done
 
-init_mesh "e2e-z5-1" "172.20.0.10" "node-1"
+init_mesh "e2e-z5-1" "${E2E_IP_PREFIX}.10" "node-1"
 start_peering "e2e-z5-1"
 
 for i in $(seq 2 5); do
@@ -28,7 +28,7 @@ for i in $(seq 2 5); do
             sleep 1
         done
     fi
-    join_mesh "e2e-z5-$i" "172.20.0.10" "172.20.0.$((9+i))" "node-$i"
+    join_mesh "e2e-z5-$i" "${E2E_IP_PREFIX}.10" "${E2E_IP_PREFIX}.$((9+i))" "node-$i"
 done
 
 sleep 5

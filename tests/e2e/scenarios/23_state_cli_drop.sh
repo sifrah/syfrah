@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/lib.sh"
 echo "── State CLI: Drop ──"
 
 create_network
-start_node "e2e-sdrop-1" "172.20.0.10"
+start_node "e2e-sdrop-1" "${E2E_IP_PREFIX}.10"
 
 # Drop nonexistent layer — should be a no-op
 output=$(docker exec "e2e-sdrop-1" syfrah state drop nonexistent --force 2>&1)
@@ -18,7 +18,7 @@ else
 fi
 
 # Init a mesh so we have state
-init_mesh "e2e-sdrop-1" "172.20.0.10" "node-1"
+init_mesh "e2e-sdrop-1" "${E2E_IP_PREFIX}.10" "node-1"
 sleep 2
 
 # Stop daemon before dropping

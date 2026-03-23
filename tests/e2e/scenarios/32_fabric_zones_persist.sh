@@ -7,14 +7,14 @@ source "$SCRIPT_DIR/lib.sh"
 echo "── Zones: Persist Across Restart ──"
 
 create_network
-start_node "e2e-zper-1" "172.20.0.10"
+start_node "e2e-zper-1" "${E2E_IP_PREFIX}.10"
 
 # Init with custom zone
 docker exec -d "e2e-zper-1" \
     syfrah fabric init \
     --name test-mesh \
     --node-name node-1 \
-    --endpoint 172.20.0.10:51820 \
+    --endpoint ${E2E_IP_PREFIX}.10:51820 \
     --region my-region \
     --zone my-region-zone-42
 

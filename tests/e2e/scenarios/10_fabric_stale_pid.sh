@@ -7,12 +7,12 @@ source "$SCRIPT_DIR/lib.sh"
 echo "── Stale PID Recovery ──"
 
 create_network
-start_node "e2e-pid-1" "172.20.0.10"
-start_node "e2e-pid-2" "172.20.0.11"
+start_node "e2e-pid-1" "${E2E_IP_PREFIX}.10"
+start_node "e2e-pid-2" "${E2E_IP_PREFIX}.11"
 
-init_mesh "e2e-pid-1" "172.20.0.10" "node-1"
+init_mesh "e2e-pid-1" "${E2E_IP_PREFIX}.10" "node-1"
 start_peering "e2e-pid-1"
-join_mesh "e2e-pid-2" "172.20.0.10" "172.20.0.11" "node-2"
+join_mesh "e2e-pid-2" "${E2E_IP_PREFIX}.10" "${E2E_IP_PREFIX}.11" "node-2"
 
 sleep 3
 assert_peer_count "e2e-pid-1" 1

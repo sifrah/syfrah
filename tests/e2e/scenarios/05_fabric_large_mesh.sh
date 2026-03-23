@@ -13,23 +13,23 @@ echo "── Large Mesh (5 nodes) ──"
 
 create_network
 
-start_node "e2e-large-1" "172.20.0.10"
-start_node "e2e-large-2" "172.20.0.11"
-start_node "e2e-large-3" "172.20.0.12"
-start_node "e2e-large-4" "172.20.0.13"
-start_node "e2e-large-5" "172.20.0.14"
+start_node "e2e-large-1" "${E2E_IP_PREFIX}.10"
+start_node "e2e-large-2" "${E2E_IP_PREFIX}.11"
+start_node "e2e-large-3" "${E2E_IP_PREFIX}.12"
+start_node "e2e-large-4" "${E2E_IP_PREFIX}.13"
+start_node "e2e-large-5" "${E2E_IP_PREFIX}.14"
 
-init_mesh "e2e-large-1" "172.20.0.10" "node-1"
+init_mesh "e2e-large-1" "${E2E_IP_PREFIX}.10" "node-1"
 start_peering "e2e-large-1"
 
 # Join sequentially with pauses to let announcements propagate
-join_mesh "e2e-large-2" "172.20.0.10" "172.20.0.11" "node-2"
+join_mesh "e2e-large-2" "${E2E_IP_PREFIX}.10" "${E2E_IP_PREFIX}.11" "node-2"
 sleep 1
-join_mesh "e2e-large-3" "172.20.0.10" "172.20.0.12" "node-3"
+join_mesh "e2e-large-3" "${E2E_IP_PREFIX}.10" "${E2E_IP_PREFIX}.12" "node-3"
 sleep 1
-join_mesh "e2e-large-4" "172.20.0.10" "172.20.0.13" "node-4"
+join_mesh "e2e-large-4" "${E2E_IP_PREFIX}.10" "${E2E_IP_PREFIX}.13" "node-4"
 sleep 1
-join_mesh "e2e-large-5" "172.20.0.10" "172.20.0.14" "node-5"
+join_mesh "e2e-large-5" "${E2E_IP_PREFIX}.10" "${E2E_IP_PREFIX}.14" "node-5"
 
 # Wait for all peer announcements to propagate
 sleep 8

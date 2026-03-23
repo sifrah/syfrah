@@ -8,13 +8,13 @@ echo "── Zones: Auto Increment ──"
 
 create_network
 
-start_node "e2e-zinc-1" "172.20.0.10"
-start_node "e2e-zinc-2" "172.20.0.11"
-start_node "e2e-zinc-3" "172.20.0.12"
+start_node "e2e-zinc-1" "${E2E_IP_PREFIX}.10"
+start_node "e2e-zinc-2" "${E2E_IP_PREFIX}.11"
+start_node "e2e-zinc-3" "${E2E_IP_PREFIX}.12"
 
-init_mesh "e2e-zinc-1" "172.20.0.10" "node-1"
+init_mesh "e2e-zinc-1" "${E2E_IP_PREFIX}.10" "node-1"
 start_peering "e2e-zinc-1"
-join_mesh "e2e-zinc-2" "172.20.0.10" "172.20.0.11" "node-2"
+join_mesh "e2e-zinc-2" "${E2E_IP_PREFIX}.10" "${E2E_IP_PREFIX}.11" "node-2"
 
 # Wait until leader sees node-2 before next join (zone generation depends on peer list)
 for attempt in $(seq 1 15); do
@@ -32,7 +32,7 @@ docker exec "e2e-zinc-1" syfrah fabric peers 2>&1 || true
 debug "leader state.json peer count:"
 docker exec "e2e-zinc-1" cat /root/.syfrah/state.json 2>/dev/null | jq '.peers | length' || echo "(no json)"
 
-join_mesh "e2e-zinc-3" "172.20.0.10" "172.20.0.12" "node-3"
+join_mesh "e2e-zinc-3" "${E2E_IP_PREFIX}.10" "${E2E_IP_PREFIX}.12" "node-3"
 
 sleep 3
 

@@ -8,22 +8,22 @@ echo "── Zones: Peers Display ──"
 
 create_network
 
-start_node "e2e-zdisp-1" "172.20.0.10"
-start_node "e2e-zdisp-2" "172.20.0.11"
+start_node "e2e-zdisp-1" "${E2E_IP_PREFIX}.10"
+start_node "e2e-zdisp-2" "${E2E_IP_PREFIX}.11"
 
 # Init with known region/zone
 docker exec -d "e2e-zdisp-1" \
     syfrah fabric init \
     --name test-mesh \
     --node-name node-1 \
-    --endpoint 172.20.0.10:51820 \
+    --endpoint ${E2E_IP_PREFIX}.10:51820 \
     --region eu-west \
     --zone eu-west-zone-1
 
 wait_daemon "e2e-zdisp-1"
 start_peering "e2e-zdisp-1"
 
-join_mesh "e2e-zdisp-2" "172.20.0.10" "172.20.0.11" "node-2"
+join_mesh "e2e-zdisp-2" "${E2E_IP_PREFIX}.10" "${E2E_IP_PREFIX}.11" "node-2"
 
 sleep 3
 

@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/lib.sh"
 echo "── Zones: CLI Help ──"
 
 create_network
-start_node "e2e-zhelp-1" "172.20.0.10"
+start_node "e2e-zhelp-1" "${E2E_IP_PREFIX}.10"
 
 # Init help shows --region and --zone
 output=$(docker exec "e2e-zhelp-1" syfrah fabric init --help 2>&1)

@@ -7,18 +7,18 @@ source "$SCRIPT_DIR/lib.sh"
 echo "── redb/JSON Consistency ──"
 create_network
 
-start_node "e2e-consist-1" "172.20.0.10"
-start_node "e2e-consist-2" "172.20.0.11"
-start_node "e2e-consist-3" "172.20.0.12"
+start_node "e2e-consist-1" "${E2E_IP_PREFIX}.10"
+start_node "e2e-consist-2" "${E2E_IP_PREFIX}.11"
+start_node "e2e-consist-3" "${E2E_IP_PREFIX}.12"
 
-init_mesh "e2e-consist-1" "172.20.0.10" "node-1"
+init_mesh "e2e-consist-1" "${E2E_IP_PREFIX}.10" "node-1"
 start_peering "e2e-consist-1"
 
 # Join 2 nodes rapidly (no delay)
-docker exec -d "e2e-consist-2" syfrah fabric join 172.20.0.10:51821 \
-    --node-name "node-2" --endpoint "172.20.0.11:51820" --pin "$E2E_PIN"
-docker exec -d "e2e-consist-3" syfrah fabric join 172.20.0.10:51821 \
-    --node-name "node-3" --endpoint "172.20.0.12:51820" --pin "$E2E_PIN"
+docker exec -d "e2e-consist-2" syfrah fabric join ${E2E_IP_PREFIX}.10:51821 \
+    --node-name "node-2" --endpoint "${E2E_IP_PREFIX}.11:51820" --pin "$E2E_PIN"
+docker exec -d "e2e-consist-3" syfrah fabric join ${E2E_IP_PREFIX}.10:51821 \
+    --node-name "node-3" --endpoint "${E2E_IP_PREFIX}.12:51820" --pin "$E2E_PIN"
 
 wait_daemon "e2e-consist-2" 30
 wait_daemon "e2e-consist-3" 30
