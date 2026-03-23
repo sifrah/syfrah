@@ -1,18 +1,63 @@
 # Syfrah
 
 [![CI](https://github.com/sifrah/syfrah/actions/workflows/ci.yml/badge.svg)](https://github.com/sifrah/syfrah/actions/workflows/ci.yml)
+[![E2E Tests](https://github.com/sifrah/syfrah/actions/workflows/e2e.yml/badge.svg)](https://github.com/sifrah/syfrah/actions/workflows/e2e.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-An open-source control plane that turns rented dedicated servers into a programmable cloud.
+An open-source WireGuard mesh networking tool for dedicated servers.
 
-Take servers from OVH, Hetzner, Scaleway, or any provider. Syfrah connects them into an encrypted mesh, orchestrates compute, storage, and networking, and exposes cloud services on top.
+## What is Syfrah?
+
+Syfrah connects dedicated servers from any provider (OVH, Hetzner, Scaleway, or others) into an encrypted WireGuard mesh network. Each pair of nodes establishes a point-to-point WireGuard tunnel, forming a full-mesh topology where every node can reach every other node over private, encrypted IPv6.
+
+The mesh is fully decentralized with no central coordinator. An operator adds nodes one at a time through a manual peering process: the new node sends a join request, the operator approves it (or uses a pre-shared PIN), and the node receives the mesh credentials and peer list. All inter-node traffic is encrypted with WireGuard (Curve25519 + ChaCha20-Poly1305).
+
+The long-term vision is to grow Syfrah into a full control plane that orchestrates compute, storage, and networking on top of the mesh. Today, it is a networking tool: it builds the encrypted fabric that everything else will run on.
+
+## Status
+
+| Layer | Crate | Status |
+|---|---|---|
+| **Core** | `syfrah-core` | Stable — types, crypto, IPv6 addressing |
+| **State** | `syfrah-state` | Stable — embedded persistence (redb) |
+| **Fabric** | `syfrah-fabric` | Stable — WireGuard mesh, peering, daemon, CLI |
+| Forge | — | Design phase |
+| Compute | — | Design phase |
+| Storage | — | Design phase |
+| Overlay | — | Design phase |
+| Control Plane | — | Design phase |
+| Org | — | Design phase |
+| IAM | — | Design phase |
+| Products | — | Design phase |
+
+## Install
+
+### Pre-compiled binary (Linux / macOS)
+
+```bash
+curl -fsSL https://github.com/sifrah/syfrah/releases/latest/download/install.sh | sh
+```
+
+### From crates.io
+
+```bash
+cargo install syfrah
+```
+
+### From source
+
+```bash
+git clone https://github.com/sifrah/syfrah.git
+cd syfrah
+cargo build --release
+# Binary is at target/release/syfrah
+```
+
+Requires Rust stable (version pinned in [rust-toolchain.toml](rust-toolchain.toml)).
 
 ## Quick Start
 
 ```bash
-# Build
-cargo build
-
 # Server 1: create a mesh
 syfrah fabric init --name my-cloud
 syfrah fabric peering --pin 4829
@@ -25,62 +70,85 @@ syfrah fabric status
 syfrah fabric peers
 ```
 
-Three commands, one minute, encrypted WireGuard mesh between your servers.
+This creates an encrypted WireGuard mesh between the two servers. Each additional server repeats the `join` step. The operator approves every join, either manually or via PIN.
 
-## Architecture
-
-```
-    Tenant API          ← HTTP REST, any node, forwarded to Raft leader
-    IAM + Org Model     ← 4 roles, Org/Project/Environment
-    Cloud Products      ← VMs, LBs, managed DBs (forge primitives + config)
-    Control Plane       ← Raft (openraft) + gossip (SWIM), embedded on every node
-    Compute + Storage   ← Firecracker microVMs + ZeroFS (S3-backed block devices)
-    Overlay             ← VXLAN, VPC, security groups, private DNS
-    Forge               ← Per-node REST API, manages local resources
-    Fabric              ← WireGuard full-mesh, IPv6 ULA, manual peering
-    Dedicated Servers   ← OVH, Hetzner, Scaleway + S3 buckets
-```
-
-Each layer is a self-contained crate in `layers/`. See [handbook/ARCHITECTURE.md](handbook/ARCHITECTURE.md) for the full design.
-
-## Repository Structure
+## How it works
 
 ```
-layers/
-  core/           syfrah-core     Foundation types, crypto, addressing (no I/O)
-  fabric/         syfrah-fabric   WireGuard mesh, peering, daemon, CLI [implemented]
-  forge/                          Per-node control and debug [planned]
-  compute/                        Firecracker microVMs [planned]
-  storage/                        ZeroFS + S3 block storage [planned]
-  overlay/                        VXLAN, VPC, security groups [planned]
-  controlplane/                   Raft + gossip + scheduler [planned]
-  org/                            Org / Project / Environment [planned]
-  iam/                            Users, roles, API keys [planned]
-  products/                       Product orchestration [planned]
-
-bin/syfrah/       The CLI binary (composes all layers)
-handbook/         Project handbook (cross-cutting docs)
+                  ┌──────────────────────────────┐
+                  │           CLI binary          │
+                  │         (bin/syfrah)          │
+                  └──────────────┬───────────────┘
+                                 │
+                  ┌──────────────┴───────────────┐
+                  │       syfrah-fabric           │
+                  │                               │
+                  │  peering.rs   TCP join/accept  │
+                  │  daemon.rs    background loop  │
+                  │  wg.rs        WireGuard iface  │
+                  │  control.rs   Unix socket IPC  │
+                  │  store.rs     state persist    │
+                  │  events.rs    event log        │
+                  └──────┬───────────┬────────────┘
+                         │           │
+              ┌──────────┴──┐  ┌─────┴──────────┐
+              │ syfrah-core │  │  syfrah-state   │
+              │             │  │                 │
+              │ identity    │  │ redb wrapper    │
+              │ addressing  │  │ ACID persistence│
+              │ mesh types  │  │                 │
+              │ crypto      │  │                 │
+              └─────────────┘  └─────────────────┘
 ```
 
-Each layer has a `README.md` with its concept documentation. Browse any layer folder to understand it.
+**Core** provides pure types with no I/O: node identities, WireGuard keypairs, mesh secrets, and deterministic IPv6 address derivation (ULA /48 per mesh, /128 per node, derived from SHA-256 of the mesh secret and public key).
+
+**State** wraps redb for crash-safe embedded persistence. Mesh state is stored in `~/.syfrah/fabric.redb` with a JSON backup at `~/.syfrah/state.json`.
+
+**Fabric** is the main layer. It manages:
+- A WireGuard interface (`syfrah0`) with a full-mesh topology
+- A TCP peering protocol for manual node enrollment (PIN or interactive approval)
+- Encrypted peer announcements (AES-256-GCM, key derived from mesh secret)
+- A daemon loop with health checks (60s interval, 5-minute unreachable threshold)
+- A reconciliation loop (30s interval) that keeps WireGuard config in sync with stored state
+- Metrics: peers discovered, reconciliations, unreachable count, uptime
+
+The CLI binary in `bin/syfrah` composes these crates and contains no logic of its own.
 
 ## Documentation
 
-- [handbook/ARCHITECTURE.md](handbook/ARCHITECTURE.md) — Global architecture, design principles, non-goals, failure model
-- [layers/fabric/README.md](layers/fabric/README.md) — Fabric (WireGuard mesh)
-- [layers/forge/README.md](layers/forge/README.md) — Forge (per-node control)
-- [layers/compute/README.md](layers/compute/README.md) — Compute (Firecracker)
-- [layers/storage/README.md](layers/storage/README.md) — Storage (ZeroFS + S3)
-- [layers/overlay/README.md](layers/overlay/README.md) — Overlay (VXLAN, VPC)
-- [layers/controlplane/README.md](layers/controlplane/README.md) — Control Plane (Raft + gossip)
-- [layers/org/README.md](layers/org/README.md) — Organization Model
-- [layers/iam/README.md](layers/iam/README.md) — IAM
-- [handbook/state-and-reconciliation.md](handbook/state-and-reconciliation.md) — State ownership, reconciliation loop, resource phases
-- [handbook/repository.md](handbook/repository.md) — Repo structure conventions
+### Implemented layers
 
-## Building
+- [layers/fabric/README.md](layers/fabric/README.md) — Fabric: WireGuard mesh, peering protocol, security model, failure modes, scalability
+- [layers/core/](layers/core/) — Core: types, crypto, addressing
+- [layers/state/](layers/state/) — State: embedded persistence
 
-Requires Rust (see [rust-toolchain.toml](rust-toolchain.toml)).
+### Architecture and handbook
+
+- [handbook/ARCHITECTURE.md](handbook/ARCHITECTURE.md) — Full architecture vision and design principles
+- [handbook/repository.md](handbook/repository.md) — Repository structure conventions
+- [handbook/state-and-reconciliation.md](handbook/state-and-reconciliation.md) — State ownership and reconciliation design
+- [handbook/cli.md](handbook/cli.md) — CLI command tree
+- [handbook/testing.md](handbook/testing.md) — Testing strategy
+
+## Roadmap
+
+The layers below are architecturally designed with concept documentation but have no implementation yet. Each has a README in its `layers/` directory describing the planned design.
+
+- **Forge** — per-node REST API for managing local resources
+- **Compute** — Firecracker microVMs
+- **Storage** — S3-backed block devices (ZeroFS)
+- **Overlay** — VXLAN, VPCs, security groups, private DNS
+- **Control Plane** — Raft consensus + SWIM gossip, embedded on every node
+- **Org** — multi-tenant organization/project/environment model
+- **IAM** — role-based access control and API keys
+- **Products** — managed databases, load balancers, composed from forge primitives
+
+See [handbook/ARCHITECTURE.md](handbook/ARCHITECTURE.md) for the full design.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```bash
 cargo build           # build all crates
@@ -89,15 +157,11 @@ cargo clippy          # lint
 cargo run -- --help   # run the CLI
 ```
 
-## Current Status
+## Security
 
-The **fabric layer** is implemented: WireGuard mesh with manual TCP peering, encrypted peer announcements, IPv6 ULA addressing, daemon with health checks, and a full CLI.
+All inter-node traffic is encrypted by WireGuard (Curve25519 + ChaCha20-Poly1305). Peer announcements are additionally encrypted with AES-256-GCM. The TCP peering channel itself is not TLS-encrypted; join requests and responses are sent in plaintext. See the [fabric security model](layers/fabric/README.md#security-model) for the full threat model.
 
-Everything else is architecturally designed (see the concept docs) and ready to implement.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+To report a security vulnerability, please email security@syfrah.dev.
 
 ## License
 
