@@ -1,5 +1,5 @@
 use crate::daemon::{self, DaemonConfig};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::net::SocketAddr;
 
 pub async fn run(
@@ -36,4 +36,7 @@ pub async fn run(
         pin,
     )
     .await
+    .context(format!(
+        "Failed to join mesh via {target}. Check that the target node is running and peering is active."
+    ))
 }
