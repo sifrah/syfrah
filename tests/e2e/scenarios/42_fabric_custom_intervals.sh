@@ -53,10 +53,10 @@ sleep 45
 
 # Check peer status
 peer_status=$(docker exec "e2e-config-1" syfrah fabric peers 2>&1 | grep "node-2")
-if echo "$peer_status" | grep -qi "unreachable"; then
-    pass "node-2 marked unreachable within 35s (fast config)"
+if echo "$peer_status" | grep -qi "unreach"; then
+    pass "node-2 marked unreachable with fast config"
 else
-    fail "node-2 not yet unreachable after 35s"
+    fail "node-2 not yet unreachable after 45s"
     echo "$peer_status"
 fi
 

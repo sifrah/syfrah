@@ -151,7 +151,7 @@ impl PeeringState {
         self.set_active(true).await;
         let addr: SocketAddr = format!("0.0.0.0:{port}").parse().unwrap();
         let listener = TcpListener::bind(addr).await?;
-        info!("peering listener started on port {port}");
+        info!(port = port, "peering listener started");
 
         loop {
             let (stream, peer_addr) = match listener.accept().await {
@@ -215,8 +215,10 @@ async fn handle_incoming(
             }
 
             info!(
-                "join request from {} ({}): id={}",
-                req.node_name, req.endpoint, req.request_id
+                node = %req.node_name,
+                endpoint = %req.endpoint,
+                request_id = %req.request_id,
+                "join request received"
             );
 
             // Check PIN auto-accept
@@ -224,7 +226,7 @@ async fn handle_incoming(
                 let auto = auto_accept.read().await;
                 if let Some(ref config) = *auto {
                     if config.pin == *req_pin {
-                        info!("PIN matched, auto-accepting {}", req.node_name);
+                        info!(node = %req.node_name, request_id = %req.request_id, "PIN matched, auto-accepting");
                         let (response, new_record) = build_auto_accept_response(&req, config)?;
                         write_message(&mut stream, &PeeringMessage::JoinResponse(response)).await?;
                         on_accepted(new_record);
@@ -284,8 +286,10 @@ async fn handle_incoming(
                 encryption_key.ok_or_else(|| PeeringError::Protocol("no encryption key".into()))?;
             let record = decrypt_record(&ciphertext, &enc_key)?;
             info!(
-                "peer announce from {peer_addr}: {} ({})",
-                record.name, record.mesh_ipv6
+                peer = %record.name,
+                ipv6 = %record.mesh_ipv6,
+                from = %peer_addr,
+                "peer announce received"
             );
             on_announce(record);
         }
@@ -426,13 +430,10 @@ pub async fn announce_peer_to_mesh(
             continue;
         }
         if let Err(e) = announce_peer(peer.endpoint, peering_port, record, encryption_key).await {
-            warn!(
-                "failed to announce {} to {} after {ANNOUNCE_MAX_RETRIES} attempts: {e}",
-                record.name, peer.name
-            );
+            warn!(target_peer = %peer.name, target_endpoint = %peer.endpoint, error = %e, "announcement failed after retries");
             failed += 1;
         } else {
-            debug!("announced {} to {}", record.name, peer.name);
+            debug!(target_peer = %peer.name, record = %record.name, "announced peer");
             succeeded += 1;
         }
     }

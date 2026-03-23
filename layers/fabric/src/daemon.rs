@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use wireguard_control::{Key, KeyPair};
 
 use syfrah_core::addressing;
@@ -40,7 +40,7 @@ pub async fn run_init(config: DaemonConfig) -> anyhow::Result<()> {
     let endpoint = resolve_endpoint(&config);
 
     wg::setup_interface(&wg_keypair, config.wg_listen_port, mesh_ipv6)?;
-    info!("wireguard interface syfrah0 up");
+    info!(flow = "init", mesh = %config.mesh_name, node = %config.node_name, "wireguard interface up");
 
     // Region/zone: use provided or defaults
     let region = config
@@ -185,12 +185,16 @@ pub async fn run_join(
         .unwrap_or_else(|| store::generate_zone(&region, &response.peers));
 
     wg::setup_interface(&wg_keypair, config.wg_listen_port, mesh_ipv6)?;
-    info!("wireguard interface syfrah0 up");
+    info!(flow = "join", node = %config.node_name, "wireguard interface up");
 
     if !response.peers.is_empty() {
-        info!("applying {} peers from join response", response.peers.len());
+        info!(
+            flow = "join",
+            count = response.peers.len(),
+            "applying peers from join response"
+        );
         if let Err(e) = wg::apply_peers(&wg_keypair.public, &response.peers) {
-            warn!("failed to apply peers: {e}");
+            warn!(flow = "join", error = %e, "failed to apply peers");
         }
     }
 
@@ -246,9 +250,13 @@ pub async fn run_start() -> anyhow::Result<()> {
     wg::setup_interface(&wg_keypair, state.wg_listen_port, state.mesh_ipv6)?;
 
     if !state.peers.is_empty() {
-        info!("applying {} known peers from state", state.peers.len());
+        info!(
+            flow = "start",
+            count = state.peers.len(),
+            "applying peers from saved state"
+        );
         if let Err(e) = wg::apply_peers(&wg_keypair.public, &state.peers) {
-            warn!("failed to apply saved peers: {e}");
+            warn!(flow = "start", error = %e, "failed to apply saved peers");
         }
     }
 
@@ -331,14 +339,14 @@ pub async fn run_daemon(
         tokio::spawn(async move {
             // Add to WG
             if let Err(e) = wg::upsert_peer(&pubkey, &record) {
-                warn!("failed to add peer to WG: {e}");
+                warn!(peer = %record.name, endpoint = %record.endpoint, error = %e, "failed to add peer to WG");
             } else {
                 recon.fetch_add(1, Ordering::Relaxed);
-                info!("wireguard peer added: {}", record.name);
+                info!(peer = %record.name, endpoint = %record.endpoint, "peer accepted and added to WG");
             }
             // Save to store (atomic — no more load+push+save race)
             if let Err(e) = store::upsert_peer(&record) {
-                warn!("failed to persist peer {}: {e}", record.name);
+                warn!(peer = %record.name, error = %e, "failed to persist peer");
             }
             // Announce to existing peers
             let known = store::get_peers().unwrap_or_default();
@@ -376,14 +384,14 @@ pub async fn run_daemon(
         let record = record.clone();
         tokio::spawn(async move {
             if let Err(e) = wg::upsert_peer(&pubkey, &record) {
-                warn!("failed to upsert peer {}: {e}", record.name);
+                warn!(peer = %record.name, endpoint = %record.endpoint, error = %e, "failed to upsert announced peer");
             } else {
                 recon.fetch_add(1, Ordering::Relaxed);
-                info!("wireguard peer upserted via announce: {}", record.name);
+                debug!(peer = %record.name, endpoint = %record.endpoint, "peer upserted via announce");
             }
             // Save to store (atomic)
             if let Err(e) = store::upsert_peer(&record) {
-                warn!("failed to persist announced peer {}: {e}", record.name);
+                warn!(peer = %record.name, error = %e, "failed to persist announced peer");
             }
         });
     });
@@ -455,10 +463,7 @@ pub async fn run_daemon(
                 if peer.status == PeerStatus::Unreachable
                     && current.saturating_sub(peer.last_seen) < unreachable_timeout_secs
                 {
-                    info!(
-                        "peer {} recovered (recent handshake), marking active",
-                        peer.name
-                    );
+                    info!(peer = %peer.name, last_seen = peer.last_seen, "peer recovered, marking active");
                     peer.status = PeerStatus::Active;
                     changed = true;
                 }
@@ -467,7 +472,7 @@ pub async fn run_daemon(
                 if peer.status == PeerStatus::Active
                     && current.saturating_sub(peer.last_seen) > unreachable_timeout_secs
                 {
-                    info!("marking peer {} as unreachable", peer.name);
+                    info!(peer = %peer.name, last_seen = peer.last_seen, timeout_secs = unreachable_timeout_secs, "marking peer as unreachable");
                     peer.status = PeerStatus::Unreachable;
                     health_counter.fetch_add(1, Ordering::Relaxed);
                     changed = true;
@@ -510,12 +515,9 @@ pub async fn run_daemon(
                     .iter()
                     .any(|p| p.public_key == peer.wg_public_key);
                 if !in_wg {
-                    info!(
-                        "reconciling: adding missing peer {} to WireGuard",
-                        peer.name
-                    );
+                    info!(peer = %peer.name, endpoint = %peer.endpoint, "reconciling: adding missing peer to WireGuard");
                     if let Err(e) = wg::upsert_peer(&reconcile_wg_pubkey, peer) {
-                        warn!("reconciliation failed for {}: {e}", peer.name);
+                        warn!(peer = %peer.name, error = %e, "reconciliation failed");
                     } else {
                         reconcile_recon.fetch_add(1, Ordering::Relaxed);
                     }

@@ -134,6 +134,10 @@ fn default_node_name() -> String {
 }
 
 fn setup_logging(daemon_mode: bool) {
+    let json_mode = std::env::var("SYFRAH_LOG_FORMAT")
+        .map(|v| v == "json")
+        .unwrap_or(false);
+
     if daemon_mode {
         let log_path = dirs::home_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -153,10 +157,24 @@ fn setup_logging(daemon_mode: bool) {
             .append(true)
             .open(&log_path)
             .expect("failed to open log file");
+        if json_mode {
+            tracing_subscriber::fmt()
+                .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+                .with_writer(file)
+                .with_ansi(false)
+                .json()
+                .init();
+        } else {
+            tracing_subscriber::fmt()
+                .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+                .with_writer(file)
+                .with_ansi(false)
+                .init();
+        }
+    } else if json_mode {
         tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-            .with_writer(file)
-            .with_ansi(false)
+            .json()
             .init();
     } else {
         tracing_subscriber::fmt()
