@@ -7,6 +7,32 @@ An open-source control plane that turns rented dedicated servers into a programm
 
 Take servers from OVH, Hetzner, Scaleway, or any provider. Syfrah connects them into an encrypted mesh, orchestrates compute, storage, and networking, and exposes cloud services on top.
 
+## Install
+
+**Download a pre-built binary** from the [latest release](https://github.com/sifrah/syfrah/releases/latest):
+
+```bash
+# Example: Linux amd64
+curl -LO https://github.com/sifrah/syfrah/releases/latest/download/syfrah-v0.1.0-x86_64-unknown-linux-musl.tar.gz
+tar xzf syfrah-v0.1.0-x86_64-unknown-linux-musl.tar.gz
+sudo mv syfrah /usr/local/bin/
+```
+
+**Via cargo install** (requires Rust toolchain):
+
+```bash
+cargo install --git https://github.com/sifrah/syfrah.git
+```
+
+**From source:**
+
+```bash
+git clone https://github.com/sifrah/syfrah.git
+cd syfrah
+cargo build --release
+# Binary at target/release/syfrah
+```
+
 ## Quick Start
 
 ```bash
