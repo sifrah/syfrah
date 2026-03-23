@@ -136,7 +136,8 @@ mod tests {
 
     #[test]
     fn unit_file_contains_required_directives() {
-        assert!(UNIT_FILE_CONTENTS.contains("ExecStart=/usr/local/bin/syfrah fabric start --foreground"));
+        assert!(UNIT_FILE_CONTENTS
+            .contains("ExecStart=/usr/local/bin/syfrah fabric start --foreground"));
         assert!(UNIT_FILE_CONTENTS.contains("Restart=always"));
         assert!(UNIT_FILE_CONTENTS.contains("RestartSec=5"));
         assert!(UNIT_FILE_CONTENTS.contains("After=network-online.target"));

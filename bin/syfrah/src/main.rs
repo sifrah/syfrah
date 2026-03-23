@@ -344,10 +344,7 @@ async fn run() -> Result<()> {
                 )
                 .await
             }
-            FabricCommand::Start {
-                daemon,
-                foreground,
-            } => {
+            FabricCommand::Start { daemon, foreground } => {
                 if foreground {
                     // Foreground mode for systemd: log to stderr, don't fork
                     setup_logging(false);
