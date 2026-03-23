@@ -324,8 +324,9 @@ wait_for_convergence() {
         local all_ok=true
         for i in $(seq 1 "$count"); do
             local actual
-            actual=$(docker exec "${prefix}${i}" syfrah fabric peers 2>&1 | grep -c "active" || echo "0")
-            if [ "$actual" -ne "$expected" ]; then
+            actual=$(docker exec "${prefix}${i}" syfrah fabric peers 2>&1 | grep -c "active" 2>/dev/null || echo "0")
+            actual=$(echo "$actual" | tr -d '[:space:]')
+            if [ "$actual" -ne "$expected" ] 2>/dev/null; then
                 all_ok=false
                 break
             fi
