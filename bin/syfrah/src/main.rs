@@ -93,6 +93,8 @@ enum FabricCommand {
     Rotate,
     /// Leave the mesh, tear down interface, clear state
     Leave,
+    /// Run diagnostic checks on the fabric
+    Diagnose,
     /// Manage peering — accept/reject join requests
     Peering {
         /// PIN for auto-accept mode
@@ -302,6 +304,10 @@ async fn main() -> Result<()> {
             FabricCommand::Leave => {
                 setup_logging(false);
                 cli::leave::run().await
+            }
+            FabricCommand::Diagnose => {
+                setup_logging(false);
+                cli::diagnose::run().await
             }
             FabricCommand::Peering { pin, action } => {
                 setup_logging(false);
