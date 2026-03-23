@@ -89,10 +89,16 @@ jobs:
         with:
           path: artifacts
 
+      - uses: actions/checkout@v4
+
+      - name: Copy install script
+        run: cp scripts/install.sh artifacts/install.sh
+
       - name: Collect archives and generate checksums
         run: |
           mkdir -p release
           find artifacts -name '*.tar.gz' -exec cp {} release/ \;
+          cp artifacts/install.sh release/install.sh
           cd release
           sha256sum *.tar.gz > SHA256SUMS.txt
 
