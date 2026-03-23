@@ -211,6 +211,106 @@ assert_daemon_stopped() {
     fi
 }
 
+# ── Network manipulation ──────────────────────────────────────
+
+# Block traffic between two containers. Args: <container> <target_ip>
+block_traffic() {
+    local container="$1"
+    local target_ip="$2"
+    docker exec "$container" iptables -A OUTPUT -d "$target_ip" -j DROP 2>/dev/null || true
+    docker exec "$container" iptables -A INPUT -s "$target_ip" -j DROP 2>/dev/null || true
+}
+
+# Unblock traffic. Args: <container> <target_ip>
+unblock_traffic() {
+    local container="$1"
+    local target_ip="$2"
+    docker exec "$container" iptables -D OUTPUT -d "$target_ip" -j DROP 2>/dev/null || true
+    docker exec "$container" iptables -D INPUT -s "$target_ip" -j DROP 2>/dev/null || true
+}
+
+# Assert CANNOT ping. Args: <from_container> <ipv6>
+assert_cannot_ping() {
+    local from="$1"
+    local ipv6="$2"
+    if ! docker exec "$from" ping -6 -c 1 -W 2 "$ipv6" >/dev/null 2>&1; then
+        pass "$from cannot ping $ipv6 (expected)"
+    else
+        fail "$from CAN ping $ipv6 (should be blocked)"
+    fi
+}
+
+# Assert a command fails (non-zero exit). Args: <container> <command...>
+assert_command_fails() {
+    local container="$1"
+    shift
+    if docker exec "$container" "$@" >/dev/null 2>&1; then
+        fail "command should have failed: $*"
+    else
+        pass "command failed as expected: $*"
+    fi
+}
+
+# Assert a command succeeds. Args: <container> <command...>
+assert_command_succeeds() {
+    local container="$1"
+    shift
+    if docker exec "$container" "$@" >/dev/null 2>&1; then
+        pass "command succeeded: $*"
+    else
+        fail "command failed: $*"
+    fi
+}
+
+# Get a field from state.json. Args: <container> <jq_filter>
+get_state_field() {
+    docker exec "$1" cat /root/.syfrah/state.json 2>/dev/null | jq -r "$2" 2>/dev/null
+}
+
+# Assert state.json exists. Args: <container>
+assert_state_exists() {
+    if docker exec "$1" test -f /root/.syfrah/state.json 2>/dev/null; then
+        pass "$1 has state.json"
+    else
+        fail "$1 missing state.json"
+    fi
+}
+
+# Assert state.json does NOT exist. Args: <container>
+assert_state_gone() {
+    if ! docker exec "$1" test -f /root/.syfrah/state.json 2>/dev/null; then
+        pass "$1 state.json removed"
+    else
+        fail "$1 state.json still exists"
+    fi
+}
+
+# Wait for all nodes to see expected peer count. Args: <prefix> <count> <expected_peers> <timeout>
+wait_for_convergence() {
+    local prefix="$1"
+    local count="$2"
+    local expected="$3"
+    local timeout="${4:-60}"
+    local deadline=$(($(date +%s) + timeout))
+
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        local all_ok=true
+        for i in $(seq 1 "$count"); do
+            local actual
+            actual=$(docker exec "${prefix}${i}" syfrah fabric peers 2>&1 | grep -c "active" || echo "0")
+            if [ "$actual" -ne "$expected" ]; then
+                all_ok=false
+                break
+            fi
+        done
+        if [ "$all_ok" = true ]; then
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
 # ── Cleanup ───────────────────────────────────────────────────
 
 cleanup() {
