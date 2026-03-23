@@ -1,10 +1,50 @@
+# ── Rust / Cargo ──────────────────────────────────────────
 /target
+**/*.rs.bk
+
+# ── Syfrah runtime state ─────────────────────────────────
+.syfrah/
+state.json
+*.redb
+
+# ── Secrets & keys ────────────────────────────────────────
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.csr
+*.der
+*.jks
+*.keystore
+id_rsa
+id_ed25519
+
+# ── Environment files ─────────────────────────────────────
+.env
+.env.*
+
+# ── Editor files ──────────────────────────────────────────
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.iml
+.project
+.classpath
+.settings/
+
+# ── OS files ──────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+Desktop.ini
+._*
+
+# ── E2E / test artifacts ─────────────────────────────────
 /tests/e2e/syfrah
+
+# ── Documentation build ──────────────────────────────────
 /documentation/node_modules
 /documentation/.next
 /documentation/out
-**/*.rs.bk
-*.swp
-*.swo
-.env
-.DS_Store

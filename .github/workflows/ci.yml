@@ -10,6 +10,40 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # ── Secret scanning ────────────────────────────────────────
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: TruffleHog scan
+        uses: trufflesecurity/trufflehog@main
+        with:
+          extra_args: --only-verified
+
+  # ── Validate .gitignore contains critical patterns ─────────
+  gitignore:
+    name: Validate .gitignore
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check critical patterns exist in .gitignore
+        run: |
+          missing=0
+          for pattern in ".syfrah" "state.json" "*.redb" "*.pem" "*.key"; do
+            if ! grep -qF "$pattern" .gitignore; then
+              echo "MISSING from .gitignore: $pattern"
+              missing=1
+            fi
+          done
+          if [ "$missing" -eq 1 ]; then
+            echo "::error::.gitignore is missing critical patterns"
+            exit 1
+          fi
+          echo "All critical patterns present in .gitignore"
+
   # ── Format check (workspace-wide, once) ──────────────────
   fmt:
     name: Format
