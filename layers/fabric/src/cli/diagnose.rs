@@ -130,7 +130,9 @@ pub async fn run() -> Result<()> {
     // -- Summary --
     let total = pass_count + fail_count;
     if fail_count == 0 {
-        ui::success(&format!("{pass_count}/{total} checks passed. Fabric is healthy."));
+        ui::success(&format!(
+            "{pass_count}/{total} checks passed. Fabric is healthy."
+        ));
     } else {
         ui::warn(&format!("{fail_count}/{total} checks failed."));
     }

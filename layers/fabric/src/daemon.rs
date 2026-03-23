@@ -284,7 +284,10 @@ pub async fn run_start() -> anyhow::Result<()> {
 
     let sp = ui::spinner("Starting daemon...");
     ui::step_ok(&sp, &format!("Restarting mesh '{}'", state.mesh_name));
-    ui::info_line("Node", &format!("{} ({})", state.node_name, state.mesh_ipv6));
+    ui::info_line(
+        "Node",
+        &format!("{} ({})", state.node_name, state.mesh_ipv6),
+    );
     println!("Running daemon... (Ctrl+C to stop)");
 
     let endpoint_addr = state

@@ -136,14 +136,8 @@ pub fn join_request_card(node_name: &str, endpoint: &str, wg_key_prefix: &str) {
             bold.apply_to(node_name)
         );
         println!("  {}  Endpoint: {endpoint}", cyan.apply_to("\u{2502}"));
-        println!(
-            "  {}  WG key:   {wg_key_prefix}",
-            cyan.apply_to("\u{2502}")
-        );
-        print!(
-            "  {} Accept? [Y/n] ",
-            cyan.apply_to("\u{2514}\u{2500}")
-        );
+        println!("  {}  WG key:   {wg_key_prefix}", cyan.apply_to("\u{2502}"));
+        print!("  {} Accept? [Y/n] ", cyan.apply_to("\u{2514}\u{2500}"));
     } else {
         println!("\nJoin request from {node_name} ({endpoint})");
         println!("  WG pubkey: {wg_key_prefix}");
