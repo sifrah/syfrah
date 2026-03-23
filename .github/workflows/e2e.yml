@@ -42,7 +42,12 @@ jobs:
           echo "Resolved DinD at ${DIND_IP}"
 
       - name: Wait for DinD
-        run: until docker info >/dev/null 2>&1; do sleep 1; done
+        run: |
+          i=0; while [ $i -lt 30 ]; do
+            docker info >/dev/null 2>&1 && exit 0
+            sleep 1; i=$((i+1))
+          done
+          echo "DinD not ready after 30s"; exit 1
 
       - uses: actions/checkout@v4
 
@@ -112,7 +117,12 @@ jobs:
           echo "Resolved DinD at ${DIND_IP}"
 
       - name: Wait for DinD
-        run: until docker info >/dev/null 2>&1; do sleep 1; done
+        run: |
+          i=0; while [ $i -lt 30 ]; do
+            docker info >/dev/null 2>&1 && exit 0
+            sleep 1; i=$((i+1))
+          done
+          echo "DinD not ready after 30s"; exit 1
 
       - uses: actions/checkout@v4
 
