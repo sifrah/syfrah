@@ -21,7 +21,17 @@ jobs:
   # ── Build Docker image once ──────────────────────────────
   build:
     name: Build image
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
+    container:
+      image: docker:27
+    services:
+      dind:
+        image: docker:27-dind
+        options: --privileged
+        env:
+          DOCKER_TLS_CERTDIR: ""
+    env:
+      DOCKER_HOST: tcp://dind:2375
     steps:
       - uses: actions/checkout@v4
 
@@ -41,11 +51,15 @@ jobs:
   # ── Discover which layers have E2E tests ─────────────────
   discover:
     name: Discover layers
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
+    container:
+      image: alpine:latest
     outputs:
       layers: ${{ steps.find.outputs.layers }}
     steps:
       - uses: actions/checkout@v4
+      - name: Install jq
+        run: apk add --no-cache jq
       - id: find
         run: |
           # Extract unique layer names from scenario filenames
@@ -62,7 +76,17 @@ jobs:
   test:
     name: E2E / ${{ matrix.layer }}
     needs: [build, discover]
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
+    container:
+      image: docker:27
+    services:
+      dind:
+        image: docker:27-dind
+        options: --privileged
+        env:
+          DOCKER_TLS_CERTDIR: ""
+    env:
+      DOCKER_HOST: tcp://dind:2375
     timeout-minutes: 30
     strategy:
       fail-fast: false
