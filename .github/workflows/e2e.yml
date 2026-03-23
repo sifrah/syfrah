@@ -31,19 +31,23 @@ jobs:
         env:
           DOCKER_TLS_CERTDIR: ""
     steps:
-      - name: Resolve DinD IP
+      - name: Connect to DinD
+        shell: sh {0}
         run: |
-          # Workaround: runner DNS may not resolve service aliases on self-hosted (actions/runner#4038)
-          DIND_IP=$(getent hosts dind | awk '{print $1}' || docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $(docker ps -qf "ancestor=docker:27-dind") 2>/dev/null)
+          # Hide mounted host socket so Docker CLI uses DOCKER_HOST instead
+          mv /var/run/docker.sock /var/run/docker.sock.host 2>/dev/null || true
+          # Resolve DinD IP (runner DNS bug: actions/runner#4038)
+          DIND_IP=$(getent hosts dind | awk '{print $1}')
+          if [ -z "$DIND_IP" ]; then
+            echo "DNS failed, trying docker inspect..."
+            DIND_IP=$(docker -H unix:///var/run/docker.sock.host inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $(docker -H unix:///var/run/docker.sock.host ps -qf "ancestor=docker:27-dind" | head -1) 2>/dev/null)
+          fi
           if [ -z "$DIND_IP" ]; then
             echo "Could not resolve DinD IP" >&2; exit 1
           fi
-          echo "DOCKER_HOST=tcp://${DIND_IP}:2375" >> "$GITHUB_ENV"
-          echo "Resolved DinD at ${DIND_IP}"
-
-      - name: Wait for DinD
-        shell: sh {0}
-        run: |
+          export DOCKER_HOST="tcp://${DIND_IP}:2375"
+          echo "DOCKER_HOST=${DOCKER_HOST}" >> "$GITHUB_ENV"
+          echo "Resolved DinD at ${DIND_IP}, waiting..."
           i=0; while [ $i -lt 30 ]; do
             if docker info >/dev/null 2>&1; then echo "DinD ready"; exit 0; fi
             sleep 1; i=$((i+1))
@@ -108,18 +112,20 @@ jobs:
       matrix:
         layer: ${{ fromJson(needs.discover.outputs.layers) }}
     steps:
-      - name: Resolve DinD IP
+      - name: Connect to DinD
+        shell: sh {0}
         run: |
-          DIND_IP=$(getent hosts dind | awk '{print $1}' || docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $(docker ps -qf "ancestor=docker:27-dind") 2>/dev/null)
+          mv /var/run/docker.sock /var/run/docker.sock.host 2>/dev/null || true
+          DIND_IP=$(getent hosts dind | awk '{print $1}')
+          if [ -z "$DIND_IP" ]; then
+            DIND_IP=$(docker -H unix:///var/run/docker.sock.host inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $(docker -H unix:///var/run/docker.sock.host ps -qf "ancestor=docker:27-dind" | head -1) 2>/dev/null)
+          fi
           if [ -z "$DIND_IP" ]; then
             echo "Could not resolve DinD IP" >&2; exit 1
           fi
-          echo "DOCKER_HOST=tcp://${DIND_IP}:2375" >> "$GITHUB_ENV"
-          echo "Resolved DinD at ${DIND_IP}"
-
-      - name: Wait for DinD
-        shell: sh {0}
-        run: |
+          export DOCKER_HOST="tcp://${DIND_IP}:2375"
+          echo "DOCKER_HOST=${DOCKER_HOST}" >> "$GITHUB_ENV"
+          echo "Resolved DinD at ${DIND_IP}, waiting..."
           i=0; while [ $i -lt 30 ]; do
             if docker info >/dev/null 2>&1; then echo "DinD ready"; exit 0; fi
             sleep 1; i=$((i+1))
