@@ -6,6 +6,7 @@ pub mod leave;
 pub mod peering;
 pub mod peers;
 pub mod rotate;
+pub mod service;
 pub mod start;
 pub mod status;
 pub mod stop;
