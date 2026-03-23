@@ -42,10 +42,14 @@ jobs:
   discover:
     name: Discover layers
     runs-on: self-hosted
+    container:
+      image: alpine:latest
     outputs:
       layers: ${{ steps.find.outputs.layers }}
     steps:
       - uses: actions/checkout@v4
+      - name: Install jq
+        run: apk add --no-cache jq
       - id: find
         run: |
           # Extract unique layer names from scenario filenames
