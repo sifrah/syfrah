@@ -227,18 +227,23 @@ fn load_from_redb_with(db: &LayerDb) -> Result<NodeState, StoreError> {
 }
 
 /// Generate a zone name based on region and existing peers.
-/// Format: {region}-zone-{next_index}
+/// Format: zone-{next_index}
 ///
 /// The index is the greater of:
 /// - max zone index found in peers with matching zone prefix, or
 /// - total peer count (to handle peers whose zone is unknown to the leader)
+///
+/// For backward compatibility, both `zone-{N}` and legacy `{region}-zone-{N}`
+/// formats are recognized when scanning existing peers.
 pub fn generate_zone(region: &str, existing_peers: &[PeerRecord]) -> String {
-    let prefix = format!("{region}-zone-");
+    let new_prefix = "zone-";
+    let legacy_prefix = format!("{region}-zone-");
     let max_zone_index = existing_peers
         .iter()
         .filter_map(|p| {
             p.zone.as_ref().and_then(|z| {
-                z.strip_prefix(&prefix)
+                z.strip_prefix(new_prefix)
+                    .or_else(|| z.strip_prefix(&legacy_prefix))
                     .and_then(|suffix| suffix.parse::<u32>().ok())
             })
         })
@@ -247,7 +252,7 @@ pub fn generate_zone(region: &str, existing_peers: &[PeerRecord]) -> String {
     // Also account for peers with no zone — they still occupy a slot
     let peer_count = existing_peers.len() as u32;
     let next_index = max_zone_index.max(peer_count) + 1;
-    format!("{prefix}{next_index}")
+    format!("zone-{next_index}")
 }
 
 /// Delete all state (redb + JSON + entire directory).
