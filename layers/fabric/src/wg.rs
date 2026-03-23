@@ -278,8 +278,15 @@ pub fn setup_interface(
     mesh_ipv6: Ipv6Addr,
 ) -> Result<(), WgError> {
     create_interface(&keypair.private, listen_port)?;
-    assign_ipv6(mesh_ipv6)?;
-    bring_interface_up()?;
+    if let Err(e) = assign_ipv6(mesh_ipv6) {
+        // Rollback: destroy the interface we just created
+        let _ = destroy_interface();
+        return Err(e);
+    }
+    if let Err(e) = bring_interface_up() {
+        let _ = destroy_interface();
+        return Err(e);
+    }
     Ok(())
 }
 

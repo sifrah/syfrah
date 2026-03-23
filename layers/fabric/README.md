@@ -284,8 +284,9 @@ Unreachable peers remain in the WireGuard configuration (they are not removed). 
 
 If the daemon crashes:
 1. The WireGuard interface (`syfrah0`) remains up (it's a kernel/userspace interface, not tied to the daemon process)
-2. All state is persisted in `~/.syfrah/state.json` (saved every 30 seconds)
+2. All state is persisted in `~/.syfrah/fabric.redb` (ACID, crash-safe) with a JSON backup at `~/.syfrah/state.json`
 3. `syfrah start` reloads state, recreates the interface, reapplies all known peers, and resumes the daemon loop
+4. The reconciliation loop re-adds any peers that were lost during the crash
 
 The daemon writes a PID file (`~/.syfrah/daemon.pid`). On restart, stale PID files are detected by checking if the process is still alive (via `kill -0`).
 
@@ -297,17 +298,21 @@ During a network partition:
 - When connectivity is restored, WireGuard re-establishes tunnels automatically (keepalive)
 - Peer state is eventually consistent through future announcements
 
-There is currently no automatic re-announcement or gossip heartbeat. If a partition causes missed announcements, the operator may need to manually trigger a rejoin.
+A **reconciliation loop** runs every 30 seconds: it compares the peers stored in the local database with the WireGuard interface configuration. If a peer is missing from WireGuard (e.g., due to a lost announcement or interface reset), the reconciliation loop re-adds it automatically. No manual intervention needed.
+
+Peers also **recover automatically**: if a peer was marked `Unreachable` but a recent WireGuard handshake is detected, the health check promotes it back to `Active`.
 
 ### Failure mode summary
 
 | Failure | Detection | Recovery |
 |---|---|---|
 | Node goes down | ~6 min (unreachable timeout) | Automatic when node restarts (`syfrah start`) |
-| Network partition | ~6 min per side | WireGuard reconnects; may need manual re-announce |
+| Network partition | ~6 min per side | WireGuard reconnects via keepalive; reconciliation re-adds peers |
+| Lost peer announcement | Next reconciliation cycle (30s) | Automatic — reconciliation re-adds missing peers to WireGuard |
+| Peer marked unreachable | Health check (60s interval) | Automatic — recovers to Active when handshake resumes |
 | Daemon crash | Immediate (PID file check) | `syfrah start` restores from state |
-| WireGuard interface lost | Next daemon operation | `syfrah start` recreates interface |
-| State file corrupted | On next `store::load()` | Manual recovery needed |
+| WireGuard interface lost | Next reconciliation cycle | Reconciliation loop recreates peer config |
+| State file corrupted | On next `store::load()` | Redb is crash-safe; JSON backup available |
 
 ## Scalability
 
