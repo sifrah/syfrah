@@ -1,4 +1,4 @@
-use crate::{store, wg};
+use crate::{config, store, wg};
 use anyhow::Result;
 
 pub async fn run() -> Result<()> {
@@ -78,6 +78,26 @@ pub async fn run() -> Result<()> {
         println!("  WG reconciles:   {}", m.wg_reconciliations);
         println!("  Peers unreached: {}", m.peers_marked_unreachable);
     }
+
+    let tuning = config::load_tuning().unwrap_or_default();
+    println!();
+    println!("Config:");
+    println!(
+        "  health_check_interval: {}s",
+        tuning.health_check_interval.as_secs()
+    );
+    println!(
+        "  reconcile_interval:    {}s",
+        tuning.reconcile_interval.as_secs()
+    );
+    println!(
+        "  persist_interval:      {}s",
+        tuning.persist_interval.as_secs()
+    );
+    println!(
+        "  unreachable_timeout:   {}s",
+        tuning.unreachable_timeout.as_secs()
+    );
 
     Ok(())
 }
