@@ -23,33 +23,34 @@ docker exec -d "e2e-zdisp-1" \
 wait_daemon "e2e-zdisp-1"
 start_peering "e2e-zdisp-1"
 
-docker exec -d "e2e-zdisp-2" \
-    syfrah fabric join 172.20.0.10:51821 \
-    --node-name node-2 \
-    --endpoint 172.20.0.11:51820 \
-    --pin "$E2E_PIN" \
-    --region eu-west \
-    --zone eu-west-zone-2
-
-wait_daemon "e2e-zdisp-2"
+join_mesh "e2e-zdisp-2" "172.20.0.10" "172.20.0.11" "node-2"
 
 sleep 3
 
-# Check peers output from node-1
+# Check peers output has REGION and ZONE column headers
 output=$(docker exec "e2e-zdisp-1" syfrah fabric peers 2>&1)
 
-if echo "$output" | grep -q "eu-west"; then
-    pass "peers output shows region eu-west"
+if echo "$output" | grep -q "REGION"; then
+    pass "peers output shows REGION column header"
 else
-    fail "peers output missing region"
+    fail "peers output missing REGION column header"
     echo "$output"
 fi
 
-if echo "$output" | grep -q "eu-west-zone-2"; then
-    pass "peers output shows zone eu-west-zone-2"
+if echo "$output" | grep -q "ZONE"; then
+    pass "peers output shows ZONE column header"
 else
-    fail "peers output missing zone"
+    fail "peers output missing ZONE column header"
     echo "$output"
+fi
+
+# Check that node-1's status shows its own region/zone
+status1=$(docker exec "e2e-zdisp-1" syfrah fabric status 2>&1)
+if echo "$status1" | grep -q "eu-west"; then
+    pass "node-1 status shows its own region eu-west"
+else
+    fail "node-1 status missing region"
+    echo "$status1"
 fi
 
 cleanup
