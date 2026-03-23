@@ -4,7 +4,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use syfrah_fabric::cli;
-use syfrah_fabric::daemon::{self, DaemonConfig, DaemonReady};
+use syfrah_fabric::daemon::{self, DaemonConfig};
 use syfrah_state::cli::StateCommand;
 
 #[derive(Parser)]
@@ -197,7 +197,7 @@ fn setup_logging(daemon_mode: bool) {
 
 /// Spawn the daemon in background via re-exec with `start --foreground`.
 /// State must already be saved before calling this.
-fn background_daemon(_ready: DaemonReady) -> Result<()> {
+fn background_daemon() -> Result<()> {
     let exe = std::env::current_exe()?;
 
     // Open the log file for stderr so we can capture startup errors
@@ -286,8 +286,8 @@ async fn run() -> Result<()> {
                     setup_logging(true);
                     daemon::run_init(config).await
                 } else {
-                    let ready = daemon::setup_init(&config)?;
-                    background_daemon(ready)
+                    daemon::setup_init(&config)?;
+                    background_daemon()
                 }
             }
             FabricCommand::Join {
@@ -323,8 +323,8 @@ async fn run() -> Result<()> {
                     setup_logging(true);
                     daemon::run_join(target_addr, config, pin).await
                 } else {
-                    let ready = daemon::setup_join(target_addr, &config, pin).await?;
-                    background_daemon(ready)
+                    daemon::setup_join(target_addr, &config, pin).await?;
+                    background_daemon()
                 }
             }
             FabricCommand::Start { foreground } => {
@@ -333,8 +333,13 @@ async fn run() -> Result<()> {
                     setup_logging(true);
                     cli::start::run().await
                 } else {
-                    let ready = daemon::setup_start()?;
-                    background_daemon(ready)
+                    // Verify state exists before spawning background daemon
+                    if !syfrah_fabric::store::exists() {
+                        anyhow::bail!(
+                            "no mesh state found. Run 'syfrah init' or 'syfrah join' first."
+                        );
+                    }
+                    background_daemon()
                 }
             }
             FabricCommand::Stop => {

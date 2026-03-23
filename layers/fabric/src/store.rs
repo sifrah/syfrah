@@ -352,22 +352,44 @@ pub fn remove_pid() {
     let _ = fs::remove_file(pid_file());
 }
 
-/// Check if a daemon is currently running (PID file exists and process alive).
+/// Check if a daemon is currently running (PID file exists and process alive, not zombie).
 pub fn daemon_running() -> Option<u32> {
     let pid = read_pid()?;
     #[cfg(unix)]
     {
         let alive = unsafe { libc::kill(pid as i32, 0) } == 0;
-        if alive {
-            Some(pid)
-        } else {
-            None
+        if !alive {
+            return None;
         }
+        // Check for zombie: kill(pid,0) succeeds for zombies too
+        if is_zombie(pid) {
+            return None;
+        }
+        Some(pid)
     }
     #[cfg(not(unix))]
     {
         Some(pid)
     }
+}
+
+/// Check if a process is a zombie by reading /proc/PID/status on Linux.
+#[cfg(target_os = "linux")]
+fn is_zombie(pid: u32) -> bool {
+    let status_path = format!("/proc/{pid}/status");
+    if let Ok(contents) = fs::read_to_string(status_path) {
+        for line in contents.lines() {
+            if let Some(state) = line.strip_prefix("State:") {
+                return state.trim().starts_with('Z');
+            }
+        }
+    }
+    false
+}
+
+#[cfg(not(target_os = "linux"))]
+fn is_zombie(_pid: u32) -> bool {
+    false
 }
 
 #[cfg(test)]
