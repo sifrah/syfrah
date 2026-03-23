@@ -34,6 +34,8 @@ pub async fn watch(pin: Option<String>) -> Result<()> {
             mesh_ipv6: state.mesh_ipv6,
             last_seen: 0,
             status: syfrah_core::mesh::PeerStatus::Active,
+            region: None,
+            zone: None,
         };
         let pp = state.peering_port;
         tokio::spawn(async move {

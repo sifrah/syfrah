@@ -11,6 +11,14 @@ pub async fn run() -> Result<()> {
     println!("Mesh IPv6: {}", state.mesh_ipv6);
     println!("Prefix:    {}/48", state.mesh_prefix);
     println!("WG port:   {}", state.wg_listen_port);
+    println!(
+        "Region:    {}",
+        state.region.as_deref().unwrap_or("(not set)")
+    );
+    println!(
+        "Zone:      {}",
+        state.zone.as_deref().unwrap_or("(not set)")
+    );
     println!("Secret:    {}", state.mesh_secret);
     println!("Peering:   port {}", state.peering_port);
 

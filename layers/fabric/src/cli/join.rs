@@ -8,6 +8,8 @@ pub async fn run(
     port: u16,
     endpoint: Option<SocketAddr>,
     pin: Option<String>,
+    region: Option<String>,
+    zone: Option<String>,
 ) -> Result<()> {
     // Parse target: "1.2.3.4" → "1.2.3.4:51821", or "1.2.3.4:9999" as-is
     let target_addr: SocketAddr = if target.contains(':') {
@@ -28,6 +30,8 @@ pub async fn run(
             wg_listen_port: port,
             public_endpoint: endpoint,
             peering_port: port + 1,
+            region,
+            zone,
         },
         pin,
     )

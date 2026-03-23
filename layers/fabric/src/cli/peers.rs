@@ -18,10 +18,10 @@ pub async fn run() -> Result<()> {
     let wg_summary = wg::interface_summary().ok();
 
     println!(
-        "{:<18} {:<40} {:<22} {:>8} {:>10} {:>10}",
-        "NAME", "MESH IP", "ENDPOINT", "STATUS", "HANDSHAKE", "TRAFFIC"
+        "{:<18} {:<20} {:<24} {:<22} {:>8} {:>10} {:>10}",
+        "NAME", "REGION", "ZONE", "ENDPOINT", "STATUS", "HANDSHAKE", "TRAFFIC"
     );
-    println!("{}", "-".repeat(112));
+    println!("{}", "-".repeat(136));
 
     for peer in &state.peers {
         let status = match peer.status {
@@ -51,10 +51,14 @@ pub async fn run() -> Result<()> {
             ("-".into(), "-".into())
         };
 
+        let region = peer.region.as_deref().unwrap_or("-");
+        let zone = peer.zone.as_deref().unwrap_or("-");
+
         println!(
-            "{:<18} {:<40} {:<22} {:>8} {:>10} {:>10}",
+            "{:<18} {:<20} {:<24} {:<22} {:>8} {:>10} {:>10}",
             truncate(&peer.name, 17),
-            peer.mesh_ipv6,
+            truncate(region, 19),
+            truncate(zone, 23),
             peer.endpoint,
             status,
             handshake_str,

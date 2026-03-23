@@ -48,6 +48,8 @@ async fn join_with_pin_auto_accept() {
         mesh_ipv6: leader_ipv6,
         last_seen: 0,
         status: PeerStatus::Active,
+        region: None,
+        zone: None,
     };
 
     // ── Start peering listener with PIN auto-accept ──
@@ -162,6 +164,8 @@ async fn join_with_wrong_pin_falls_to_pending() {
         mesh_ipv6: leader_ipv6,
         last_seen: 0,
         status: PeerStatus::Active,
+        region: None,
+        zone: None,
     };
 
     let peering_state = Arc::new(PeeringState::new());
@@ -247,6 +251,8 @@ async fn join_without_pin_goes_to_pending() {
         mesh_ipv6: leader_ipv6,
         last_seen: 0,
         status: PeerStatus::Active,
+        region: None,
+        zone: None,
     };
 
     let peering_state = Arc::new(PeeringState::new());

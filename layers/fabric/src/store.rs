@@ -42,6 +42,10 @@ pub struct NodeState {
     pub peering_port: u16,
     pub peers: Vec<PeerRecord>,
     #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub zone: Option<String>,
+    #[serde(default)]
     pub metrics: Metrics,
 }
 
@@ -98,6 +102,8 @@ pub fn save(state: &NodeState) -> Result<(), StoreError> {
         w.set("config", "node_name", &state.node_name)?;
         w.set("config", "public_endpoint", &state.public_endpoint)?;
         w.set("config", "peering_port", &state.peering_port)?;
+        w.set("config", "region", &state.region)?;
+        w.set("config", "zone", &state.zone)?;
         w.set_metric("peers_discovered", state.metrics.peers_discovered)?;
         w.set_metric("wg_reconciliations", state.metrics.wg_reconciliations)?;
         w.set_metric(
@@ -182,6 +188,8 @@ fn load_from_redb() -> Result<NodeState, StoreError> {
     let public_endpoint: Option<std::net::SocketAddr> =
         db.get("config", "public_endpoint")?.unwrap_or(None);
     let peering_port: u16 = db.get("config", "peering_port")?.unwrap_or(51821);
+    let region: Option<String> = db.get("config", "region")?.unwrap_or(None);
+    let zone: Option<String> = db.get("config", "zone")?.unwrap_or(None);
 
     let peer_entries: Vec<(String, PeerRecord)> = db.list("peers")?;
     let peers: Vec<PeerRecord> = peer_entries.into_iter().map(|(_, p)| p).collect();
@@ -205,8 +213,27 @@ fn load_from_redb() -> Result<NodeState, StoreError> {
         public_endpoint,
         peering_port,
         peers,
+        region,
+        zone,
         metrics,
     })
+}
+
+/// Generate a zone name based on region and existing peers.
+/// Format: {region}-zone-{next_index}
+pub fn generate_zone(region: &str, existing_peers: &[PeerRecord]) -> String {
+    let prefix = format!("{region}-zone-");
+    let max_index = existing_peers
+        .iter()
+        .filter_map(|p| {
+            p.zone.as_ref().and_then(|z| {
+                z.strip_prefix(&prefix)
+                    .and_then(|suffix| suffix.parse::<u32>().ok())
+            })
+        })
+        .max()
+        .unwrap_or(0);
+    format!("{prefix}{}", max_index + 1)
 }
 
 /// Delete all state (redb + JSON + entire directory).
@@ -355,6 +382,8 @@ mod tests {
             public_endpoint: None,
             peering_port: 51821,
             peers: vec![],
+            region: Some("region-1".into()),
+            zone: Some("region-1-zone-1".into()),
             metrics: Default::default(),
         };
 

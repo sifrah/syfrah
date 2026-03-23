@@ -33,6 +33,10 @@ pub struct PeerRecord {
     pub mesh_ipv6: Ipv6Addr,
     pub last_seen: u64,
     pub status: PeerStatus,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub zone: Option<String>,
 }
 
 // --- Peering protocol types ---
@@ -125,6 +129,8 @@ mod tests {
             mesh_ipv6: Ipv6Addr::new(0xfd12, 0x3456, 0x7800, 0, 0, 0, 0, 1),
             last_seen: 1700000000,
             status: PeerStatus::Active,
+            region: None,
+            zone: None,
         }
     }
 

@@ -8,6 +8,8 @@ pub async fn run(
     port: u16,
     endpoint: Option<SocketAddr>,
     peering_port: u16,
+    region: Option<String>,
+    zone: Option<String>,
 ) -> Result<()> {
     daemon::run_init(DaemonConfig {
         mesh_name: name.to_string(),
@@ -15,6 +17,8 @@ pub async fn run(
         wg_listen_port: port,
         public_endpoint: endpoint,
         peering_port,
+        region,
+        zone,
     })
     .await
 }

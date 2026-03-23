@@ -25,6 +25,8 @@ pub struct DaemonConfig {
     pub wg_listen_port: u16,
     pub public_endpoint: Option<SocketAddr>,
     pub peering_port: u16,
+    pub region: Option<String>,
+    pub zone: Option<String>,
 }
 
 /// Run the init flow: create a new mesh.
@@ -43,6 +45,16 @@ pub async fn run_init(config: DaemonConfig) -> anyhow::Result<()> {
     wg::setup_interface(&wg_keypair, config.wg_listen_port, mesh_ipv6)?;
     info!("wireguard interface syfrah0 up");
 
+    // Region/zone: use provided or defaults
+    let region = config
+        .region
+        .clone()
+        .unwrap_or_else(|| "region-1".to_string());
+    let zone = config
+        .zone
+        .clone()
+        .unwrap_or_else(|| store::generate_zone(&region, &[]));
+
     let state = NodeState {
         mesh_name: config.mesh_name.clone(),
         mesh_secret: mesh_secret.to_string(),
@@ -55,6 +67,8 @@ pub async fn run_init(config: DaemonConfig) -> anyhow::Result<()> {
         public_endpoint: config.public_endpoint,
         peering_port: config.peering_port,
         peers: vec![],
+        region: Some(region.clone()),
+        zone: Some(zone.clone()),
         metrics: Default::default(),
     };
     store::save(&state)?;
@@ -62,11 +76,20 @@ pub async fn run_init(config: DaemonConfig) -> anyhow::Result<()> {
     println!("Mesh '{}' created.", config.mesh_name);
     println!("  Secret: {mesh_secret}");
     println!("  Node:   {} ({})", config.node_name, mesh_ipv6);
+    println!("  Region: {region}");
+    println!("  Zone:   {zone}");
     println!();
     println!("Run 'syfrah peering' to accept new nodes.");
     println!("Running daemon... (Ctrl+C to stop)");
 
-    let my_record = build_record(&config.node_name, &wg_keypair, endpoint, mesh_ipv6);
+    let my_record = build_record(
+        &config.node_name,
+        &wg_keypair,
+        endpoint,
+        mesh_ipv6,
+        Some(&region),
+        Some(&zone),
+    );
     run_daemon(my_record, &wg_keypair, mesh_secret, config.peering_port).await
 }
 
@@ -96,6 +119,8 @@ pub fn auto_init(
         public_endpoint: None,
         peering_port,
         peers: vec![],
+        region: Some("region-1".to_string()),
+        zone: Some("region-1-zone-1".to_string()),
         metrics: Default::default(),
     };
     store::save(&state)?;
@@ -152,6 +177,16 @@ pub async fn run_join(
 
     let mesh_ipv6 = addressing::derive_node_address(&mesh_prefix, wg_keypair.public.as_bytes());
 
+    // Region/zone: use provided or auto-generate from existing peers
+    let region = config
+        .region
+        .clone()
+        .unwrap_or_else(|| "region-1".to_string());
+    let zone = config
+        .zone
+        .clone()
+        .unwrap_or_else(|| store::generate_zone(&region, &response.peers));
+
     wg::setup_interface(&wg_keypair, config.wg_listen_port, mesh_ipv6)?;
     info!("wireguard interface syfrah0 up");
 
@@ -173,16 +208,27 @@ pub async fn run_join(
         node_name: config.node_name.clone(),
         public_endpoint: config.public_endpoint,
         peering_port: config.peering_port,
-        peers: response.peers,
+        peers: response.peers.clone(),
+        region: Some(region.clone()),
+        zone: Some(zone.clone()),
         metrics: Default::default(),
     };
     store::save(&state)?;
 
     println!("Joined mesh '{mesh_name}'.");
-    println!("  Node: {} ({})", config.node_name, mesh_ipv6);
+    println!("  Node:   {} ({})", config.node_name, mesh_ipv6);
+    println!("  Region: {region}");
+    println!("  Zone:   {zone}");
     println!("Running daemon... (Ctrl+C to stop)");
 
-    let my_record = build_record(&config.node_name, &wg_keypair, endpoint, mesh_ipv6);
+    let my_record = build_record(
+        &config.node_name,
+        &wg_keypair,
+        endpoint,
+        mesh_ipv6,
+        Some(&region),
+        Some(&zone),
+    );
     run_daemon(my_record, &wg_keypair, mesh_secret, config.peering_port).await
 }
 
@@ -221,6 +267,8 @@ pub async fn run_start() -> anyhow::Result<()> {
         &wg_keypair,
         endpoint_addr,
         state.mesh_ipv6,
+        state.region.as_deref(),
+        state.zone.as_deref(),
     );
     run_daemon(my_record, &wg_keypair, mesh_secret, state.peering_port).await
 }
@@ -570,6 +618,8 @@ impl ControlHandler for DaemonControlHandler {
                             mesh_ipv6: new_mesh_ipv6,
                             last_seen: now(),
                             status: PeerStatus::Active,
+                            region: None,
+                            zone: None,
                         };
                         (self.on_accepted)(new_record);
                         ControlResponse::PeeringAccepted {
@@ -598,6 +648,8 @@ fn build_record(
     wg_keypair: &KeyPair,
     endpoint: SocketAddr,
     mesh_ipv6: std::net::Ipv6Addr,
+    region: Option<&str>,
+    zone: Option<&str>,
 ) -> PeerRecord {
     PeerRecord {
         name: name.to_string(),
@@ -606,6 +658,8 @@ fn build_record(
         mesh_ipv6,
         last_seen: now(),
         status: PeerStatus::Active,
+        region: region.map(|s| s.to_string()),
+        zone: zone.map(|s| s.to_string()),
     }
 }
 

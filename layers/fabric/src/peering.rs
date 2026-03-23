@@ -316,6 +316,8 @@ fn build_auto_accept_response(
         mesh_ipv6: new_mesh_ipv6,
         last_seen: now(),
         status: syfrah_core::mesh::PeerStatus::Active,
+        region: None,
+        zone: None,
     };
 
     // Load current peers from store + our own record
