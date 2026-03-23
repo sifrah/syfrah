@@ -27,7 +27,7 @@ pub struct DaemonConfig {
     pub zone: Option<String>,
 }
 
-/// Data produced by setup_init / setup_join, needed to start the daemon loop.
+/// Data produced by `setup_init` / `setup_join`, needed to start the daemon loop.
 pub struct DaemonReady {
     pub my_record: PeerRecord,
     pub wg_keypair: KeyPair,
