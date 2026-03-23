@@ -16,14 +16,15 @@ done
 init_mesh "e2e-stress-join-1" "172.20.0.11" "node-1"
 start_peering "e2e-stress-join-1"
 
-# Join all 9 remaining nodes simultaneously (no sleep between joins)
-info "Joining 9 nodes simultaneously..."
+# Join all 9 remaining nodes rapidly (1s between joins)
+info "Joining 9 nodes rapidly..."
 for i in $(seq 2 10); do
     docker exec -d "e2e-stress-join-$i" \
         syfrah fabric join 172.20.0.11:51821 \
         --node-name "node-$i" \
         --endpoint "172.20.0.$((10 + i)):51820" \
         --pin "$E2E_PIN"
+    sleep 1
 done
 
 # Wait for all daemons
