@@ -727,9 +727,7 @@ impl ControlHandler for DaemonControlHandler {
                         // Use the joiner's region/zone from the request.
                         // If zone was not provided, auto-generate one
                         // using the current peer list.
-                        let region = info
-                            .region
-                            .unwrap_or_else(|| "region-1".to_string());
+                        let region = info.region.unwrap_or_else(|| "region-1".to_string());
                         let zone = info
                             .zone
                             .unwrap_or_else(|| store::generate_zone(&region, &state.peers));
