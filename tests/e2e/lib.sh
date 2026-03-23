@@ -26,6 +26,7 @@ FAILED=0
 pass() { echo -e "  ${GREEN}✓ $1${NC}"; PASSED=$((PASSED + 1)); }
 fail() { echo -e "  ${RED}✗ $1${NC}"; FAILED=$((FAILED + 1)); }
 info() { echo -e "${YELLOW}→ $1${NC}"; }
+debug() { echo -e "  ${NC}  [debug] $1${NC}"; }
 
 # ── Network ───────────────────────────────────────────────────
 
@@ -49,6 +50,7 @@ start_node() {
 
     docker rm -f "$name" >/dev/null 2>&1 || true
 
+    debug "starting container $name at $ip"
     docker run -d \
         --name "$name" \
         --network "$E2E_NETWORK" \
@@ -65,8 +67,10 @@ wait_daemon() {
     local container="$1"
     local max_wait="${2:-30}"
     local i=0
+    debug "waiting for daemon on $container (max ${max_wait}s)"
     while [ $i -lt "$max_wait" ]; do
         if docker exec "$container" test -S /root/.syfrah/control.sock 2>/dev/null; then
+            debug "daemon ready on $container after ${i}s"
             return 0
         fi
         sleep 1
@@ -74,7 +78,13 @@ wait_daemon() {
     done
     fail "daemon on $container did not start within ${max_wait}s"
     info "Docker logs for $container:"
-    docker logs "$container" 2>&1 | tail -20 || true
+    docker logs "$container" 2>&1 | tail -30 || true
+    info "Processes in $container:"
+    docker exec "$container" ps aux 2>/dev/null || true
+    info "Files in .syfrah:"
+    docker exec "$container" ls -la /root/.syfrah/ 2>/dev/null || true
+    info "Syfrah log:"
+    docker exec "$container" cat /root/.syfrah/syfrah.log 2>/dev/null | tail -20 || true
     return 1
 }
 
@@ -86,6 +96,7 @@ init_mesh() {
     local ip="$2"
     local node_name="${3:-$container}"
 
+    debug "init_mesh: $container at $ip as $node_name"
     docker exec -d "$container" \
         syfrah fabric init \
         --name "$E2E_MESH" \
@@ -93,16 +104,23 @@ init_mesh() {
         --endpoint "${ip}:51820"
 
     wait_daemon "$container"
+    debug "init_mesh: $container done"
 }
 
 # Start peering with PIN on a container. Args: <container>
 start_peering() {
     local container="$1"
+    debug "start_peering: $container with PIN $E2E_PIN"
     timeout 10 docker exec "$container" \
         syfrah fabric peering start --pin "$E2E_PIN" || {
         info "start_peering timed out or failed on $container"
+        info "Docker logs:"
+        docker logs "$container" 2>&1 | tail -10 || true
+        info "Control socket:"
+        docker exec "$container" ls -la /root/.syfrah/control.sock 2>/dev/null || echo "(missing)"
         return 1
     }
+    debug "start_peering: $container done"
 }
 
 # Join a mesh. Args: <container> <target_ip> <own_ip> [node_name]
@@ -112,6 +130,7 @@ join_mesh() {
     local own_ip="$3"
     local node_name="${4:-$container}"
 
+    debug "join_mesh: $container joining via $target_ip as $node_name"
     docker exec -d "$container" \
         syfrah fabric join "${target_ip}:51821" \
         --node-name "$node_name" \
@@ -119,6 +138,7 @@ join_mesh() {
         --pin "$E2E_PIN"
 
     wait_daemon "$container"
+    debug "join_mesh: $container done"
 }
 
 # Leave the mesh. Args: <container>
@@ -220,6 +240,7 @@ assert_daemon_stopped() {
 block_traffic() {
     local container="$1"
     local target_ip="$2"
+    debug "block_traffic: $container ↛ $target_ip"
     docker exec "$container" iptables -A OUTPUT -d "$target_ip" -j DROP 2>/dev/null || true
     docker exec "$container" iptables -A INPUT -s "$target_ip" -j DROP 2>/dev/null || true
 }
@@ -228,6 +249,7 @@ block_traffic() {
 unblock_traffic() {
     local container="$1"
     local target_ip="$2"
+    debug "unblock_traffic: $container ↔ $target_ip"
     docker exec "$container" iptables -D OUTPUT -d "$target_ip" -j DROP 2>/dev/null || true
     docker exec "$container" iptables -D INPUT -s "$target_ip" -j DROP 2>/dev/null || true
 }
@@ -317,6 +339,7 @@ wait_for_convergence() {
 # ── Cleanup ───────────────────────────────────────────────────
 
 cleanup() {
+    debug "cleanup: removing ${#E2E_CONTAINERS[@]} containers"
     for c in "${E2E_CONTAINERS[@]}"; do
         docker rm -f "$c" >/dev/null 2>&1 || true
     done

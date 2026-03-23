@@ -75,16 +75,21 @@ TOTAL_PASS=0
 TOTAL_FAIL=0
 RESULTS=()
 
+SCENARIO_INDEX=0
 for scenario in "${SCENARIOS[@]}"; do
+    SCENARIO_INDEX=$((SCENARIO_INDEX + 1))
     name="$(basename "$scenario" .sh)"
 
-    echo -e "${BOLD}── $name ────────────────────────────${NC}"
+    echo -e "${BOLD}── [$SCENARIO_INDEX/${#SCENARIOS[@]}] $name ────────────────────────────${NC}"
+    SCENARIO_START=$(date +%s)
 
     if bash "$scenario"; then
-        RESULTS+=("${GREEN}✓ $name${NC}")
+        SCENARIO_TIME=$(( $(date +%s) - SCENARIO_START ))
+        RESULTS+=("${GREEN}✓ $name (${SCENARIO_TIME}s)${NC}")
         TOTAL_PASS=$((TOTAL_PASS + 1))
     else
-        RESULTS+=("${RED}✗ $name${NC}")
+        SCENARIO_TIME=$(( $(date +%s) - SCENARIO_START ))
+        RESULTS+=("${RED}✗ $name (${SCENARIO_TIME}s)${NC}")
         TOTAL_FAIL=$((TOTAL_FAIL + 1))
     fi
 
