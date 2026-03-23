@@ -29,10 +29,7 @@ pub async fn run(
 
 /// Wait for the daemon control socket, then start peering with a generated PIN.
 /// Called from the parent process after daemonize().
-pub async fn wait_and_start_peering(
-    endpoint: Option<SocketAddr>,
-    peering_port: u16,
-) -> Result<()> {
+pub async fn wait_and_start_peering(endpoint: Option<SocketAddr>, peering_port: u16) -> Result<()> {
     let socket_path = store::control_socket_path();
 
     // Wait for control socket to appear (daemon starting up)
