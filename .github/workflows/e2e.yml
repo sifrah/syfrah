@@ -34,19 +34,17 @@ jobs:
       - name: Connect to DinD
         shell: sh {0}
         run: |
-          # Hide mounted host socket so Docker CLI uses DOCKER_HOST instead
-          mv /var/run/docker.sock /var/run/docker.sock.host 2>/dev/null || true
           # Resolve DinD IP (runner DNS bug: actions/runner#4038)
           DIND_IP=$(getent hosts dind | awk '{print $1}')
           if [ -z "$DIND_IP" ]; then
-            echo "DNS failed, trying docker inspect..."
-            DIND_IP=$(docker -H unix:///var/run/docker.sock.host inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $(docker -H unix:///var/run/docker.sock.host ps -qf "ancestor=docker:27-dind" | head -1) 2>/dev/null)
+            # Fallback: query host Docker via mounted socket
+            DIND_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $(docker ps -qf "ancestor=docker:27-dind" | head -1) 2>/dev/null)
           fi
-          if [ -z "$DIND_IP" ]; then
-            echo "Could not resolve DinD IP" >&2; exit 1
-          fi
+          if [ -z "$DIND_IP" ]; then echo "Could not resolve DinD IP" >&2; exit 1; fi
+          # Save IP for other steps (not DOCKER_HOST, to avoid breaking runner internals)
+          echo "DIND_IP=${DIND_IP}" >> "$GITHUB_ENV"
+          # Wait for DinD daemon to be ready
           export DOCKER_HOST="tcp://${DIND_IP}:2375"
-          echo "DOCKER_HOST=${DOCKER_HOST}" >> "$GITHUB_ENV"
           echo "Resolved DinD at ${DIND_IP}, waiting..."
           i=0; while [ $i -lt 30 ]; do
             if docker info >/dev/null 2>&1; then echo "DinD ready"; exit 0; fi
@@ -57,9 +55,13 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build Docker image
+        env:
+          DOCKER_HOST: tcp://${{ env.DIND_IP }}:2375
         run: docker build -t syfrah-e2e-test -f tests/e2e/Dockerfile . --quiet
 
       - name: Save image
+        env:
+          DOCKER_HOST: tcp://${{ env.DIND_IP }}:2375
         run: docker save syfrah-e2e-test | gzip > /tmp/syfrah-e2e-test.tar.gz
 
       - name: Upload image artifact
@@ -115,16 +117,13 @@ jobs:
       - name: Connect to DinD
         shell: sh {0}
         run: |
-          mv /var/run/docker.sock /var/run/docker.sock.host 2>/dev/null || true
           DIND_IP=$(getent hosts dind | awk '{print $1}')
           if [ -z "$DIND_IP" ]; then
-            DIND_IP=$(docker -H unix:///var/run/docker.sock.host inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $(docker -H unix:///var/run/docker.sock.host ps -qf "ancestor=docker:27-dind" | head -1) 2>/dev/null)
+            DIND_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $(docker ps -qf "ancestor=docker:27-dind" | head -1) 2>/dev/null)
           fi
-          if [ -z "$DIND_IP" ]; then
-            echo "Could not resolve DinD IP" >&2; exit 1
-          fi
+          if [ -z "$DIND_IP" ]; then echo "Could not resolve DinD IP" >&2; exit 1; fi
+          echo "DIND_IP=${DIND_IP}" >> "$GITHUB_ENV"
           export DOCKER_HOST="tcp://${DIND_IP}:2375"
-          echo "DOCKER_HOST=${DOCKER_HOST}" >> "$GITHUB_ENV"
           echo "Resolved DinD at ${DIND_IP}, waiting..."
           i=0; while [ $i -lt 30 ]; do
             if docker info >/dev/null 2>&1; then echo "DinD ready"; exit 0; fi
@@ -141,9 +140,12 @@ jobs:
           path: /tmp
 
       - name: Load image
+        env:
+          DOCKER_HOST: tcp://${{ env.DIND_IP }}:2375
         run: docker load < /tmp/syfrah-e2e-test.tar.gz
 
       - name: Run ${{ matrix.layer }} E2E tests
         env:
           SKIP_BUILD: "1"
+          DOCKER_HOST: tcp://${{ env.DIND_IP }}:2375
         run: ./tests/e2e/run.sh ${{ matrix.layer }}
