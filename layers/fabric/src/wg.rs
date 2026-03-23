@@ -190,8 +190,10 @@ pub fn assign_ipv6(addr: Ipv6Addr) -> Result<(), WgError> {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            // "RTNETLINK answers: File exists" means the address is already assigned
-            if !stderr.contains("File exists") {
+            // Address already assigned is OK (idempotent setup).
+            // Older iproute2: "RTNETLINK answers: File exists"
+            // Newer iproute2: "Error: ipv6: address already assigned."
+            if !stderr.contains("File exists") && !stderr.contains("already assigned") {
                 return Err(WgError::AddressAssign(stderr.into_owned()));
             }
         }

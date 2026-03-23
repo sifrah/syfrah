@@ -57,6 +57,7 @@ start_node() {
         --ip "$ip" \
         --privileged \
         --hostname "$name" \
+        --init \
         "$E2E_IMAGE" >/dev/null
 
     E2E_CONTAINERS+=("$name")

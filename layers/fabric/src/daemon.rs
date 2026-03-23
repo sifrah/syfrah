@@ -28,8 +28,17 @@ pub struct DaemonConfig {
     pub zone: Option<String>,
 }
 
-/// Run the init flow: create a new mesh.
-pub async fn run_init(config: DaemonConfig) -> anyhow::Result<()> {
+/// Data produced by `setup_init` / `setup_join`, needed to start the daemon loop.
+pub struct DaemonReady {
+    pub my_record: PeerRecord,
+    pub wg_keypair: KeyPair,
+    pub mesh_secret: MeshSecret,
+    pub peering_port: u16,
+}
+
+/// Setup the init flow: create a new mesh, save state, print info.
+/// Returns a DaemonReady that can be passed to run_daemon.
+pub fn setup_init(config: &DaemonConfig) -> anyhow::Result<DaemonReady> {
     if store::exists() {
         anyhow::bail!("mesh state already exists. Run 'syfrah fabric leave' first.");
     }
@@ -39,7 +48,7 @@ pub async fn run_init(config: DaemonConfig) -> anyhow::Result<()> {
     let wg_keypair = wg::generate_keypair();
     let mesh_prefix = derive_prefix_from_secret(&mesh_secret);
     let mesh_ipv6 = addressing::derive_node_address(&mesh_prefix, wg_keypair.public.as_bytes());
-    let endpoint = resolve_endpoint(&config);
+    let endpoint = resolve_endpoint(config);
     ui::step_ok(&sp, &format!("Secret: {mesh_secret}"));
 
     let sp = ui::spinner("Setting up WireGuard interface...");
@@ -84,8 +93,6 @@ pub async fn run_init(config: DaemonConfig) -> anyhow::Result<()> {
     println!("  \u{26a0} Peering is not active. New nodes cannot join yet.");
     println!("    To accept nodes with a PIN:  syfrah fabric peering start --pin <PIN>");
     println!("    To approve manually:         syfrah fabric peering start");
-    println!();
-    println!("Running daemon... (Ctrl+C to stop)");
 
     let my_record = build_record(
         &config.node_name,
@@ -95,7 +102,27 @@ pub async fn run_init(config: DaemonConfig) -> anyhow::Result<()> {
         Some(&region),
         Some(&zone),
     );
-    run_daemon(my_record, &wg_keypair, mesh_secret, config.peering_port).await
+    Ok(DaemonReady {
+        my_record,
+        wg_keypair,
+        mesh_secret,
+        peering_port: config.peering_port,
+    })
+}
+
+/// Run the init flow: create a new mesh and run daemon (foreground).
+pub async fn run_init(config: DaemonConfig) -> anyhow::Result<()> {
+    let ready = setup_init(&config)?;
+    println!();
+    println!("Run 'syfrah peering' to accept new nodes.");
+    println!("Running daemon... (Ctrl+C to stop)");
+    run_daemon(
+        ready.my_record,
+        &ready.wg_keypair,
+        ready.mesh_secret,
+        ready.peering_port,
+    )
+    .await
 }
 
 /// Auto-init: create mesh if none exists, used by `syfrah fabric peering` on a fresh node.
@@ -140,19 +167,20 @@ pub fn auto_init(
     Ok((mesh_secret, wg_keypair))
 }
 
-/// Run the join flow: request to join an existing mesh via TCP peering.
-pub async fn run_join(
+/// Setup the join flow: send join request, save state, print info.
+/// Returns a DaemonReady that can be passed to run_daemon.
+pub async fn setup_join(
     target: SocketAddr,
-    config: DaemonConfig,
+    config: &DaemonConfig,
     pin: Option<String>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<DaemonReady> {
     if store::exists() {
         anyhow::bail!("mesh state already exists. Run 'syfrah fabric leave' first.");
     }
 
     let sp = ui::spinner(&format!("Connecting to {target}..."));
     let wg_keypair = wg::generate_keypair();
-    let endpoint = resolve_endpoint(&config);
+    let endpoint = resolve_endpoint(config);
 
     // Send region/zone in the request so the leader can store them.
     // If the user provided explicit values, include them; otherwise send
@@ -262,8 +290,6 @@ pub async fn run_join(
     println!();
     ui::warn("The mesh secret is stored in ~/.syfrah/state.json");
     println!("    Keep this file safe \u{2014} it grants full mesh access.");
-    println!();
-    println!("Running daemon... (Ctrl+C to stop)");
 
     let my_record = build_record(
         &config.node_name,
@@ -273,11 +299,34 @@ pub async fn run_join(
         Some(&region),
         Some(&zone),
     );
-    run_daemon(my_record, &wg_keypair, mesh_secret, config.peering_port).await
+    Ok(DaemonReady {
+        my_record,
+        wg_keypair,
+        mesh_secret,
+        peering_port: config.peering_port,
+    })
 }
 
-/// Restart daemon from saved state.
-pub async fn run_start() -> anyhow::Result<()> {
+/// Run the join flow: join mesh and run daemon (foreground).
+pub async fn run_join(
+    target: SocketAddr,
+    config: DaemonConfig,
+    pin: Option<String>,
+) -> anyhow::Result<()> {
+    let ready = setup_join(target, &config, pin).await?;
+    println!("Running daemon... (Ctrl+C to stop)");
+    run_daemon(
+        ready.my_record,
+        &ready.wg_keypair,
+        ready.mesh_secret,
+        ready.peering_port,
+    )
+    .await
+}
+
+/// Setup restart from saved state: load state, setup WG, print info.
+/// Returns a DaemonReady that can be passed to run_daemon.
+pub fn setup_start() -> anyhow::Result<DaemonReady> {
     let state = store::load().map_err(|_| {
         anyhow::anyhow!(
             "no mesh state found. Run 'syfrah fabric init' or 'syfrah fabric join' first."
@@ -318,7 +367,6 @@ pub async fn run_start() -> anyhow::Result<()> {
         "Node",
         &format!("{} ({})", state.node_name, state.mesh_ipv6),
     );
-    println!("Running daemon... (Ctrl+C to stop)");
 
     let endpoint_addr = state
         .public_endpoint
@@ -331,7 +379,25 @@ pub async fn run_start() -> anyhow::Result<()> {
         state.region.as_deref(),
         state.zone.as_deref(),
     );
-    run_daemon(my_record, &wg_keypair, mesh_secret, state.peering_port).await
+    Ok(DaemonReady {
+        my_record,
+        wg_keypair,
+        mesh_secret,
+        peering_port: state.peering_port,
+    })
+}
+
+/// Restart daemon from saved state (foreground).
+pub async fn run_start() -> anyhow::Result<()> {
+    let ready = setup_start()?;
+    println!("Running daemon... (Ctrl+C to stop)");
+    run_daemon(
+        ready.my_record,
+        &ready.wg_keypair,
+        ready.mesh_secret,
+        ready.peering_port,
+    )
+    .await
 }
 
 /// Leave the mesh.

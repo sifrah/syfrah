@@ -4,6 +4,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use syfrah_fabric::cli;
+use syfrah_fabric::daemon::{self, DaemonConfig};
 use syfrah_state::cli::StateCommand;
 
 #[derive(Parser)]
@@ -51,9 +52,10 @@ enum FabricCommand {
         /// Zone label for this node (auto-incremented if not set)
         #[arg(long)]
         zone: Option<String>,
+        /// Run daemon in foreground instead of backgrounding
         #[arg(long, short)]
-        daemon: bool,
-        /// Start peering with auto-accept PIN after init (implies --daemon)
+        foreground: bool,
+        /// Start peering with auto-accept PIN after init
         #[arg(long)]
         peering: bool,
     },
@@ -76,15 +78,14 @@ enum FabricCommand {
         /// Zone label for this node (auto-incremented if not set)
         #[arg(long)]
         zone: Option<String>,
+        /// Run daemon in foreground instead of backgrounding
         #[arg(long, short)]
-        daemon: bool,
+        foreground: bool,
     },
     /// Restart the daemon from saved state
     Start {
+        /// Run daemon in foreground instead of backgrounding
         #[arg(long, short)]
-        daemon: bool,
-        /// Run in foreground (for systemd)
-        #[arg(long)]
         foreground: bool,
     },
     /// Stop the running daemon
@@ -212,42 +213,102 @@ fn setup_logging(daemon_mode: bool) {
     }
 }
 
+/// Spawn the daemon in background via double-fork + re-exec with `start --foreground`.
+/// State must already be saved before calling this.
+///
+/// Uses the classic double-fork pattern so that:
+/// 1. Parent forks -> intermediate child
+/// 2. Intermediate forks -> grandchild (the daemon), then exits
+/// 3. Parent reaps intermediate (no zombie)
+/// 4. Grandchild calls setsid + exec, is reparented to init
 #[cfg(unix)]
-fn daemonize() -> Result<bool> {
-    let pid = unsafe { libc::fork() };
-    if pid < 0 {
+fn background_daemon() -> Result<()> {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+
+    let exe = std::env::current_exe()?;
+
+    // Open the log file for stderr so we can capture startup errors
+    let log_dir = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".syfrah");
+    let _ = std::fs::create_dir_all(&log_dir);
+    let log_path = log_dir.join("syfrah.log");
+
+    // First fork
+    let pid1 = unsafe { libc::fork() };
+    if pid1 < 0 {
         anyhow::bail!("fork failed");
     }
-    if pid > 0 {
-        return Ok(true);
-    }
-    if unsafe { libc::setsid() } < 0 {
-        anyhow::bail!("setsid failed");
-    }
-    let pid2 = unsafe { libc::fork() };
-    if pid2 < 0 {
-        anyhow::bail!("second fork failed");
-    }
-    if pid2 > 0 {
-        std::process::exit(0);
-    }
-    unsafe {
-        let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
-        if devnull >= 0 {
-            libc::dup2(devnull, 0);
-            libc::dup2(devnull, 1);
-            libc::dup2(devnull, 2);
-            if devnull > 2 {
-                libc::close(devnull);
+    if pid1 == 0 {
+        // Intermediate child: setsid, fork again, then exit
+        unsafe { libc::setsid() };
+
+        let pid2 = unsafe { libc::fork() };
+        if pid2 < 0 {
+            std::process::exit(1);
+        }
+        if pid2 > 0 {
+            // Intermediate exits immediately — grandchild becomes orphan
+            std::process::exit(0);
+        }
+
+        // Grandchild: redirect stdio and exec the daemon
+        unsafe {
+            let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
+            if devnull >= 0 {
+                libc::dup2(devnull, 0); // stdin
+                libc::dup2(devnull, 1); // stdout
+                if devnull > 2 {
+                    libc::close(devnull);
+                }
+            }
+            // Redirect stderr to log file
+            if let Ok(log_cstr) = std::ffi::CString::new(log_path.to_string_lossy().as_bytes()) {
+                let log_fd = libc::open(
+                    log_cstr.as_ptr(),
+                    libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND,
+                    0o644,
+                );
+                if log_fd >= 0 {
+                    libc::dup2(log_fd, 2); // stderr
+                    if log_fd > 2 {
+                        libc::close(log_fd);
+                    }
+                }
             }
         }
+
+        // Exec the daemon — replaces current process
+        use std::os::unix::process::CommandExt;
+        let err = std::process::Command::new(&exe)
+            .args(["fabric", "start", "--foreground"])
+            .exec();
+        // If exec fails, write error and exit
+        eprintln!("exec failed: {err}");
+        std::process::exit(1);
     }
-    Ok(false)
+
+    // Parent: wait for intermediate child to exit (reap it, no zombie)
+    unsafe {
+        let mut status: libc::c_int = 0;
+        libc::waitpid(pid1, &mut status, 0);
+    }
+
+    // Wait briefly for the grandchild daemon to start and write PID file
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    if let Some(pid) = syfrah_fabric::store::read_pid() {
+        println!("Daemon started (pid {pid}).");
+    } else {
+        println!("Daemon starting in background...");
+    }
+    println!("Run 'syfrah fabric status' to check.");
+    Ok(())
 }
 
 #[cfg(not(unix))]
-fn daemonize() -> Result<bool> {
-    anyhow::bail!("--daemon is only supported on Unix");
+fn background_daemon() -> Result<()> {
+    anyhow::bail!("background daemon is only supported on Unix. Use --foreground instead.");
 }
 
 #[tokio::main]
@@ -271,48 +332,30 @@ async fn run() -> Result<()> {
                 peering_port,
                 region,
                 zone,
-                daemon,
+                foreground,
                 peering,
             } => {
                 let peering_port = peering_port.unwrap_or(port + 1);
-                // --peering implies --daemon
-                let daemon = daemon || peering;
-                if daemon {
-                    println!("Starting daemon in background...");
-                    if daemonize()? {
-                        // Parent process: wait for daemon, then optionally start peering
-                        if peering {
-                            cli::init::wait_and_start_peering(endpoint, peering_port).await
-                        } else {
-                            println!("Use 'syfrah fabric status' to check.");
-                            Ok(())
-                        }
-                    } else {
-                        // Child (daemon) process
-                        setup_logging(true);
-                        cli::init::run(
-                            &name,
-                            &node_name.unwrap_or_else(default_node_name),
-                            port,
-                            endpoint,
-                            peering_port,
-                            region,
-                            zone,
-                        )
-                        .await
-                    }
+                let config = DaemonConfig {
+                    mesh_name: name,
+                    node_name: node_name.unwrap_or_else(default_node_name),
+                    wg_listen_port: port,
+                    public_endpoint: endpoint,
+                    peering_port,
+                    region,
+                    zone,
+                };
+                if foreground {
+                    setup_logging(true);
+                    daemon::run_init(config).await
                 } else {
-                    setup_logging(false);
-                    cli::init::run(
-                        &name,
-                        &node_name.unwrap_or_else(default_node_name),
-                        port,
-                        endpoint,
-                        peering_port,
-                        region,
-                        zone,
-                    )
-                    .await
+                    daemon::setup_init(&config)?;
+                    background_daemon()?;
+                    if peering {
+                        cli::init::wait_and_start_peering(endpoint, peering_port).await
+                    } else {
+                        Ok(())
+                    }
                 }
             }
             FabricCommand::Join {
@@ -323,43 +366,48 @@ async fn run() -> Result<()> {
                 pin,
                 region,
                 zone,
-                daemon,
+                foreground,
             } => {
-                if daemon {
-                    println!("Starting daemon in background...");
-                    if daemonize()? {
-                        println!("Use 'syfrah fabric status' to check.");
-                        return Ok(());
-                    }
-                }
-                setup_logging(daemon);
-                cli::join::run(
-                    &target,
-                    &node_name.unwrap_or_else(default_node_name),
-                    port,
-                    endpoint,
-                    pin,
+                let config = DaemonConfig {
+                    mesh_name: String::new(),
+                    node_name: node_name.unwrap_or_else(default_node_name),
+                    wg_listen_port: port,
+                    public_endpoint: endpoint,
+                    peering_port: port + 1,
                     region,
                     zone,
-                )
-                .await
-            }
-            FabricCommand::Start { daemon, foreground } => {
+                };
+                // Parse target: "1.2.3.4" -> "1.2.3.4:51821", or "1.2.3.4:9999" as-is
+                let target_addr: SocketAddr = if target.contains(':') {
+                    target
+                        .parse()
+                        .map_err(|e| anyhow::anyhow!("invalid target address '{target}': {e}"))?
+                } else {
+                    format!("{target}:51821")
+                        .parse()
+                        .map_err(|e| anyhow::anyhow!("invalid target address '{target}': {e}"))?
+                };
                 if foreground {
-                    // Foreground mode for systemd: log to stderr, don't fork
-                    setup_logging(false);
-                    cli::start::run().await
-                } else if daemon {
-                    println!("Starting daemon in background...");
-                    if daemonize()? {
-                        println!("Use 'syfrah fabric status' to check.");
-                        return Ok(());
-                    }
+                    setup_logging(true);
+                    daemon::run_join(target_addr, config, pin).await
+                } else {
+                    daemon::setup_join(target_addr, &config, pin).await?;
+                    background_daemon()
+                }
+            }
+            FabricCommand::Start { foreground } => {
+                if foreground {
+                    // Log to file when running as daemon (foreground or background)
                     setup_logging(true);
                     cli::start::run().await
                 } else {
-                    setup_logging(false);
-                    cli::start::run().await
+                    // Validate state can be loaded before spawning background daemon
+                    syfrah_fabric::store::load().map_err(|_| {
+                        anyhow::anyhow!(
+                            "no mesh state found. Run 'syfrah init' or 'syfrah join' first."
+                        )
+                    })?;
+                    background_daemon()
                 }
             }
             FabricCommand::Stop => {
