@@ -98,8 +98,11 @@ init_mesh() {
 # Start peering with PIN on a container. Args: <container>
 start_peering() {
     local container="$1"
-    docker exec "$container" \
-        syfrah fabric peering start --pin "$E2E_PIN"
+    timeout 10 docker exec "$container" \
+        syfrah fabric peering start --pin "$E2E_PIN" || {
+        info "start_peering timed out or failed on $container"
+        return 1
+    }
 }
 
 # Join a mesh. Args: <container> <target_ip> <own_ip> [node_name]

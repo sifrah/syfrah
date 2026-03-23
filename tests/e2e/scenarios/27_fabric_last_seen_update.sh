@@ -36,8 +36,8 @@ else
 fi
 
 # Wait for the health check to run (60s interval) and update last_seen
-info "Waiting for health check to update last_seen (up to 70s)..."
-sleep 70
+info "Waiting for health check to update last_seen (up to 65s)..."
+sleep 65
 
 # Verify peer is still active (last_seen should be recent, not the original join time)
 active_count=$(docker exec "e2e-seen-1" syfrah fabric peers 2>&1 | grep -c "active" || echo "0")
