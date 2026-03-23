@@ -15,6 +15,7 @@ use crate::control::{self, ControlHandler, ControlRequest, ControlResponse};
 use crate::events::{self, EventType};
 use crate::peering::{self, AutoAcceptConfig, PeeringState};
 use crate::store::{self, NodeState};
+use crate::ui;
 use crate::wg;
 
 pub struct DaemonConfig {
@@ -33,14 +34,17 @@ pub async fn run_init(config: DaemonConfig) -> anyhow::Result<()> {
         anyhow::bail!("mesh state already exists. Run 'syfrah fabric leave' first.");
     }
 
+    let sp = ui::spinner("Generating mesh secret...");
     let mesh_secret = MeshSecret::generate();
     let wg_keypair = wg::generate_keypair();
-
     let mesh_prefix = derive_prefix_from_secret(&mesh_secret);
     let mesh_ipv6 = addressing::derive_node_address(&mesh_prefix, wg_keypair.public.as_bytes());
     let endpoint = resolve_endpoint(&config);
+    ui::step_ok(&sp, &format!("Secret: {mesh_secret}"));
 
+    let sp = ui::spinner("Setting up WireGuard interface...");
     wg::setup_interface(&wg_keypair, config.wg_listen_port, mesh_ipv6)?;
+    ui::step_ok(&sp, &format!("Interface syfrah0 up ({mesh_ipv6})"));
     info!(flow = "init", mesh = %config.mesh_name, node = %config.node_name, "wireguard interface up");
 
     // Region/zone: use provided or defaults
@@ -71,11 +75,11 @@ pub async fn run_init(config: DaemonConfig) -> anyhow::Result<()> {
     };
     store::save(&state)?;
 
-    println!("Mesh '{}' created.", config.mesh_name);
-    println!("  \u{2713} Secret: {mesh_secret}");
-    println!("  \u{2713} Node:   {} ({})", config.node_name, mesh_ipv6);
-    println!("  Region: {region}");
-    println!("  Zone:   {zone}");
+    let sp = ui::spinner("Starting daemon...");
+    ui::step_ok(&sp, &format!("Mesh '{}' created", config.mesh_name));
+    ui::info_line("Node", &format!("{} ({mesh_ipv6})", config.node_name));
+    ui::info_line("Region", &region);
+    ui::info_line("Zone", &zone);
     println!();
     println!("  \u{26a0} Peering is not active. New nodes cannot join yet.");
     println!("    To accept nodes with a PIN:  syfrah fabric peering start --pin <PIN>");
@@ -106,7 +110,9 @@ pub fn auto_init(
     let mesh_prefix = derive_prefix_from_secret(&mesh_secret);
     let mesh_ipv6 = addressing::derive_node_address(&mesh_prefix, wg_keypair.public.as_bytes());
 
+    let sp = ui::spinner("Setting up WireGuard interface...");
     wg::setup_interface(&wg_keypair, wg_port, mesh_ipv6)?;
+    ui::step_ok(&sp, &format!("Interface syfrah0 up ({mesh_ipv6})"));
 
     let state = NodeState {
         mesh_name: node_name.to_string(),
@@ -126,9 +132,10 @@ pub fn auto_init(
     };
     store::save(&state)?;
 
-    println!("Mesh auto-created.");
-    println!("  Secret: {mesh_secret}");
-    println!("  Node:   {node_name} ({mesh_ipv6})");
+    let sp = ui::spinner("Auto-creating mesh...");
+    ui::step_ok(&sp, "Mesh auto-created");
+    ui::info_line("Secret", &mesh_secret.to_string());
+    ui::info_line("Node", &format!("{node_name} ({mesh_ipv6})"));
 
     Ok((mesh_secret, wg_keypair))
 }
@@ -143,6 +150,7 @@ pub async fn run_join(
         anyhow::bail!("mesh state already exists. Run 'syfrah fabric leave' first.");
     }
 
+    let sp = ui::spinner(&format!("Connecting to {target}..."));
     let wg_keypair = wg::generate_keypair();
     let endpoint = resolve_endpoint(&config);
 
@@ -154,16 +162,17 @@ pub async fn run_join(
         wg_listen_port: config.wg_listen_port,
         pin,
     };
+    ui::step_ok(&sp, &format!("Connected to {target}"));
 
-    println!("Sending join request to {target}...");
-    println!("Waiting for approval...");
-
+    let sp = ui::spinner("Waiting for approval...");
     let response = peering::send_join_request(target, request).await?;
 
     if !response.accepted {
         let reason = response.reason.unwrap_or_else(|| "no reason given".into());
+        ui::step_fail(&sp, &format!("Rejected: {reason}"));
         anyhow::bail!("Join request rejected: {reason}");
     }
+    ui::step_ok(&sp, "Approved");
 
     let mesh_secret_str = response
         .mesh_secret
@@ -188,10 +197,13 @@ pub async fn run_join(
         .clone()
         .unwrap_or_else(|| store::generate_zone(&region, &response.peers));
 
+    let sp = ui::spinner("Setting up WireGuard interface...");
     wg::setup_interface(&wg_keypair, config.wg_listen_port, mesh_ipv6)?;
+    ui::step_ok(&sp, &format!("Interface syfrah0 up ({mesh_ipv6})"));
     info!(flow = "join", node = %config.node_name, "wireguard interface up");
 
     if !response.peers.is_empty() {
+        let sp = ui::spinner("Syncing peers...");
         info!(
             flow = "join",
             count = response.peers.len(),
@@ -200,6 +212,7 @@ pub async fn run_join(
         if let Err(e) = wg::apply_peers(&wg_keypair.public, &response.peers) {
             warn!(flow = "join", error = %e, "failed to apply peers");
         }
+        ui::step_ok(&sp, &format!("{} peers configured", response.peers.len()));
     }
 
     let state = NodeState {
@@ -220,19 +233,21 @@ pub async fn run_join(
     };
     store::save(&state)?;
 
-    println!("Joined mesh '{mesh_name}'.");
+    let sp = ui::spinner("Starting daemon...");
+    ui::step_ok(&sp, &format!("Joined mesh '{mesh_name}'"));
     match response.approved_by.as_deref() {
-        Some("pin") => println!("  \u{2713} PIN accepted by the target node"),
-        Some("manual") => println!("  \u{2713} Approved by the target node (manual approval)"),
-        _ => println!("  \u{2713} Approved by the target node"),
+        Some("pin") => ui::info_line("Approval", "PIN accepted by the target node"),
+        Some("manual") => {
+            ui::info_line("Approval", "Approved by the target node (manual approval)")
+        }
+        _ => ui::info_line("Approval", "Approved by the target node"),
     }
-    println!("  \u{2713} Mesh secret received and stored");
-    println!("  Node:   {} ({})", config.node_name, mesh_ipv6);
-    println!("  Region: {region}");
-    println!("  Zone:   {zone}");
+    ui::info_line("Node", &format!("{} ({mesh_ipv6})", config.node_name));
+    ui::info_line("Region", &region);
+    ui::info_line("Zone", &zone);
     println!();
-    println!("  \u{26a0} The mesh secret is stored in ~/.syfrah/state.json");
-    println!("    Keep this file safe — it grants full mesh access.");
+    ui::warn("The mesh secret is stored in ~/.syfrah/state.json");
+    println!("    Keep this file safe \u{2014} it grants full mesh access.");
     println!();
     println!("Running daemon... (Ctrl+C to stop)");
 
@@ -263,9 +278,12 @@ pub async fn run_start() -> anyhow::Result<()> {
         .map_err(|_| anyhow::anyhow!("corrupt WG private key in state"))?;
     let wg_keypair = KeyPair::from_private(wg_private);
 
+    let sp = ui::spinner("Setting up WireGuard interface...");
     wg::setup_interface(&wg_keypair, state.wg_listen_port, state.mesh_ipv6)?;
+    ui::step_ok(&sp, &format!("Interface syfrah0 up ({})", state.mesh_ipv6));
 
     if !state.peers.is_empty() {
+        let sp_peers = ui::spinner("Syncing peers...");
         info!(
             flow = "start",
             count = state.peers.len(),
@@ -274,10 +292,18 @@ pub async fn run_start() -> anyhow::Result<()> {
         if let Err(e) = wg::apply_peers(&wg_keypair.public, &state.peers) {
             warn!(flow = "start", error = %e, "failed to apply saved peers");
         }
+        ui::step_ok(
+            &sp_peers,
+            &format!("{} peers configured", state.peers.len()),
+        );
     }
 
-    println!("Restarting daemon for mesh '{}'...", state.mesh_name);
-    println!("  Node: {} ({})", state.node_name, state.mesh_ipv6);
+    let sp = ui::spinner("Starting daemon...");
+    ui::step_ok(&sp, &format!("Restarting mesh '{}'", state.mesh_name));
+    ui::info_line(
+        "Node",
+        &format!("{} ({})", state.node_name, state.mesh_ipv6),
+    );
     println!("Running daemon... (Ctrl+C to stop)");
 
     let endpoint_addr = state
@@ -300,12 +326,16 @@ pub async fn run_leave() -> anyhow::Result<()> {
         println!("No mesh configured.");
         return Ok(());
     }
+    let sp = ui::spinner("Tearing down WireGuard interface...");
     if let Err(e) = wg::teardown_interface() {
-        eprintln!("Warning: could not tear down WireGuard interface: {e}");
+        ui::step_fail(&sp, &format!("Could not tear down interface: {e}"));
+    } else {
+        ui::step_ok(&sp, "Interface removed");
     }
+    let sp = ui::spinner("Cleaning up state...");
     let _ = std::fs::remove_file(store::control_socket_path());
     store::clear()?;
-    println!("Left the mesh. State cleared.");
+    ui::step_ok(&sp, "Left the mesh. State cleared.");
     Ok(())
 }
 

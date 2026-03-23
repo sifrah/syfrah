@@ -1,5 +1,6 @@
 use crate::control::{send_control_request, ControlRequest, ControlResponse};
 use crate::store;
+use crate::ui;
 use anyhow::Result;
 use std::collections::HashSet;
 
@@ -11,8 +12,9 @@ pub async fn watch(pin: Option<String>) -> Result<()> {
             .ok()
             .and_then(|h| h.into_string().ok())
             .unwrap_or_else(|| "syfrah-node".into());
-        println!("No mesh configured. Creating one automatically...");
+        let sp = ui::spinner("No mesh configured. Creating one automatically...");
         crate::daemon::auto_init(&node_name, 51820, 51821)?;
+        ui::step_ok(&sp, "Mesh auto-created");
         println!();
 
         // Start daemon in background
@@ -65,16 +67,7 @@ pub async fn watch(pin: Option<String>) -> Result<()> {
         _ => {}
     }
 
-    if let Some(ref p) = pin {
-        println!("\u{2713} Peering active");
-        println!("  Mode: auto-accept with PIN");
-        println!("  Nodes can join with: syfrah fabric join <this-ip> --pin {p}");
-    } else {
-        println!("\u{2713} Peering active");
-        println!("  Mode: manual approval (you will be prompted for each join request)");
-        println!("  Press Ctrl+C to stop.");
-    }
-    println!();
+    ui::peering_banner(51821, pin.as_deref());
 
     // Poll for new requests
     let mut seen: HashSet<String> = HashSet::new();
@@ -93,12 +86,8 @@ pub async fn watch(pin: Option<String>) -> Result<()> {
                 }
                 seen.insert(req.request_id.clone());
 
-                println!("Join request from {} ({})", req.node_name, req.endpoint);
-                println!(
-                    "  WG pubkey: {}",
-                    &req.wg_public_key[..20.min(req.wg_public_key.len())]
-                );
-                print!("  Accept? [Y/n] ");
+                let key_prefix = &req.wg_public_key[..20.min(req.wg_public_key.len())];
+                ui::join_request_card(&req.node_name, &req.endpoint.to_string(), key_prefix);
 
                 // Read from stdin
                 use std::io::Write;
@@ -113,10 +102,19 @@ pub async fn watch(pin: Option<String>) -> Result<()> {
                         .await
                         {
                             Ok(ControlResponse::PeeringAccepted { peer_name }) => {
-                                println!("  Accepted: {peer_name} joined the mesh.\n");
+                                if ui::is_tty() {
+                                    let green = console::Style::new().green();
+                                    println!(
+                                        "     {} {peer_name} joined the mesh.\n",
+                                        green.apply_to("\u{2713}")
+                                    );
+                                } else {
+                                    println!("  Accepted: {peer_name} joined the mesh.\n");
+                                }
                             }
                             Ok(ControlResponse::Error { message }) => {
-                                println!("  Error: {message}\n");
+                                ui::warn(&format!("Error: {message}"));
+                                println!();
                             }
                             _ => {}
                         }
@@ -128,7 +126,10 @@ pub async fn watch(pin: Option<String>) -> Result<()> {
                         .await
                         {
                             Ok(_) => println!("  Rejected.\n"),
-                            Err(e) => println!("  Error: {e}\n"),
+                            Err(e) => {
+                                ui::warn(&format!("Error: {e}"));
+                                println!();
+                            }
                         }
                     }
                 }
@@ -138,6 +139,7 @@ pub async fn watch(pin: Option<String>) -> Result<()> {
 }
 
 pub async fn start(port: u16, pin: Option<String>) -> Result<()> {
+    let sp = ui::spinner(&format!("Starting peering on port {port}..."));
     let resp = send_request(ControlRequest::PeeringStart {
         port,
         pin: pin.clone(),
@@ -145,27 +147,40 @@ pub async fn start(port: u16, pin: Option<String>) -> Result<()> {
     .await?;
     match resp {
         ControlResponse::Ok => {
-            if let Some(p) = pin {
-                println!("\u{2713} Peering started on port {port}");
+            if let Some(ref p) = pin {
+                ui::step_ok(&sp, &format!("Peering started on port {port}"));
                 println!("  Mode: auto-accept with PIN");
                 println!("  Nodes can join with: syfrah fabric join <this-ip> --pin {p}");
             } else {
-                println!("\u{2713} Peering started on port {port}");
+                ui::step_ok(&sp, &format!("Peering started on port {port}"));
                 println!("  Mode: manual approval (you must accept each join request)");
             }
         }
-        ControlResponse::Error { message } => anyhow::bail!("{message}"),
-        _ => anyhow::bail!("unexpected response"),
+        ControlResponse::Error { message } => {
+            ui::step_fail(&sp, &format!("Failed: {message}"));
+            anyhow::bail!("{message}");
+        }
+        _ => {
+            ui::step_fail(&sp, "Unexpected response");
+            anyhow::bail!("unexpected response");
+        }
     }
     Ok(())
 }
 
 pub async fn stop() -> Result<()> {
+    let sp = ui::spinner("Stopping peering...");
     let resp = send_request(ControlRequest::PeeringStop).await?;
     match resp {
-        ControlResponse::Ok => println!("Peering stopped."),
-        ControlResponse::Error { message } => anyhow::bail!("{message}"),
-        _ => anyhow::bail!("unexpected response"),
+        ControlResponse::Ok => ui::step_ok(&sp, "Peering stopped."),
+        ControlResponse::Error { message } => {
+            ui::step_fail(&sp, &format!("Failed: {message}"));
+            anyhow::bail!("{message}");
+        }
+        _ => {
+            ui::step_fail(&sp, "Unexpected response");
+            anyhow::bail!("unexpected response");
+        }
     }
     Ok(())
 }
@@ -201,30 +216,44 @@ pub async fn list() -> Result<()> {
 }
 
 pub async fn accept(request_id: &str) -> Result<()> {
+    let sp = ui::spinner(&format!("Accepting request {request_id}..."));
     let resp = send_request(ControlRequest::PeeringAccept {
         request_id: request_id.to_string(),
     })
     .await?;
     match resp {
         ControlResponse::PeeringAccepted { peer_name } => {
-            println!("Accepted: {peer_name} joined the mesh.");
+            ui::step_ok(&sp, &format!("{peer_name} joined the mesh."));
         }
-        ControlResponse::Error { message } => anyhow::bail!("{message}"),
-        _ => anyhow::bail!("unexpected response"),
+        ControlResponse::Error { message } => {
+            ui::step_fail(&sp, &format!("Failed: {message}"));
+            anyhow::bail!("{message}");
+        }
+        _ => {
+            ui::step_fail(&sp, "Unexpected response");
+            anyhow::bail!("unexpected response");
+        }
     }
     Ok(())
 }
 
 pub async fn reject(request_id: &str, reason: Option<String>) -> Result<()> {
+    let sp = ui::spinner(&format!("Rejecting request {request_id}..."));
     let resp = send_request(ControlRequest::PeeringReject {
         request_id: request_id.to_string(),
         reason,
     })
     .await?;
     match resp {
-        ControlResponse::Ok => println!("Request {request_id} rejected."),
-        ControlResponse::Error { message } => anyhow::bail!("{message}"),
-        _ => anyhow::bail!("unexpected response"),
+        ControlResponse::Ok => ui::step_ok(&sp, &format!("Request {request_id} rejected.")),
+        ControlResponse::Error { message } => {
+            ui::step_fail(&sp, &format!("Failed: {message}"));
+            anyhow::bail!("{message}");
+        }
+        _ => {
+            ui::step_fail(&sp, "Unexpected response");
+            anyhow::bail!("unexpected response");
+        }
     }
     Ok(())
 }
