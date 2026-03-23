@@ -56,9 +56,7 @@ fn generate_zone_with_gaps() {
 
 #[test]
 fn generate_zone_no_matching_region() {
-    let peers = vec![
-        make_peer("a", Some("region-2"), Some("region-2-zone-5")),
-    ];
+    let peers = vec![make_peer("a", Some("region-2"), Some("region-2-zone-5"))];
     // No region-1 zones exist, starts at 1
     let zone = generate_zone("region-1", &peers);
     assert_eq!(zone, "region-1-zone-1");
