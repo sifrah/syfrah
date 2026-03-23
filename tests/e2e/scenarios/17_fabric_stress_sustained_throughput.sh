@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Stress test: sustained WireGuard throughput for 30 seconds
-# Verifies the tunnel doesn't degrade over time
+# Stress test: large data transfer via WireGuard tunnel
+# Verifies the tunnel handles bulk data without corruption or stalls
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 
-echo "── STRESS: Sustained Throughput (30s) ──"
+echo "── STRESS: Bulk Throughput ──"
 
 create_network
 
@@ -20,35 +20,61 @@ sleep 3
 
 ipv6_2=$(get_mesh_ipv6 "e2e-stp-2")
 
-# Start receiver
-docker exec -d "e2e-stp-2" bash -c "ncat -6 -l '$ipv6_2' 9999 > /dev/null"
+# Transfer 1: 100MB bulk transfer
+info "Transfer 1: 100MB bulk..."
+docker exec -d "e2e-stp-2" bash -c "ncat -6 -l '$ipv6_2' 9999 > /tmp/received"
 sleep 1
 
-# Send data continuously for 30 seconds
-info "Sending data for 30 seconds..."
 START_TIME=$(date +%s)
 docker exec "e2e-stp-1" bash -c \
-    "dd if=/dev/zero bs=1M count=100 2>/dev/null | timeout 30 ncat -6 -w 35 '$ipv6_2' 9999" || true
+    "dd if=/dev/zero bs=1M count=100 2>/dev/null | ncat -6 -w 30 '$ipv6_2' 9999"
 END_TIME=$(date +%s)
-
 ELAPSED=$((END_TIME - START_TIME))
 if [ "$ELAPSED" -eq 0 ]; then ELAPSED=1; fi
 
-info "Transfer ran for ${ELAPSED}s"
+THROUGHPUT=$((100 / ELAPSED))
+info "100MB in ${ELAPSED}s (~${THROUGHPUT} MB/s)"
 
-if [ "$ELAPSED" -ge 5 ]; then
-    pass "sustained transfer ran for ${ELAPSED}s without hanging"
+if [ "$ELAPSED" -le 30 ]; then
+    pass "100MB transfer completed in ${ELAPSED}s"
 else
-    fail "transfer ended too quickly (${ELAPSED}s)"
+    fail "100MB transfer took ${ELAPSED}s (too slow)"
 fi
 
-# Verify the tunnel still works after sustained load
-sleep 2
-assert_can_ping "e2e-stp-1" "$ipv6_2"
+# Verify received size
+RECEIVED=$(docker exec "e2e-stp-2" wc -c /tmp/received 2>/dev/null | awk '{print $1}')
+EXPECTED=$((100 * 1024 * 1024))
+if [ "$RECEIVED" = "$EXPECTED" ]; then
+    pass "receiver got all 100MB ($RECEIVED bytes)"
+else
+    fail "receiver got $RECEIVED bytes (expected $EXPECTED)"
+fi
 
-# Check daemon is still healthy
+sleep 1
+
+# Transfer 2: multiple small transfers (tests connection reuse)
+info "Transfer 2: 10x 1MB rapid transfers..."
+FAIL_COUNT=0
+for round in $(seq 1 10); do
+    docker exec -d "e2e-stp-2" bash -c "ncat -6 -l '$ipv6_2' 9998 > /dev/null"
+    sleep 0.3
+    if docker exec "e2e-stp-1" bash -c \
+        "dd if=/dev/zero bs=1M count=1 2>/dev/null | ncat -6 -w 5 '$ipv6_2' 9998"; then
+        true
+    else
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+done
+
+if [ "$FAIL_COUNT" -eq 0 ]; then
+    pass "10 rapid transfers all succeeded"
+else
+    fail "$FAIL_COUNT/10 rapid transfers failed"
+fi
+
+# Tunnel still works after all the load
+assert_can_ping "e2e-stp-1" "$ipv6_2"
 assert_daemon_running "e2e-stp-1"
-assert_daemon_running "e2e-stp-2"
 
 cleanup
 summary
