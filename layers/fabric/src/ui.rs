@@ -149,23 +149,28 @@ pub fn join_request_card(node_name: &str, endpoint: &str, wg_key_prefix: &str) {
 pub fn peering_banner(port: u16, pin: Option<&str>) {
     if is_tty() {
         let green = Style::new().green();
-        let bold = Style::new().bold();
         println!(
             "  {} Peering active on port {port}",
             green.apply_to("\u{2713}")
         );
         if let Some(p) = pin {
-            println!("  PIN: {}", bold.apply_to(p));
-            println!("  New nodes can join with: syfrah join <this-ip> --pin {p}");
+            println!("  Mode: auto-accept with PIN");
+            println!("  Nodes can join with: syfrah fabric join <this-ip> --pin {p}");
+        } else {
+            println!("  Mode: manual approval (you will be prompted for each join request)");
+            println!("  Press Ctrl+C to stop.");
         }
-        println!("  Waiting for join requests...\n");
+        println!();
     } else {
         println!("Peering active on port {port}");
         if let Some(p) = pin {
-            println!("PIN: {p}");
-            println!("New nodes can join with: syfrah join <this-ip> --pin {p}");
+            println!("Mode: auto-accept with PIN");
+            println!("Nodes can join with: syfrah fabric join <this-ip> --pin {p}");
+        } else {
+            println!("Mode: manual approval");
+            println!("Press Ctrl+C to stop.");
         }
-        println!("Waiting for join requests...\n");
+        println!();
     }
 }
 

@@ -149,10 +149,11 @@ pub async fn start(port: u16, pin: Option<String>) -> Result<()> {
         ControlResponse::Ok => {
             if let Some(ref p) = pin {
                 ui::step_ok(&sp, &format!("Peering started on port {port}"));
-                ui::info_line("PIN", p);
-                println!("  New nodes can join with: syfrah join <this-ip> --pin {p}");
+                println!("  Mode: auto-accept with PIN");
+                println!("  Nodes can join with: syfrah fabric join <this-ip> --pin {p}");
             } else {
                 ui::step_ok(&sp, &format!("Peering started on port {port}"));
+                println!("  Mode: manual approval (you must accept each join request)");
             }
         }
         ControlResponse::Error { message } => {

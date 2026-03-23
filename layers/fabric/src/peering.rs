@@ -137,6 +137,7 @@ impl PeeringState {
             mesh_prefix: None,
             peers: vec![],
             reason,
+            approved_by: None,
         });
         Ok(())
     }
@@ -299,6 +300,7 @@ async fn handle_incoming(
                         mesh_prefix: None,
                         peers: vec![],
                         reason: Some("request timed out".into()),
+                        approved_by: None,
                     }
                 }
             };
@@ -360,6 +362,7 @@ fn build_auto_accept_response(
         mesh_prefix: Some(config.mesh_prefix),
         peers: all_peers,
         reason: None,
+        approved_by: Some("pin".into()),
     };
 
     Ok((response, new_record))

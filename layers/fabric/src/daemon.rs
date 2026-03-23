@@ -81,7 +81,10 @@ pub async fn run_init(config: DaemonConfig) -> anyhow::Result<()> {
     ui::info_line("Region", &region);
     ui::info_line("Zone", &zone);
     println!();
-    println!("Run 'syfrah fabric peering' to accept new nodes.");
+    println!("  \u{26a0} Peering is not active. New nodes cannot join yet.");
+    println!("    To accept nodes with a PIN:  syfrah fabric peering start --pin <PIN>");
+    println!("    To approve manually:         syfrah fabric peering start");
+    println!();
     println!("Running daemon... (Ctrl+C to stop)");
 
     let my_record = build_record(
@@ -232,9 +235,20 @@ pub async fn run_join(
 
     let sp = ui::spinner("Starting daemon...");
     ui::step_ok(&sp, &format!("Joined mesh '{mesh_name}'"));
+    match response.approved_by.as_deref() {
+        Some("pin") => ui::info_line("Approval", "PIN accepted by the target node"),
+        Some("manual") => {
+            ui::info_line("Approval", "Approved by the target node (manual approval)")
+        }
+        _ => ui::info_line("Approval", "Approved by the target node"),
+    }
     ui::info_line("Node", &format!("{} ({mesh_ipv6})", config.node_name));
     ui::info_line("Region", &region);
     ui::info_line("Zone", &zone);
+    println!();
+    ui::warn("The mesh secret is stored in ~/.syfrah/state.json");
+    println!("    Keep this file safe \u{2014} it grants full mesh access.");
+    println!();
     println!("Running daemon... (Ctrl+C to stop)");
 
     let my_record = build_record(
@@ -725,6 +739,7 @@ impl ControlHandler for DaemonControlHandler {
                     mesh_prefix: Some(state.mesh_prefix),
                     peers: all_peers,
                     reason: None,
+                    approved_by: Some("manual".into()),
                 };
 
                 match self.peering_state.accept(&request_id, response).await {
