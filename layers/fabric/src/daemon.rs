@@ -17,6 +17,7 @@ use crate::wg;
 
 const UNREACHABLE_TIMEOUT: Duration = Duration::from_secs(300);
 const PERSIST_INTERVAL: Duration = Duration::from_secs(30);
+const RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
 
 pub struct DaemonConfig {
     pub mesh_name: String,
@@ -278,20 +279,13 @@ pub async fn run_daemon(
                 recon.fetch_add(1, Ordering::Relaxed);
                 info!("wireguard peer added: {}", record.name);
             }
-            // Save to store
-            if let Ok(mut state) = store::load() {
-                if !state
-                    .peers
-                    .iter()
-                    .any(|p| p.wg_public_key == record.wg_public_key)
-                {
-                    let known = state.peers.clone();
-                    state.peers.push(record.clone());
-                    let _ = store::save(&state);
-                    // Announce to existing peers
-                    peering::announce_peer_to_mesh(&record, &known, &enc, pp).await;
-                }
+            // Save to store (atomic — no more load+push+save race)
+            if let Err(e) = store::upsert_peer(&record) {
+                warn!("failed to persist peer {}: {e}", record.name);
             }
+            // Announce to existing peers
+            let known = store::get_peers().unwrap_or_default();
+            peering::announce_peer_to_mesh(&record, &known, &enc, pp).await;
         });
     });
 
@@ -327,16 +321,9 @@ pub async fn run_daemon(
                 recon.fetch_add(1, Ordering::Relaxed);
                 info!("wireguard peer upserted via announce: {}", record.name);
             }
-            // Save to store
-            if let Ok(mut state) = store::load() {
-                if !state
-                    .peers
-                    .iter()
-                    .any(|p| p.wg_public_key == record.wg_public_key)
-                {
-                    state.peers.push(record);
-                    let _ = store::save(&state);
-                }
+            // Save to store (atomic)
+            if let Err(e) = store::upsert_peer(&record) {
+                warn!("failed to persist announced peer {}: {e}", record.name);
             }
         });
     });
@@ -352,7 +339,7 @@ pub async fn run_daemon(
         }
     });
 
-    // Persist metrics
+    // Persist metrics (atomic — no load+modify+save)
     let persist_recv = metrics_received.clone();
     let persist_recon = metrics_reconciliations.clone();
     let persist_unreach = metrics_unreachable.clone();
@@ -360,43 +347,114 @@ pub async fn run_daemon(
         let mut interval = tokio::time::interval(PERSIST_INTERVAL);
         loop {
             interval.tick().await;
-            if let Ok(mut state) = store::load() {
-                state.metrics.peers_discovered = persist_recv.load(Ordering::Relaxed);
-                state.metrics.wg_reconciliations = persist_recon.load(Ordering::Relaxed);
-                state.metrics.peers_marked_unreachable = persist_unreach.load(Ordering::Relaxed);
-                state.metrics.daemon_started_at = daemon_started;
-                if let Err(e) = store::save(&state) {
-                    warn!("failed to persist state: {e}");
+            let _ = store::set_metric("peers_discovered", persist_recv.load(Ordering::Relaxed));
+            let _ = store::set_metric("wg_reconciliations", persist_recon.load(Ordering::Relaxed));
+            let _ = store::set_metric(
+                "peers_marked_unreachable",
+                persist_unreach.load(Ordering::Relaxed),
+            );
+            let _ = store::set_metric("daemon_started_at", daemon_started);
+        }
+    };
+
+    // Health check: unreachable detection + recovery + last_seen update
+    let health_counter = metrics_unreachable.clone();
+    let health_recon = metrics_reconciliations.clone();
+    let health_check = async {
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+
+            // Get WireGuard handshake data for all peers
+            let wg_peers = wg::interface_summary().map(|s| s.peers).unwrap_or_default();
+
+            let mut peers = store::get_peers().unwrap_or_default();
+            let current = now();
+            let mut changed = false;
+
+            for peer in peers.iter_mut() {
+                // Find matching WG peer by public key
+                let wg_peer = wg_peers.iter().find(|p| p.public_key == peer.wg_public_key);
+
+                // Update last_seen from WireGuard handshake timestamp
+                if let Some(wp) = wg_peer {
+                    if let Some(handshake_time) = wp.last_handshake {
+                        let handshake_epoch = handshake_time
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        if handshake_epoch > peer.last_seen {
+                            peer.last_seen = handshake_epoch;
+                            changed = true;
+                        }
+                    }
+                }
+
+                // Recovery: unreachable → active if recent handshake
+                if peer.status == PeerStatus::Unreachable
+                    && current.saturating_sub(peer.last_seen) < UNREACHABLE_TIMEOUT.as_secs()
+                {
+                    info!(
+                        "peer {} recovered (recent handshake), marking active",
+                        peer.name
+                    );
+                    peer.status = PeerStatus::Active;
+                    changed = true;
+                }
+
+                // Detection: active → unreachable if no handshake for too long
+                if peer.status == PeerStatus::Active
+                    && current.saturating_sub(peer.last_seen) > UNREACHABLE_TIMEOUT.as_secs()
+                {
+                    info!("marking peer {} as unreachable", peer.name);
+                    peer.status = PeerStatus::Unreachable;
+                    health_counter.fetch_add(1, Ordering::Relaxed);
+                    changed = true;
+                }
+            }
+
+            // Persist changes atomically
+            if changed {
+                for peer in &peers {
+                    let _ = store::upsert_peer(peer);
                 }
             }
         }
     };
 
-    // Unreachable detection
-    let unreachable_wg_pubkey = wg_pubkey.clone();
-    let unreachable_counter = metrics_unreachable.clone();
-    let unreachable_check = async {
-        let mut interval = tokio::time::interval(Duration::from_secs(60));
+    // Reconciliation loop: compare stored peers with WireGuard config
+    let reconcile_wg_pubkey = wg_pubkey.clone();
+    let reconcile_recon = health_recon;
+    let reconcile = async {
+        let mut interval = tokio::time::interval(RECONCILE_INTERVAL);
         loop {
             interval.tick().await;
-            if let Ok(mut state) = store::load() {
-                let current = now();
-                let mut changed = false;
-                for peer in state.peers.iter_mut() {
-                    if peer.status == PeerStatus::Active
-                        && current.saturating_sub(peer.last_seen) > UNREACHABLE_TIMEOUT.as_secs()
-                    {
-                        info!("marking peer {} as unreachable", peer.name);
-                        peer.status = PeerStatus::Unreachable;
-                        unreachable_counter.fetch_add(1, Ordering::Relaxed);
-                        if let Err(e) = wg::upsert_peer(&unreachable_wg_pubkey, peer) {
-                            warn!("failed to remove unreachable peer {}: {e}", peer.name);
-                        }
-                        changed = true;
-                    }
+
+            let stored_peers = store::get_peers().unwrap_or_default();
+            let wg_summary = match wg::interface_summary() {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            // For each stored peer, ensure it's in WireGuard
+            for peer in &stored_peers {
+                if peer.status == PeerStatus::Removed {
+                    continue;
                 }
-                if changed {
-                    let _ = store::save(&state);
+                let in_wg = wg_summary
+                    .peers
+                    .iter()
+                    .any(|p| p.public_key == peer.wg_public_key);
+                if !in_wg {
+                    info!(
+                        "reconciling: adding missing peer {} to WireGuard",
+                        peer.name
+                    );
+                    if let Err(e) = wg::upsert_peer(&reconcile_wg_pubkey, peer) {
+                        warn!("reconciliation failed for {}: {e}", peer.name);
+                    } else {
+                        reconcile_recon.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
         }
@@ -406,7 +464,8 @@ pub async fn run_daemon(
         _ = control_task => {}
         _ = peering_task => {}
         _ = persist => {}
-        _ = unreachable_check => {}
+        _ = health_check => {}
+        _ = reconcile => {}
         _ = tokio::signal::ctrl_c() => {
             println!("\nShutting down...");
         }
