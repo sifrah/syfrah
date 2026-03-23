@@ -43,6 +43,13 @@ else
     echo ""
 fi
 
+# ── Clean up stale containers and network from previous runs ──
+
+for cid in $(docker ps -aq --filter network=syfrah-e2e 2>/dev/null); do
+    docker rm -f "$cid" >/dev/null 2>&1 || true
+done
+docker network rm syfrah-e2e >/dev/null 2>&1 || true
+
 # ── Create shared network ─────────────────────────────────────
 
 docker network create syfrah-e2e --subnet 172.20.0.0/24 --driver bridge >/dev/null 2>&1 || true
