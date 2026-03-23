@@ -42,27 +42,59 @@ pub async fn run() -> Result<()> {
             if let Some(port) = summary.listen_port {
                 println!("Listen:    :{port}");
             }
+            let with_handshake = summary
+                .peers
+                .iter()
+                .filter(|p| p.last_handshake.is_some())
+                .count();
             println!(
                 "WG peers:  {} configured, {} with handshake",
-                summary.peer_count,
-                summary
-                    .peers
-                    .iter()
-                    .filter(|p| p.last_handshake.is_some())
-                    .count()
+                summary.peer_count, with_handshake
             );
             let (rx, tx) = summary.peers.iter().fold((0u64, 0u64), |(rx, tx), p| {
                 (rx + p.rx_bytes, tx + p.tx_bytes)
             });
-            if rx > 0 || tx > 0 {
-                println!("Traffic:   rx {} / tx {}", fmt_bytes(rx), fmt_bytes(tx));
+            println!("Traffic:   rx {} / tx {}", fmt_bytes(rx), fmt_bytes(tx));
+
+            // Handshake health: count peers with recent handshake (<3min)
+            let now_ts = std::time::SystemTime::now();
+            let healthy = summary
+                .peers
+                .iter()
+                .filter(|p| {
+                    p.last_handshake
+                        .map(|h| now_ts.duration_since(h).unwrap_or_default().as_secs() < 180)
+                        .unwrap_or(false)
+                })
+                .count();
+            if summary.peer_count > 0 {
+                println!(
+                    "Health:    {}/{} peers with recent handshake (<3min)",
+                    healthy, summary.peer_count
+                );
             }
         }
         Err(_) => println!("Interface: syfrah0 (down)"),
     }
 
+    // Peer status breakdown
+    let active = state
+        .peers
+        .iter()
+        .filter(|p| p.status == syfrah_core::mesh::PeerStatus::Active)
+        .count();
+    let unreachable = state
+        .peers
+        .iter()
+        .filter(|p| p.status == syfrah_core::mesh::PeerStatus::Unreachable)
+        .count();
     println!();
-    println!("Known peers: {}", state.peers.len());
+    println!(
+        "Peers:     {} total ({} active, {} unreachable)",
+        state.peers.len(),
+        active,
+        unreachable
+    );
 
     let m = &state.metrics;
     if m.daemon_started_at > 0 {
@@ -73,10 +105,11 @@ pub async fn run() -> Result<()> {
             .saturating_sub(m.daemon_started_at);
         println!();
         println!("Metrics:");
-        println!("  Uptime:          {}", fmt_duration(uptime));
+        println!("  Uptime:           {}", fmt_duration(uptime));
         println!("  Peers discovered: {}", m.peers_discovered);
-        println!("  WG reconciles:   {}", m.wg_reconciliations);
-        println!("  Peers unreached: {}", m.peers_marked_unreachable);
+        println!("  WG reconciles:    {}", m.wg_reconciliations);
+        println!("  Peers unreached:  {}", m.peers_marked_unreachable);
+        println!("  Announce fails:   {}", m.announcements_failed);
     }
 
     let tuning = config::load_tuning().unwrap_or_default();
