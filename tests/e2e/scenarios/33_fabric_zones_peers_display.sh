@@ -52,8 +52,9 @@ else
     echo "$output"
 fi
 
-if echo "$output" | grep "node-2" | grep -q "region-1-zone-1"; then
-    pass "leader sees joiner's zone (region-1-zone-1)"
+# The joiner gets an auto-generated zone; verify it is not a dash
+if echo "$output" | grep "node-2" | grep -q "region-1-zone-"; then
+    pass "leader sees joiner's zone"
 else
     fail "leader does not see joiner's zone"
     echo "$output"
