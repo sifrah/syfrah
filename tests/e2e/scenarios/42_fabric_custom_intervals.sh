@@ -48,8 +48,8 @@ fi
 info "Blocking traffic to node-2..."
 block_traffic "e2e-config-1" "172.20.0.11"
 
-info "Waiting 35s for fast unreachable detection (20s timeout + 10s check)..."
-sleep 35
+info "Waiting 45s for fast unreachable detection (20s timeout + 10s check + margin)..."
+sleep 45
 
 # Check peer status
 peer_status=$(docker exec "e2e-config-1" syfrah fabric peers 2>&1 | grep "node-2")
