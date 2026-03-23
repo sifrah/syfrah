@@ -143,15 +143,17 @@ pub async fn run_join(
     let wg_keypair = wg::generate_keypair();
     let endpoint = resolve_endpoint(&config);
 
-    // Compute region/zone before sending so the leader receives them.
-    let region = config
-        .region
-        .clone()
-        .unwrap_or_else(|| "region-1".to_string());
-    let zone = config
-        .zone
-        .clone()
-        .unwrap_or_else(|| store::generate_zone(&region, &[]));
+    // Send region/zone in the request so the leader can store them.
+    // If the user provided explicit values, include them; otherwise send
+    // the region default and leave zone as None so the leader can
+    // auto-generate it from its peer list.
+    let req_region = Some(
+        config
+            .region
+            .clone()
+            .unwrap_or_else(|| "region-1".to_string()),
+    );
+    let req_zone = config.zone.clone();
 
     let request = syfrah_core::mesh::JoinRequest {
         request_id: peering::generate_request_id(),
@@ -160,8 +162,8 @@ pub async fn run_join(
         endpoint,
         wg_listen_port: config.wg_listen_port,
         pin,
-        region: Some(region.clone()),
-        zone: Some(zone.clone()),
+        region: req_region,
+        zone: req_zone,
     };
 
     println!("Sending join request to {target}...");
@@ -186,6 +188,16 @@ pub async fn run_join(
         .ok_or_else(|| anyhow::anyhow!("accepted but no mesh prefix"))?;
 
     let mesh_ipv6 = addressing::derive_node_address(&mesh_prefix, wg_keypair.public.as_bytes());
+
+    // Region/zone: use provided or auto-generate from existing peers
+    let region = config
+        .region
+        .clone()
+        .unwrap_or_else(|| "region-1".to_string());
+    let zone = config
+        .zone
+        .clone()
+        .unwrap_or_else(|| store::generate_zone(&region, &response.peers));
 
     wg::setup_interface(&wg_keypair, config.wg_listen_port, mesh_ipv6)?;
     info!(flow = "join", node = %config.node_name, "wireguard interface up");
@@ -712,6 +724,15 @@ impl ControlHandler for DaemonControlHandler {
                             &state.mesh_prefix,
                             new_wg_pub.as_bytes(),
                         );
+                        // Use the joiner's region/zone from the request.
+                        // If zone was not provided, auto-generate one
+                        // using the current peer list.
+                        let region = info
+                            .region
+                            .unwrap_or_else(|| "region-1".to_string());
+                        let zone = info
+                            .zone
+                            .unwrap_or_else(|| store::generate_zone(&region, &state.peers));
                         let new_record = PeerRecord {
                             name: info.node_name.clone(),
                             wg_public_key: info.wg_public_key,
@@ -719,8 +740,8 @@ impl ControlHandler for DaemonControlHandler {
                             mesh_ipv6: new_mesh_ipv6,
                             last_seen: now(),
                             status: PeerStatus::Active,
-                            region: info.region,
-                            zone: info.zone,
+                            region: Some(region),
+                            zone: Some(zone),
                         };
                         events::emit(
                             EventType::JoinManuallyAccepted,

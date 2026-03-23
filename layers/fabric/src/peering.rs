@@ -344,6 +344,22 @@ fn build_auto_accept_response(
         .map_err(|_| PeeringError::Protocol("invalid WG public key".into()))?;
     let new_mesh_ipv6 = addressing::derive_node_address(&config.mesh_prefix, new_wg_pub.as_bytes());
 
+    // Load current peers from store + our own record
+    let mut all_peers = crate::store::load().map(|s| s.peers).unwrap_or_default();
+    all_peers.push(config.my_record.clone());
+
+    // Use the joiner's region/zone from the request. If zone was not
+    // provided, auto-generate one using the leader's peer list so the
+    // joiner gets a unique zone.
+    let region = req
+        .region
+        .clone()
+        .unwrap_or_else(|| "region-1".to_string());
+    let zone = req
+        .zone
+        .clone()
+        .unwrap_or_else(|| crate::store::generate_zone(&region, &all_peers));
+
     let new_record = PeerRecord {
         name: req.node_name.clone(),
         wg_public_key: req.wg_public_key.clone(),
@@ -351,13 +367,9 @@ fn build_auto_accept_response(
         mesh_ipv6: new_mesh_ipv6,
         last_seen: now(),
         status: syfrah_core::mesh::PeerStatus::Active,
-        region: req.region.clone(),
-        zone: req.zone.clone(),
+        region: Some(region),
+        zone: Some(zone),
     };
-
-    // Load current peers from store + our own record
-    let mut all_peers = crate::store::load().map(|s| s.peers).unwrap_or_default();
-    all_peers.push(config.my_record.clone());
 
     let response = JoinResponse {
         accepted: true,
