@@ -757,7 +757,9 @@ fn disk_full_write_fails_clean() {
 #[test]
 fn readonly_file_write_fails_clean() {
     // Root ignores file permissions, so this test is meaningless in containers
-    if std::process::Command::new("id").arg("-u").output()
+    if std::process::Command::new("id")
+        .arg("-u")
+        .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
         .unwrap_or(false)
     {
