@@ -22,8 +22,21 @@ jobs:
   build:
     name: Build image
     runs-on: self-hosted
+    container:
+      image: docker:27
+    services:
+      dind:
+        image: docker:27-dind
+        options: --privileged
+        env:
+          DOCKER_TLS_CERTDIR: ""
+    env:
+      DOCKER_HOST: tcp://dind:2375
     steps:
       - uses: actions/checkout@v4
+
+      - name: Wait for DinD
+        run: until docker info >/dev/null 2>&1; do sleep 1; done
 
       - name: Build Docker image
         run: docker build -t syfrah-e2e-test -f tests/e2e/Dockerfile . --quiet
@@ -67,6 +80,16 @@ jobs:
     name: E2E / ${{ matrix.layer }}
     needs: [build, discover]
     runs-on: self-hosted
+    container:
+      image: docker:27
+    services:
+      dind:
+        image: docker:27-dind
+        options: --privileged
+        env:
+          DOCKER_TLS_CERTDIR: ""
+    env:
+      DOCKER_HOST: tcp://dind:2375
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -74,6 +97,9 @@ jobs:
         layer: ${{ fromJson(needs.discover.outputs.layers) }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Wait for DinD
+        run: until docker info >/dev/null 2>&1; do sleep 1; done
 
       - name: Download image
         uses: actions/download-artifact@v4
