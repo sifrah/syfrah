@@ -1,4 +1,4 @@
-# Storage Engine
+# State Store
 
 ## Choice: redb
 
