@@ -35,6 +35,44 @@ The project uses [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Every
 
 For pre-release builds, use SemVer pre-release identifiers: `0.2.0-alpha.1`, `0.2.0-rc.1`.
 
+## Targets
+
+| Target | OS | Arch | Build method |
+|---|---|---|---|
+| `x86_64-unknown-linux-musl` | Linux | amd64 | `cargo build` with musl-tools |
+| `aarch64-unknown-linux-musl` | Linux | arm64 | `cross build` |
+| `x86_64-apple-darwin` | macOS | amd64 | `cargo build` (native) |
+| `aarch64-apple-darwin` | macOS | arm64 | `cargo build` (native) |
+
+Linux binaries are statically linked via musl so they run on any Linux distribution with no runtime dependencies.
+
+## Release workflow
+
+The `Release` workflow (`.github/workflows/release.yml`) runs automatically when a `v*` tag is pushed:
+
+1. Builds all four targets in parallel
+2. Packages each binary into a `.tar.gz` archive
+3. Generates `SHA256SUMS.txt`
+4. Creates a GitHub Release with auto-generated release notes and all artifacts attached
+
+## Artifacts
+
+Each release contains:
+
+```
+syfrah-v0.1.0-x86_64-unknown-linux-musl.tar.gz
+syfrah-v0.1.0-aarch64-unknown-linux-musl.tar.gz
+syfrah-v0.1.0-x86_64-apple-darwin.tar.gz
+syfrah-v0.1.0-aarch64-apple-darwin.tar.gz
+SHA256SUMS.txt
+```
+
+## Verifying a download
+
+```bash
+sha256sum -c SHA256SUMS.txt
+```
+
 ## crates.io (future)
 
 All crates include the required crates.io metadata (`description`, `license`, `repository`, `keywords`, `categories`). When the project is ready for publishing, run:

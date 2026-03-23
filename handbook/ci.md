@@ -11,6 +11,7 @@ Syfrah uses GitHub Actions for continuous integration. The CI dynamically discov
 | **CI** | `.github/workflows/ci.yml` | Push/PR on `main` | Format, lint, test per layer |
 | **Documentation** | `.github/workflows/docs.yml` | Push on `main` (docs/layers change) | Build and deploy docs site |
 | **Security** | `.github/workflows/security.yml` | Weekly + Cargo.toml changes | `cargo audit` for vulnerabilities |
+| **Release** | `.github/workflows/release.yml` | `v*` tag push | Build static binaries, create GitHub Release |
 
 ## CI pipeline
 
