@@ -301,7 +301,7 @@ pub async fn run_leave() -> anyhow::Result<()> {
         return Ok(());
     }
     if let Err(e) = wg::teardown_interface() {
-        eprintln!("Warning: could not tear down WireGuard interface: {e}");
+        warn!("could not tear down WireGuard interface: {e}");
     }
     let _ = std::fs::remove_file(store::control_socket_path());
     store::clear()?;
