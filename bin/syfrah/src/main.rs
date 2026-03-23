@@ -200,14 +200,24 @@ fn setup_logging(daemon_mode: bool) {
 fn background_daemon(_ready: DaemonReady) -> Result<()> {
     let exe = std::env::current_exe()?;
 
+    // Open the log file for stderr so we can capture startup errors
+    let log_dir = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".syfrah");
+    let _ = std::fs::create_dir_all(&log_dir);
+    let stderr_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_dir.join("syfrah.log"))?;
+
     #[cfg(unix)]
     let child = {
         use std::os::unix::process::CommandExt;
-        let mut cmd = std::process::Command::new(exe);
+        let mut cmd = std::process::Command::new(&exe);
         cmd.args(["fabric", "start", "--foreground"])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
+            .stderr(std::process::Stdio::from(stderr_file));
         // Create a new session so the daemon survives terminal close
         unsafe {
             cmd.pre_exec(|| {
@@ -219,11 +229,11 @@ fn background_daemon(_ready: DaemonReady) -> Result<()> {
     };
 
     #[cfg(not(unix))]
-    let child = std::process::Command::new(exe)
+    let child = std::process::Command::new(&exe)
         .args(["fabric", "start", "--foreground"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::from(stderr_file))
         .spawn()?;
 
     // The child process will write its own PID file via run_daemon -> store::write_pid
