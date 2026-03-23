@@ -133,6 +133,9 @@ jobs:
           name: e2e-image
           path: /tmp
 
+      - name: Install bash
+        run: apk add --no-cache bash
+
       - name: Load and run E2E tests
         run: |
           export DOCKER_HOST="tcp://${DIND_IP}:2375"
