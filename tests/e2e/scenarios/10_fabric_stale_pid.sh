@@ -34,6 +34,8 @@ assert_state_exists "e2e-pid-1"
 
 # Restart from saved state — should work despite stale PID
 info "Restarting from saved state..."
+# Remove stale control socket left by killed process so wait_daemon works
+docker exec "e2e-pid-1" rm -f /root/.syfrah/control.sock
 docker exec -d "e2e-pid-1" syfrah fabric start
 wait_daemon "e2e-pid-1"
 

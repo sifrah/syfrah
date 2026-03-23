@@ -17,7 +17,7 @@ start_peering "e2e-z5-1"
 
 for i in $(seq 2 5); do
     join_mesh "e2e-z5-$i" "172.20.0.10" "172.20.0.$((9+i))" "node-$i"
-    sleep 3  # wait for peer record to propagate before next join
+    sleep 5  # wait for peer record to propagate before next join
 done
 
 sleep 5

@@ -31,6 +31,8 @@ sleep 2
 
 # Restart node-2 from saved state
 info "Restarting node-2 daemon..."
+# Remove stale control socket left by killed process so wait_daemon works
+docker exec "e2e-restart-2" rm -f /root/.syfrah/control.sock
 docker exec -d "e2e-restart-2" syfrah fabric start
 wait_daemon "e2e-restart-2"
 
