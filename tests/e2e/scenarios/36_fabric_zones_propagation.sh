@@ -8,16 +8,16 @@ echo "── Zones: Propagation via Announcements ──"
 
 create_network
 
-start_node "e2e-zprop-1" "${E2E_IP_PREFIX}.10"
-start_node "e2e-zprop-2" "${E2E_IP_PREFIX}.11"
-start_node "e2e-zprop-3" "${E2E_IP_PREFIX}.12"
+start_node "e2e-zprop-1" "172.20.0.10"
+start_node "e2e-zprop-2" "172.20.0.11"
+start_node "e2e-zprop-3" "172.20.0.12"
 
 # Node-1 with custom region
 docker exec -d "e2e-zprop-1" \
     syfrah fabric init \
     --name test-mesh \
     --node-name node-1 \
-    --endpoint ${E2E_IP_PREFIX}.10:51820 \
+    --endpoint 172.20.0.10:51820 \
     --region dc-paris \
     --zone dc-paris-rack-1
 
@@ -26,9 +26,9 @@ start_peering "e2e-zprop-1"
 
 # Node-2 with different region
 docker exec -d "e2e-zprop-2" \
-    syfrah fabric join ${E2E_IP_PREFIX}.10:51821 \
+    syfrah fabric join 172.20.0.10:51821 \
     --node-name node-2 \
-    --endpoint ${E2E_IP_PREFIX}.11:51820 \
+    --endpoint 172.20.0.11:51820 \
     --pin "$E2E_PIN" \
     --region dc-frankfurt \
     --zone dc-frankfurt-rack-1
@@ -36,7 +36,7 @@ docker exec -d "e2e-zprop-2" \
 wait_daemon "e2e-zprop-2"
 
 # Node-3 default
-join_mesh "e2e-zprop-3" "${E2E_IP_PREFIX}.10" "${E2E_IP_PREFIX}.12" "node-3"
+join_mesh "e2e-zprop-3" "172.20.0.10" "172.20.0.12" "node-3"
 
 sleep 5
 

@@ -10,13 +10,13 @@ echo "── STRESS: Churn (join/leave cycles) ──"
 create_network
 
 # Stable node that stays throughout
-start_node "e2e-churn-1" "${E2E_IP_PREFIX}.10"
-init_mesh "e2e-churn-1" "${E2E_IP_PREFIX}.10" "node-1"
+start_node "e2e-churn-1" "172.20.0.10"
+init_mesh "e2e-churn-1" "172.20.0.10" "node-1"
 start_peering "e2e-churn-1"
 
 # Churning nodes
-start_node "e2e-churn-2" "${E2E_IP_PREFIX}.11"
-start_node "e2e-churn-3" "${E2E_IP_PREFIX}.12"
+start_node "e2e-churn-2" "172.20.0.11"
+start_node "e2e-churn-3" "172.20.0.12"
 
 CYCLES=3
 info "Running $CYCLES join/leave cycles..."
@@ -26,16 +26,16 @@ for cycle in $(seq 1 $CYCLES); do
 
     # Join both churning nodes
     docker exec -d "e2e-churn-2" \
-        syfrah fabric join ${E2E_IP_PREFIX}.10:51821 \
+        syfrah fabric join 172.20.0.10:51821 \
         --node-name "churn-2-c$cycle" \
-        --endpoint ${E2E_IP_PREFIX}.11:51820 \
+        --endpoint 172.20.0.11:51820 \
         --pin "$E2E_PIN"
     wait_daemon "e2e-churn-2" 20 || true
 
     docker exec -d "e2e-churn-3" \
-        syfrah fabric join ${E2E_IP_PREFIX}.10:51821 \
+        syfrah fabric join 172.20.0.10:51821 \
         --node-name "churn-3-c$cycle" \
-        --endpoint ${E2E_IP_PREFIX}.12:51820 \
+        --endpoint 172.20.0.12:51820 \
         --pin "$E2E_PIN"
     wait_daemon "e2e-churn-3" 20 || true
 
@@ -59,9 +59,9 @@ done
 # Final join — should work cleanly after all the churn
 info "Final join after churn..."
 docker exec -d "e2e-churn-2" \
-    syfrah fabric join ${E2E_IP_PREFIX}.10:51821 \
+    syfrah fabric join 172.20.0.10:51821 \
     --node-name "churn-2-final" \
-    --endpoint ${E2E_IP_PREFIX}.11:51820 \
+    --endpoint 172.20.0.11:51820 \
     --pin "$E2E_PIN"
 wait_daemon "e2e-churn-2" 20
 

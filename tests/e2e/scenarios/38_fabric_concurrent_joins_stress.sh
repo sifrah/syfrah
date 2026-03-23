@@ -9,20 +9,20 @@ create_network
 
 # Start 10 nodes
 for i in $(seq 1 10); do
-    start_node "e2e-stress-join-$i" "${E2E_IP_PREFIX}.$((10 + i))"
+    start_node "e2e-stress-join-$i" "172.20.0.$((10 + i))"
 done
 
 # Init mesh on node 1
-init_mesh "e2e-stress-join-1" "${E2E_IP_PREFIX}.11" "node-1"
+init_mesh "e2e-stress-join-1" "172.20.0.11" "node-1"
 start_peering "e2e-stress-join-1"
 
 # Join all 9 remaining nodes rapidly (1s between joins)
 info "Joining 9 nodes rapidly..."
 for i in $(seq 2 10); do
     docker exec -d "e2e-stress-join-$i" \
-        syfrah fabric join ${E2E_IP_PREFIX}.11:51821 \
+        syfrah fabric join 172.20.0.11:51821 \
         --node-name "node-$i" \
-        --endpoint "${E2E_IP_PREFIX}.$((10 + i)):51820" \
+        --endpoint "172.20.0.$((10 + i)):51820" \
         --pin "$E2E_PIN"
     sleep 1
 done

@@ -17,13 +17,6 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FILTER="${1:-}"
 SKIP_BUILD="${SKIP_BUILD:-}"
 
-# Network isolation: in DinD each job has its own Docker daemon, so fixed names are safe.
-# For parallel local runs, E2E_RUN_ID can be overridden.
-E2E_RUN_ID="${E2E_RUN_ID:-$$}"
-export E2E_NETWORK="syfrah-e2e-${E2E_RUN_ID}"
-export E2E_SUBNET="172.20.0.0/24"
-export E2E_IP_PREFIX="172.20.0"
-
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -50,16 +43,9 @@ else
     echo ""
 fi
 
-# ── Clean up stale containers and network from previous runs ──
-
-for cid in $(docker ps -aq --filter network="$E2E_NETWORK" 2>/dev/null); do
-    docker rm -f "$cid" >/dev/null 2>&1 || true
-done
-docker network rm "$E2E_NETWORK" >/dev/null 2>&1 || true
-
 # ── Create shared network ─────────────────────────────────────
 
-docker network create "$E2E_NETWORK" --subnet 172.20.0.0/24 --driver bridge >/dev/null 2>&1 || true
+docker network create syfrah-e2e --subnet 172.20.0.0/24 --driver bridge >/dev/null 2>&1 || true
 
 # ── Discover scenarios ────────────────────────────────────────
 
@@ -112,7 +98,7 @@ done
 
 # ── Cleanup shared network ────────────────────────────────────
 
-docker network rm "$E2E_NETWORK" >/dev/null 2>&1 || true
+docker network rm syfrah-e2e >/dev/null 2>&1 || true
 
 # ── Summary ───────────────────────────────────────────────────
 

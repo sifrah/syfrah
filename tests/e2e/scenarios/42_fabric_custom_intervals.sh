@@ -7,8 +7,8 @@ source "$SCRIPT_DIR/lib.sh"
 echo "── Custom Intervals ──"
 create_network
 
-start_node "e2e-config-1" "${E2E_IP_PREFIX}.10"
-start_node "e2e-config-2" "${E2E_IP_PREFIX}.11"
+start_node "e2e-config-1" "172.20.0.10"
+start_node "e2e-config-2" "172.20.0.11"
 
 # Write custom config with fast health check and fast unreachable timeout
 docker exec "e2e-config-1" mkdir -p /root/.syfrah
@@ -20,9 +20,9 @@ reconcile_interval = 10
 EOF'
 
 # Init and join with custom config
-init_mesh "e2e-config-1" "${E2E_IP_PREFIX}.10" "node-1"
+init_mesh "e2e-config-1" "172.20.0.10" "node-1"
 start_peering "e2e-config-1"
-join_mesh "e2e-config-2" "${E2E_IP_PREFIX}.10" "${E2E_IP_PREFIX}.11" "node-2"
+join_mesh "e2e-config-2" "172.20.0.10" "172.20.0.11" "node-2"
 if ! wait_for_convergence "e2e-config-" 2 1 30; then
     fail "initial mesh did not converge"
     cleanup; summary
@@ -46,7 +46,7 @@ fi
 
 # Block traffic to node-2, peer should be marked unreachable faster
 info "Blocking traffic to node-2..."
-block_traffic "e2e-config-1" "${E2E_IP_PREFIX}.11"
+block_traffic "e2e-config-1" "172.20.0.11"
 
 info "Waiting 45s for fast unreachable detection (20s timeout + 10s check + margin)..."
 sleep 45

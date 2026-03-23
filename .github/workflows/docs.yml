@@ -21,11 +21,15 @@ concurrency:
 jobs:
   build:
     name: Build docs
-    runs-on: self-hosted
-    container:
-      image: node:20
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: documentation/package-lock.json
 
       - name: Sync docs from READMEs
         run: ./scripts/sync-docs.sh
@@ -48,9 +52,7 @@ jobs:
   deploy:
     name: Deploy to GitHub Pages
     needs: build
-    runs-on: self-hosted
-    container:
-      image: node:20
+    runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

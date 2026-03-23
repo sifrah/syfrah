@@ -13,25 +13,22 @@ jobs:
   # ── Format check (workspace-wide, once) ──────────────────
   fmt:
     name: Format
-    runs-on: self-hosted
-    container:
-      image: rust:latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
       - run: cargo fmt --check
 
   # ── Discover all crates dynamically ──────────────────────
   discover:
     name: Discover crates
-    runs-on: self-hosted
-    container:
-      image: rust:latest
+    runs-on: ubuntu-latest
     outputs:
       crates: ${{ steps.find.outputs.crates }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install jq
-        run: apt-get update && apt-get install -y jq
       - id: find
         run: |
           # Find all Cargo.toml in layers/ and bin/, extract crate names
@@ -51,16 +48,16 @@ jobs:
   check:
     name: ${{ matrix.crate.name }}
     needs: [fmt, discover]
-    runs-on: self-hosted
-    container:
-      image: rust:latest
+    runs-on: ubuntu-latest
     strategy:
-      max-parallel: 4
       fail-fast: false
       matrix:
         crate: ${{ fromJson(needs.discover.outputs.crates) }}
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.crate.name }}

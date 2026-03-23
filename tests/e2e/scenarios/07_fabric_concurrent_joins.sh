@@ -9,22 +9,22 @@ echo "── Concurrent Joins ──"
 
 create_network
 
-start_node "e2e-conc-1" "${E2E_IP_PREFIX}.10"
-start_node "e2e-conc-2" "${E2E_IP_PREFIX}.11"
-start_node "e2e-conc-3" "${E2E_IP_PREFIX}.12"
-start_node "e2e-conc-4" "${E2E_IP_PREFIX}.13"
-start_node "e2e-conc-5" "${E2E_IP_PREFIX}.14"
+start_node "e2e-conc-1" "172.20.0.10"
+start_node "e2e-conc-2" "172.20.0.11"
+start_node "e2e-conc-3" "172.20.0.12"
+start_node "e2e-conc-4" "172.20.0.13"
+start_node "e2e-conc-5" "172.20.0.14"
 
-init_mesh "e2e-conc-1" "${E2E_IP_PREFIX}.10" "node-1"
+init_mesh "e2e-conc-1" "172.20.0.10" "node-1"
 start_peering "e2e-conc-1"
 
 # Join 4 nodes with minimal delay — tests store atomicity under concurrent writes
 info "Joining 4 nodes rapidly..."
 for i in 2 3 4 5; do
     docker exec -d "e2e-conc-$i" \
-        syfrah fabric join ${E2E_IP_PREFIX}.10:51821 \
+        syfrah fabric join 172.20.0.10:51821 \
         --node-name "node-$i" \
-        --endpoint "${E2E_IP_PREFIX}.$((9+i)):51820" \
+        --endpoint "172.20.0.$((9+i)):51820" \
         --pin "$E2E_PIN"
     sleep 1
 done

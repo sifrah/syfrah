@@ -7,9 +7,9 @@ source "$SCRIPT_DIR/lib.sh"
 echo "── Zones: Status Display ──"
 
 create_network
-start_node "e2e-zstat-1" "${E2E_IP_PREFIX}.10"
+start_node "e2e-zstat-1" "172.20.0.10"
 
-init_mesh "e2e-zstat-1" "${E2E_IP_PREFIX}.10" "node-1"
+init_mesh "e2e-zstat-1" "172.20.0.10" "node-1"
 sleep 2
 
 output=$(docker exec "e2e-zstat-1" syfrah fabric status 2>&1)

@@ -7,16 +7,16 @@ source "$SCRIPT_DIR/lib.sh"
 echo "── Announcement Total Failure ──"
 create_network
 
-start_node "e2e-allfail-1" "${E2E_IP_PREFIX}.10"
-start_node "e2e-allfail-2" "${E2E_IP_PREFIX}.11"
-start_node "e2e-allfail-3" "${E2E_IP_PREFIX}.12"
+start_node "e2e-allfail-1" "172.20.0.10"
+start_node "e2e-allfail-2" "172.20.0.11"
+start_node "e2e-allfail-3" "172.20.0.12"
 
-init_mesh "e2e-allfail-1" "${E2E_IP_PREFIX}.10" "node-1"
+init_mesh "e2e-allfail-1" "172.20.0.10" "node-1"
 start_peering "e2e-allfail-1"
 
 # Join both nodes
-join_mesh "e2e-allfail-2" "${E2E_IP_PREFIX}.10" "${E2E_IP_PREFIX}.11" "node-2"
-join_mesh "e2e-allfail-3" "${E2E_IP_PREFIX}.10" "${E2E_IP_PREFIX}.12" "node-3"
+join_mesh "e2e-allfail-2" "172.20.0.10" "172.20.0.11" "node-2"
+join_mesh "e2e-allfail-3" "172.20.0.10" "172.20.0.12" "node-3"
 
 # Even if some announcements fail, reconciliation loop (30s) ensures
 # all peers eventually appear in WireGuard

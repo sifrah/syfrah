@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/lib.sh"
 echo "── State CLI: Help ──"
 
 create_network
-start_node "e2e-shelp-1" "${E2E_IP_PREFIX}.10"
+start_node "e2e-shelp-1" "172.20.0.10"
 
 # Main state help
 output=$(docker exec "e2e-shelp-1" syfrah state --help 2>&1)

@@ -7,9 +7,9 @@ source "$SCRIPT_DIR/lib.sh"
 echo "── State CLI: Get ──"
 
 create_network
-start_node "e2e-sget-1" "${E2E_IP_PREFIX}.10"
+start_node "e2e-sget-1" "172.20.0.10"
 
-init_mesh "e2e-sget-1" "${E2E_IP_PREFIX}.10" "node-1"
+init_mesh "e2e-sget-1" "172.20.0.10" "node-1"
 sleep 2
 
 # Test get on nonexistent layer

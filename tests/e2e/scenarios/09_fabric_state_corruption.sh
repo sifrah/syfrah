@@ -8,10 +8,10 @@ source "$SCRIPT_DIR/lib.sh"
 echo "── State File Corruption ──"
 
 create_network
-start_node "e2e-corrupt-1" "${E2E_IP_PREFIX}.10"
+start_node "e2e-corrupt-1" "172.20.0.10"
 
 # Init a mesh so we have valid state
-init_mesh "e2e-corrupt-1" "${E2E_IP_PREFIX}.10" "node-1"
+init_mesh "e2e-corrupt-1" "172.20.0.10" "node-1"
 sleep 2
 
 # Stop daemon
@@ -37,7 +37,7 @@ assert_command_fails "e2e-corrupt-1" syfrah fabric start
 info "Recovery: leave + re-init..."
 docker exec "e2e-corrupt-1" syfrah fabric leave 2>/dev/null || true
 docker exec "e2e-corrupt-1" rm -rf /root/.syfrah 2>/dev/null || true
-init_mesh "e2e-corrupt-1" "${E2E_IP_PREFIX}.10" "node-1"
+init_mesh "e2e-corrupt-1" "172.20.0.10" "node-1"
 assert_daemon_running "e2e-corrupt-1"
 
 cleanup

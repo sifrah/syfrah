@@ -11,14 +11,14 @@ echo "── Mesh Connectivity (IPv6 ping) ──"
 
 create_network
 
-start_node "e2e-ping-1" "${E2E_IP_PREFIX}.10"
-start_node "e2e-ping-2" "${E2E_IP_PREFIX}.11"
-start_node "e2e-ping-3" "${E2E_IP_PREFIX}.12"
+start_node "e2e-ping-1" "172.20.0.10"
+start_node "e2e-ping-2" "172.20.0.11"
+start_node "e2e-ping-3" "172.20.0.12"
 
-init_mesh "e2e-ping-1" "${E2E_IP_PREFIX}.10" "node-1"
+init_mesh "e2e-ping-1" "172.20.0.10" "node-1"
 start_peering "e2e-ping-1"
-join_mesh "e2e-ping-2" "${E2E_IP_PREFIX}.10" "${E2E_IP_PREFIX}.11" "node-2"
-join_mesh "e2e-ping-3" "${E2E_IP_PREFIX}.10" "${E2E_IP_PREFIX}.12" "node-3"
+join_mesh "e2e-ping-2" "172.20.0.10" "172.20.0.11" "node-2"
+join_mesh "e2e-ping-3" "172.20.0.10" "172.20.0.12" "node-3"
 
 sleep 3
 

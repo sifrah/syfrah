@@ -9,14 +9,14 @@ echo "── Rapid Scale-Down ──"
 create_network
 
 for i in $(seq 1 6); do
-    start_node "e2e-down-$i" "${E2E_IP_PREFIX}.$((9+i))"
+    start_node "e2e-down-$i" "172.20.0.$((9+i))"
 done
 
-init_mesh "e2e-down-1" "${E2E_IP_PREFIX}.10" "node-1"
+init_mesh "e2e-down-1" "172.20.0.10" "node-1"
 start_peering "e2e-down-1"
 
 for i in $(seq 2 6); do
-    join_mesh "e2e-down-$i" "${E2E_IP_PREFIX}.10" "${E2E_IP_PREFIX}.$((9+i))" "node-$i"
+    join_mesh "e2e-down-$i" "172.20.0.10" "172.20.0.$((9+i))" "node-$i"
     sleep 1
 done
 

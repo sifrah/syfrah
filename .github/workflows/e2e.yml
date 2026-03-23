@@ -21,42 +21,15 @@ jobs:
   # ── Build Docker image once ──────────────────────────────
   build:
     name: Build image
-    runs-on: self-hosted
-    container:
-      image: docker:27
-    services:
-      dind:
-        image: docker:27-dind
-        options: --privileged
-        env:
-          DOCKER_TLS_CERTDIR: ""
+    runs-on: ubuntu-latest
     steps:
-      - name: Connect to DinD
-        shell: sh {0}
-        run: |
-          # Resolve DinD IP (runner DNS bug: actions/runner#4038)
-          DIND_IP=$(getent hosts dind | awk '{print $1}')
-          if [ -z "$DIND_IP" ]; then
-            DIND_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $(docker ps -qf "ancestor=docker:27-dind" | head -1) 2>/dev/null)
-          fi
-          if [ -z "$DIND_IP" ]; then echo "Could not resolve DinD IP" >&2; exit 1; fi
-          echo "DIND_IP=${DIND_IP}" >> "$GITHUB_ENV"
-          # Wait for DinD
-          export DOCKER_HOST="tcp://${DIND_IP}:2375"
-          echo "Resolved DinD at ${DIND_IP}, waiting..."
-          i=0; while [ $i -lt 30 ]; do
-            if docker info >/dev/null 2>&1; then echo "DinD ready"; exit 0; fi
-            sleep 1; i=$((i+1))
-          done
-          echo "DinD not ready after 30s"; exit 1
-
       - uses: actions/checkout@v4
 
-      - name: Build and save image
-        run: |
-          export DOCKER_HOST="tcp://${DIND_IP}:2375"
-          docker build -t syfrah-e2e-test -f tests/e2e/Dockerfile . --quiet
-          docker save syfrah-e2e-test | gzip > /tmp/syfrah-e2e-test.tar.gz
+      - name: Build Docker image
+        run: docker build -t syfrah-e2e-test -f tests/e2e/Dockerfile . --quiet
+
+      - name: Save image
+        run: docker save syfrah-e2e-test | gzip > /tmp/syfrah-e2e-test.tar.gz
 
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
@@ -68,15 +41,11 @@ jobs:
   # ── Discover which layers have E2E tests ─────────────────
   discover:
     name: Discover layers
-    runs-on: self-hosted
-    container:
-      image: alpine:latest
+    runs-on: ubuntu-latest
     outputs:
       layers: ${{ steps.find.outputs.layers }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install jq
-        run: apk add --no-cache jq
       - id: find
         run: |
           # Extract unique layer names from scenario filenames
@@ -93,38 +62,13 @@ jobs:
   test:
     name: E2E / ${{ matrix.layer }}
     needs: [build, discover]
-    runs-on: self-hosted
-    container:
-      image: docker:27
-    services:
-      dind:
-        image: docker:27-dind
-        options: --privileged
-        env:
-          DOCKER_TLS_CERTDIR: ""
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         layer: ${{ fromJson(needs.discover.outputs.layers) }}
     steps:
-      - name: Connect to DinD
-        shell: sh {0}
-        run: |
-          DIND_IP=$(getent hosts dind | awk '{print $1}')
-          if [ -z "$DIND_IP" ]; then
-            DIND_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $(docker ps -qf "ancestor=docker:27-dind" | head -1) 2>/dev/null)
-          fi
-          if [ -z "$DIND_IP" ]; then echo "Could not resolve DinD IP" >&2; exit 1; fi
-          echo "DIND_IP=${DIND_IP}" >> "$GITHUB_ENV"
-          export DOCKER_HOST="tcp://${DIND_IP}:2375"
-          echo "Resolved DinD at ${DIND_IP}, waiting..."
-          i=0; while [ $i -lt 30 ]; do
-            if docker info >/dev/null 2>&1; then echo "DinD ready"; exit 0; fi
-            sleep 1; i=$((i+1))
-          done
-          echo "DinD not ready after 30s"; exit 1
-
       - uses: actions/checkout@v4
 
       - name: Download image
@@ -133,11 +77,10 @@ jobs:
           name: e2e-image
           path: /tmp
 
-      - name: Install bash
-        run: apk add --no-cache bash
+      - name: Load image
+        run: docker load < /tmp/syfrah-e2e-test.tar.gz
 
-      - name: Load and run E2E tests
-        run: |
-          export DOCKER_HOST="tcp://${DIND_IP}:2375"
-          docker load < /tmp/syfrah-e2e-test.tar.gz
-          SKIP_BUILD=1 ./tests/e2e/run.sh ${{ matrix.layer }}
+      - name: Run ${{ matrix.layer }} E2E tests
+        env:
+          SKIP_BUILD: "1"
+        run: ./tests/e2e/run.sh ${{ matrix.layer }}

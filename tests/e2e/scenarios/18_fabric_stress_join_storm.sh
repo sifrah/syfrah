@@ -11,10 +11,10 @@ NODE_COUNT=10
 create_network
 
 for i in $(seq 1 $NODE_COUNT); do
-    start_node "e2e-storm-$i" "${E2E_IP_PREFIX}.$((9+i))"
+    start_node "e2e-storm-$i" "172.20.0.$((9+i))"
 done
 
-init_mesh "e2e-storm-1" "${E2E_IP_PREFIX}.10" "node-1"
+init_mesh "e2e-storm-1" "172.20.0.10" "node-1"
 start_peering "e2e-storm-1"
 
 # Record leader PID for monitoring
@@ -29,9 +29,9 @@ info "Joining 9 nodes in rapid succession..."
 START_TIME=$(date +%s)
 for i in $(seq 2 $NODE_COUNT); do
     docker exec -d "e2e-storm-$i" \
-        syfrah fabric join ${E2E_IP_PREFIX}.10:51821 \
+        syfrah fabric join 172.20.0.10:51821 \
         --node-name "node-$i" \
-        --endpoint "${E2E_IP_PREFIX}.$((9+i)):51820" \
+        --endpoint "172.20.0.$((9+i)):51820" \
         --pin "$E2E_PIN"
     sleep 1
 done
