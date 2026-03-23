@@ -756,6 +756,15 @@ fn disk_full_write_fails_clean() {
 // Non-root version: test with a read-only file
 #[test]
 fn readonly_file_write_fails_clean() {
+    // Root ignores file permissions, so this test is meaningless in containers
+    if std::process::Command::new("id").arg("-u").output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
+        .unwrap_or(false)
+    {
+        eprintln!("skipping: running as root");
+        return;
+    }
+
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("readonly.redb");
 
