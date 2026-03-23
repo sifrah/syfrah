@@ -1,4 +1,5 @@
 pub mod diagnose;
+pub mod events;
 pub mod init;
 pub mod join;
 pub mod leave;
