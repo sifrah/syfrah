@@ -53,6 +53,9 @@ enum FabricCommand {
         zone: Option<String>,
         #[arg(long, short)]
         daemon: bool,
+        /// Start peering with auto-accept PIN after init (implies --daemon)
+        #[arg(long)]
+        peering: bool,
     },
     /// Join an existing mesh
     Join {
@@ -251,26 +254,48 @@ async fn run() -> Result<()> {
                 region,
                 zone,
                 daemon,
+                peering,
             } => {
                 let peering_port = peering_port.unwrap_or(port + 1);
+                // --peering implies --daemon
+                let daemon = daemon || peering;
                 if daemon {
                     println!("Starting daemon in background...");
                     if daemonize()? {
-                        println!("Use 'syfrah fabric status' to check.");
-                        return Ok(());
+                        // Parent process: wait for daemon, then optionally start peering
+                        if peering {
+                            cli::init::wait_and_start_peering(endpoint, peering_port).await
+                        } else {
+                            println!("Use 'syfrah fabric status' to check.");
+                            Ok(())
+                        }
+                    } else {
+                        // Child (daemon) process
+                        setup_logging(true);
+                        cli::init::run(
+                            &name,
+                            &node_name.unwrap_or_else(default_node_name),
+                            port,
+                            endpoint,
+                            peering_port,
+                            region,
+                            zone,
+                        )
+                        .await
                     }
+                } else {
+                    setup_logging(false);
+                    cli::init::run(
+                        &name,
+                        &node_name.unwrap_or_else(default_node_name),
+                        port,
+                        endpoint,
+                        peering_port,
+                        region,
+                        zone,
+                    )
+                    .await
                 }
-                setup_logging(daemon);
-                cli::init::run(
-                    &name,
-                    &node_name.unwrap_or_else(default_node_name),
-                    port,
-                    endpoint,
-                    peering_port,
-                    region,
-                    zone,
-                )
-                .await
             }
             FabricCommand::Join {
                 target,
