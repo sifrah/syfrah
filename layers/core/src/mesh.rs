@@ -52,6 +52,12 @@ pub struct JoinRequest {
     /// Optional PIN for auto-accept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pin: Option<String>,
+    /// Joiner's region (sent so the leader can store it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    /// Joiner's zone (sent so the leader can store it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone: Option<String>,
 }
 
 /// Response sent back to a new node after acceptance or rejection.

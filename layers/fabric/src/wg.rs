@@ -50,14 +50,18 @@ pub fn create_interface(private_key: &Key, listen_port: u16) -> Result<(), WgErr
 }
 
 /// Destroy the WireGuard interface if it exists.
+/// Returns `Ok(())` when the interface is already gone (ENODEV / os error 19).
 pub fn destroy_interface() -> Result<(), WgError> {
     let iface = iface_name()?;
-    match Device::get(&iface, backend()) {
-        Ok(device) => {
-            device.delete()?;
-            Ok(())
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+    let device = match Device::get(&iface, backend()) {
+        Ok(d) => d,
+        Err(e) if e.raw_os_error() == Some(19) => return Ok(()), // ENODEV — already gone
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(WgError::Io(e)),
+    };
+    match device.delete() {
+        Ok(()) => Ok(()),
+        Err(e) if e.raw_os_error() == Some(19) => Ok(()), // ENODEV — gone between get and delete
         Err(e) => Err(WgError::Io(e)),
     }
 }

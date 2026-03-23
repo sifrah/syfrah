@@ -72,6 +72,10 @@ pub async fn run() -> Result<()> {
 }
 
 fn format_ago(time: SystemTime) -> String {
+    if time == std::time::UNIX_EPOCH {
+        return "never".into();
+    }
+
     let elapsed = SystemTime::now()
         .duration_since(time)
         .unwrap_or_default()
