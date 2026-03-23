@@ -6,7 +6,9 @@ use syfrah_core::mesh::PeerStatus;
 
 pub async fn run() -> Result<()> {
     let state = store::load().map_err(|_| {
-        anyhow::anyhow!("no mesh configured. Run 'syfrah init' or 'syfrah join' first.")
+        anyhow::anyhow!(
+            "no mesh configured. Run 'syfrah fabric init' or 'syfrah fabric join' first."
+        )
     })?;
 
     if state.peers.is_empty() {

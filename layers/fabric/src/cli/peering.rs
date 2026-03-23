@@ -67,7 +67,7 @@ pub async fn watch(pin: Option<String>) -> Result<()> {
 
     if let Some(ref p) = pin {
         println!("Peering active (auto-accept with PIN: {p})");
-        println!("New nodes can join with: syfrah join <this-ip> --pin {p}");
+        println!("New nodes can join with: syfrah fabric join <this-ip> --pin {p}");
     } else {
         println!("Peering active. Watching for join requests...");
         println!("Press Ctrl+C to stop.");
@@ -227,7 +227,7 @@ pub async fn reject(request_id: &str, reason: Option<String>) -> Result<()> {
 async fn send_request(req: ControlRequest) -> Result<ControlResponse> {
     let path = store::control_socket_path();
     if !path.exists() {
-        anyhow::bail!("daemon not running. Start with 'syfrah start' first.");
+        anyhow::bail!("daemon not running. Start with 'syfrah fabric start' first.");
     }
     let resp = send_control_request(&path, &req)
         .await
