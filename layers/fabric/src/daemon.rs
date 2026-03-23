@@ -445,37 +445,29 @@ pub async fn run_daemon(
                 // Find matching WG peer by public key
                 let wg_peer = wg_peers.iter().find(|p| p.public_key == peer.wg_public_key);
 
-                // Update last_seen from WireGuard handshake timestamp
-                if let Some(wp) = wg_peer {
-                    if let Some(handshake_time) = wp.last_handshake {
-                        let handshake_epoch = handshake_time
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        if handshake_epoch > peer.last_seen {
-                            peer.last_seen = handshake_epoch;
-                            changed = true;
-                        }
+                let wg_handshake_epoch = wg_peer.and_then(|wp| {
+                    wp.last_handshake
+                        .map(|ht| ht.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs())
+                });
+
+                let old_status = peer.status;
+                let peer_changed = evaluate_peer_health(
+                    peer,
+                    wg_handshake_epoch,
+                    current,
+                    unreachable_timeout_secs,
+                );
+
+                if peer_changed {
+                    changed = true;
+
+                    if old_status == PeerStatus::Unreachable && peer.status == PeerStatus::Active {
+                        info!(peer = %peer.name, last_seen = peer.last_seen, "peer recovered, marking active");
                     }
-                }
-
-                // Recovery: unreachable → active if recent handshake
-                if peer.status == PeerStatus::Unreachable
-                    && current.saturating_sub(peer.last_seen) < unreachable_timeout_secs
-                {
-                    info!(peer = %peer.name, last_seen = peer.last_seen, "peer recovered, marking active");
-                    peer.status = PeerStatus::Active;
-                    changed = true;
-                }
-
-                // Detection: active → unreachable if no handshake for too long
-                if peer.status == PeerStatus::Active
-                    && current.saturating_sub(peer.last_seen) > unreachable_timeout_secs
-                {
-                    info!(peer = %peer.name, last_seen = peer.last_seen, timeout_secs = unreachable_timeout_secs, "marking peer as unreachable");
-                    peer.status = PeerStatus::Unreachable;
-                    health_counter.fetch_add(1, Ordering::Relaxed);
-                    changed = true;
+                    if old_status == PeerStatus::Active && peer.status == PeerStatus::Unreachable {
+                        info!(peer = %peer.name, last_seen = peer.last_seen, timeout_secs = unreachable_timeout_secs, "marking peer as unreachable");
+                        health_counter.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
 
@@ -506,21 +498,18 @@ pub async fn run_daemon(
             };
 
             // For each stored peer, ensure it's in WireGuard
-            for peer in &stored_peers {
-                if peer.status == PeerStatus::Removed {
-                    continue;
-                }
-                let in_wg = wg_summary
-                    .peers
-                    .iter()
-                    .any(|p| p.public_key == peer.wg_public_key);
-                if !in_wg {
-                    info!(peer = %peer.name, endpoint = %peer.endpoint, "reconciling: adding missing peer to WireGuard");
-                    if let Err(e) = wg::upsert_peer(&reconcile_wg_pubkey, peer) {
-                        warn!(peer = %peer.name, error = %e, "reconciliation failed");
-                    } else {
-                        reconcile_recon.fetch_add(1, Ordering::Relaxed);
-                    }
+            let wg_keys: Vec<String> = wg_summary
+                .peers
+                .iter()
+                .map(|p| p.public_key.clone())
+                .collect();
+            let missing = peers_needing_reconciliation(&stored_peers, &wg_keys);
+            for peer in missing {
+                info!(peer = %peer.name, endpoint = %peer.endpoint, "reconciling: adding missing peer to WireGuard");
+                if let Err(e) = wg::upsert_peer(&reconcile_wg_pubkey, peer) {
+                    warn!(peer = %peer.name, error = %e, "reconciliation failed");
+                } else {
+                    reconcile_recon.fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
@@ -702,9 +691,308 @@ pub fn derive_prefix_from_secret(secret: &MeshSecret) -> std::net::Ipv6Addr {
     )
 }
 
-fn now() -> u64 {
+pub fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+/// Evaluate a single peer's health state based on handshake data and timeout.
+///
+/// Updates `peer.last_seen` and `peer.status` as appropriate.
+/// Returns `true` if any field was changed.
+pub fn evaluate_peer_health(
+    peer: &mut PeerRecord,
+    wg_handshake_epoch: Option<u64>,
+    current_time: u64,
+    unreachable_timeout_secs: u64,
+) -> bool {
+    let mut changed = false;
+
+    // Update last_seen from WireGuard handshake timestamp
+    if let Some(handshake_epoch) = wg_handshake_epoch {
+        if handshake_epoch > peer.last_seen {
+            peer.last_seen = handshake_epoch;
+            changed = true;
+        }
+    }
+
+    // Recovery: unreachable → active if recent handshake
+    if peer.status == PeerStatus::Unreachable
+        && current_time.saturating_sub(peer.last_seen) < unreachable_timeout_secs
+    {
+        peer.status = PeerStatus::Active;
+        changed = true;
+    }
+
+    // Detection: active → unreachable if no handshake for too long
+    if peer.status == PeerStatus::Active
+        && current_time.saturating_sub(peer.last_seen) > unreachable_timeout_secs
+    {
+        peer.status = PeerStatus::Unreachable;
+        changed = true;
+    }
+
+    changed
+}
+
+/// Determine which stored peers are missing from WireGuard and need reconciliation.
+///
+/// Returns references to peers that should be re-added (non-Removed peers not in WG).
+pub fn peers_needing_reconciliation<'a>(
+    stored: &'a [PeerRecord],
+    wg_keys: &[String],
+) -> Vec<&'a PeerRecord> {
+    stored
+        .iter()
+        .filter(|peer| peer.status != PeerStatus::Removed && !wg_keys.contains(&peer.wg_public_key))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{Ipv6Addr, SocketAddr};
+    use wireguard_control::KeyPair;
+
+    fn sample_peer(name: &str, status: PeerStatus, last_seen: u64) -> PeerRecord {
+        PeerRecord {
+            name: name.to_string(),
+            wg_public_key: format!("key-{name}"),
+            endpoint: "203.0.113.1:51820".parse::<SocketAddr>().unwrap(),
+            mesh_ipv6: Ipv6Addr::new(0xfd12, 0x3456, 0x7800, 0, 0, 0, 0, 1),
+            last_seen,
+            status,
+            region: None,
+            zone: None,
+        }
+    }
+
+    // ── derive_prefix_from_secret tests ──
+
+    #[test]
+    fn derive_prefix_deterministic() {
+        let secret = MeshSecret::from_bytes([42u8; 32]);
+        let p1 = derive_prefix_from_secret(&secret);
+        let p2 = derive_prefix_from_secret(&secret);
+        assert_eq!(p1, p2);
+    }
+
+    #[test]
+    fn derive_prefix_unique_for_different_secrets() {
+        let s1 = MeshSecret::from_bytes([1u8; 32]);
+        let s2 = MeshSecret::from_bytes([2u8; 32]);
+        let p1 = derive_prefix_from_secret(&s1);
+        let p2 = derive_prefix_from_secret(&s2);
+        assert_ne!(p1, p2);
+    }
+
+    #[test]
+    fn derive_prefix_known_value() {
+        // The prefix must be in the fd00::/8 ULA range
+        let secret = MeshSecret::from_bytes([0u8; 32]);
+        let prefix = derive_prefix_from_secret(&secret);
+        let segments = prefix.segments();
+        // First nibble of first segment must be 0xfd
+        assert_eq!(
+            segments[0] >> 8,
+            0xfd,
+            "prefix must be in fd00::/8 ULA range"
+        );
+        // Last 4 segments must be zero (it's a /48 prefix)
+        assert_eq!(segments[4], 0);
+        assert_eq!(segments[5], 0);
+        assert_eq!(segments[6], 0);
+        assert_eq!(segments[7], 0);
+    }
+
+    // ── build_record tests ──
+
+    #[test]
+    fn build_record_fields() {
+        let keypair = KeyPair::generate();
+        let endpoint: SocketAddr = "10.0.0.1:51820".parse().unwrap();
+        let ipv6 = Ipv6Addr::new(0xfd12, 0, 0, 0, 0, 0, 0, 1);
+
+        let record = build_record(
+            "node-1",
+            &keypair,
+            endpoint,
+            ipv6,
+            Some("us-east"),
+            Some("us-east-1a"),
+        );
+
+        assert_eq!(record.name, "node-1");
+        assert_eq!(record.wg_public_key, keypair.public.to_base64());
+        assert_eq!(record.endpoint, endpoint);
+        assert_eq!(record.mesh_ipv6, ipv6);
+        assert_eq!(record.status, PeerStatus::Active);
+        assert_eq!(record.region.as_deref(), Some("us-east"));
+        assert_eq!(record.zone.as_deref(), Some("us-east-1a"));
+    }
+
+    #[test]
+    fn build_record_timestamp_is_recent() {
+        let keypair = KeyPair::generate();
+        let endpoint: SocketAddr = "10.0.0.1:51820".parse().unwrap();
+        let ipv6 = Ipv6Addr::new(0xfd12, 0, 0, 0, 0, 0, 0, 1);
+
+        let before = now();
+        let record = build_record("node-1", &keypair, endpoint, ipv6, None, None);
+        let after = now();
+
+        assert!(record.last_seen >= before);
+        assert!(record.last_seen <= after);
+    }
+
+    // ── resolve_endpoint tests ──
+
+    #[test]
+    fn resolve_endpoint_default_fallback() {
+        let config = DaemonConfig {
+            mesh_name: "test".into(),
+            node_name: "node".into(),
+            wg_listen_port: 51820,
+            public_endpoint: None,
+            peering_port: 7946,
+            region: None,
+            zone: None,
+        };
+        let ep = resolve_endpoint(&config);
+        assert_eq!(ep, "0.0.0.0:51820".parse::<SocketAddr>().unwrap());
+    }
+
+    #[test]
+    fn resolve_endpoint_custom() {
+        let custom: SocketAddr = "203.0.113.5:9999".parse().unwrap();
+        let config = DaemonConfig {
+            mesh_name: "test".into(),
+            node_name: "node".into(),
+            wg_listen_port: 51820,
+            public_endpoint: Some(custom),
+            peering_port: 7946,
+            region: None,
+            zone: None,
+        };
+        let ep = resolve_endpoint(&config);
+        assert_eq!(ep, custom);
+    }
+
+    // ── now() test ──
+
+    #[test]
+    fn now_returns_reasonable_value() {
+        let t = now();
+        // Should be after 2024-01-01 and before 2100-01-01
+        assert!(t > 1_704_067_200, "now() should be after 2024-01-01");
+        assert!(t < 4_102_444_800, "now() should be before 2100-01-01");
+    }
+
+    // ── evaluate_peer_health tests ──
+
+    #[test]
+    fn health_active_to_unreachable_after_timeout() {
+        let mut peer = sample_peer("node-2", PeerStatus::Active, 1000);
+        // current_time = 1301 (301s after last_seen), timeout = 300
+        let changed = evaluate_peer_health(&mut peer, None, 1301, 300);
+        assert!(changed);
+        assert_eq!(peer.status, PeerStatus::Unreachable);
+    }
+
+    #[test]
+    fn health_active_stays_active_before_timeout() {
+        let mut peer = sample_peer("node-2", PeerStatus::Active, 1000);
+        // current_time = 1299 (299s after last_seen), timeout = 300
+        let changed = evaluate_peer_health(&mut peer, None, 1299, 300);
+        assert!(!changed);
+        assert_eq!(peer.status, PeerStatus::Active);
+    }
+
+    #[test]
+    fn health_active_stays_active_at_exact_boundary() {
+        let mut peer = sample_peer("node-2", PeerStatus::Active, 1000);
+        // current_time = 1300 (exactly 300s after last_seen), timeout = 300
+        // saturating_sub(1300, 1000) = 300, which is NOT > 300, so stays active
+        let changed = evaluate_peer_health(&mut peer, None, 1300, 300);
+        assert!(!changed);
+        assert_eq!(peer.status, PeerStatus::Active);
+    }
+
+    #[test]
+    fn health_unreachable_to_active_on_recent_handshake() {
+        let mut peer = sample_peer("node-2", PeerStatus::Unreachable, 1000);
+        // Handshake at 1260 (current - 1260 = 40s ago), timeout = 300
+        let changed = evaluate_peer_health(&mut peer, Some(1260), 1300, 300);
+        assert!(changed);
+        assert_eq!(peer.status, PeerStatus::Active);
+        assert_eq!(peer.last_seen, 1260);
+    }
+
+    #[test]
+    fn health_unreachable_stays_unreachable_no_recent_handshake() {
+        let mut peer = sample_peer("node-2", PeerStatus::Unreachable, 1000);
+        // current_time = 1400, no new handshake, timeout = 300
+        // 1400 - 1000 = 400 >= 300, stays unreachable
+        let changed = evaluate_peer_health(&mut peer, None, 1400, 300);
+        assert!(!changed);
+        assert_eq!(peer.status, PeerStatus::Unreachable);
+    }
+
+    // ── last_seen update tests ──
+
+    #[test]
+    fn health_updates_last_seen_from_newer_handshake() {
+        let mut peer = sample_peer("node-2", PeerStatus::Active, 1000);
+        let changed = evaluate_peer_health(&mut peer, Some(1050), 1100, 300);
+        assert!(changed);
+        assert_eq!(peer.last_seen, 1050);
+    }
+
+    #[test]
+    fn health_does_not_update_last_seen_from_older_handshake() {
+        let mut peer = sample_peer("node-2", PeerStatus::Active, 1000);
+        let changed = evaluate_peer_health(&mut peer, Some(900), 1100, 300);
+        assert!(!changed);
+        assert_eq!(peer.last_seen, 1000);
+    }
+
+    #[test]
+    fn health_no_handshake_no_update() {
+        let mut peer = sample_peer("node-2", PeerStatus::Active, 1000);
+        let changed = evaluate_peer_health(&mut peer, None, 1100, 300);
+        assert!(!changed);
+        assert_eq!(peer.last_seen, 1000);
+    }
+
+    // ── peers_needing_reconciliation tests ──
+
+    #[test]
+    fn reconciliation_missing_peer_needs_readd() {
+        let peers = vec![
+            sample_peer("node-1", PeerStatus::Active, 1000),
+            sample_peer("node-2", PeerStatus::Active, 1000),
+        ];
+        let wg_keys = vec!["key-node-1".to_string()]; // node-2 is missing
+        let needing = peers_needing_reconciliation(&peers, &wg_keys);
+        assert_eq!(needing.len(), 1);
+        assert_eq!(needing[0].name, "node-2");
+    }
+
+    #[test]
+    fn reconciliation_present_peer_no_action() {
+        let peers = vec![sample_peer("node-1", PeerStatus::Active, 1000)];
+        let wg_keys = vec!["key-node-1".to_string()];
+        let needing = peers_needing_reconciliation(&peers, &wg_keys);
+        assert!(needing.is_empty());
+    }
+
+    #[test]
+    fn reconciliation_removed_peer_not_readded() {
+        let peers = vec![sample_peer("node-1", PeerStatus::Removed, 1000)];
+        let wg_keys = vec![]; // not in WG, but it's Removed
+        let needing = peers_needing_reconciliation(&peers, &wg_keys);
+        assert!(needing.is_empty());
+    }
 }

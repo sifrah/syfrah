@@ -102,8 +102,9 @@ pub async fn send_control_request(
     Ok(resp)
 }
 
-async fn write_control<T: Serialize>(
-    stream: &mut UnixStream,
+/// Write a length-prefixed JSON message to an async writer.
+pub async fn write_control<T: Serialize, W: AsyncWriteExt + Unpin>(
+    stream: &mut W,
     msg: &T,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let data = serde_json::to_vec(msg)?;
@@ -114,8 +115,10 @@ async fn write_control<T: Serialize>(
     Ok(())
 }
 
-async fn read_control<T: serde::de::DeserializeOwned>(
-    stream: &mut UnixStream,
+/// Read a length-prefixed JSON message from an async reader.
+/// Rejects messages larger than 1,000,000 bytes.
+pub async fn read_control<T: serde::de::DeserializeOwned, R: AsyncReadExt + Unpin>(
+    stream: &mut R,
 ) -> Result<T, Box<dyn std::error::Error>> {
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf).await?;
@@ -127,4 +130,79 @@ async fn read_control<T: serde::de::DeserializeOwned>(
     stream.read_exact(&mut data).await?;
     let msg: T = serde_json::from_slice(&data)?;
     Ok(msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::duplex;
+
+    #[tokio::test]
+    async fn control_roundtrip() {
+        let (mut client, mut server) = duplex(4096);
+
+        let req = ControlRequest::PeeringStart {
+            port: 7946,
+            pin: Some("1234".into()),
+        };
+        write_control(&mut client, &req).await.unwrap();
+        drop(client); // close write end
+
+        let read_req: ControlRequest = read_control(&mut server).await.unwrap();
+        match read_req {
+            ControlRequest::PeeringStart { port, pin } => {
+                assert_eq!(port, 7946);
+                assert_eq!(pin.as_deref(), Some("1234"));
+            }
+            other => panic!("unexpected request: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn control_oversized_message_rejected() {
+        let (mut client, mut server) = duplex(64);
+
+        // Write a length header claiming >1MB
+        let fake_len: u32 = 1_000_001;
+        tokio::io::AsyncWriteExt::write_all(&mut client, &fake_len.to_be_bytes())
+            .await
+            .unwrap();
+        drop(client);
+
+        let result: Result<ControlRequest, _> = read_control(&mut server).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("too large"),
+            "expected 'too large' error, got: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn control_malformed_json_rejected() {
+        let (mut client, mut server) = duplex(4096);
+
+        // Write valid length but invalid JSON
+        let bad_json = b"not valid json";
+        let len = bad_json.len() as u32;
+        tokio::io::AsyncWriteExt::write_all(&mut client, &len.to_be_bytes())
+            .await
+            .unwrap();
+        tokio::io::AsyncWriteExt::write_all(&mut client, bad_json)
+            .await
+            .unwrap();
+        drop(client);
+
+        let result: Result<ControlRequest, _> = read_control(&mut server).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn control_empty_stream_errors() {
+        let (_client, mut server) = duplex(4096);
+        drop(_client); // close immediately — empty stream
+
+        let result: Result<ControlRequest, _> = read_control(&mut server).await;
+        assert!(result.is_err());
+    }
 }
