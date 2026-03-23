@@ -13,6 +13,8 @@ use syfrah_core::mesh::{
     decrypt_record, encrypt_record, JoinRequest, JoinResponse, PeerRecord, PeeringMessage,
 };
 
+use crate::events::{self, EventType};
+
 const JOIN_TIMEOUT: Duration = Duration::from_secs(300);
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_MSG_SIZE: u32 = 65536;
@@ -220,6 +222,13 @@ async fn handle_incoming(
                 request_id = %req.request_id,
                 "join request received"
             );
+            events::emit(
+                EventType::JoinRequestReceived,
+                Some(&req.node_name),
+                Some(&req.endpoint.to_string()),
+                Some(&format!("request_id={}", req.request_id)),
+                None,
+            );
 
             // Check PIN auto-accept
             if let Some(ref req_pin) = req.pin {
@@ -227,6 +236,13 @@ async fn handle_incoming(
                 if let Some(ref config) = *auto {
                     if config.pin == *req_pin {
                         info!(node = %req.node_name, request_id = %req.request_id, "PIN matched, auto-accepting");
+                        events::emit(
+                            EventType::JoinAutoAccepted,
+                            Some(&req.node_name),
+                            Some(&req.endpoint.to_string()),
+                            Some("pin-matched"),
+                            None,
+                        );
                         let (response, new_record) = build_auto_accept_response(&req, config)?;
                         write_message(&mut stream, &PeeringMessage::JoinResponse(response)).await?;
                         on_accepted(new_record);
@@ -237,6 +253,8 @@ async fn handle_incoming(
 
             // Manual approval: store and wait
             let (tx, rx) = oneshot::channel();
+            let pending_node_name = req.node_name.clone();
+            let pending_endpoint = req.endpoint.to_string();
             let info = JoinRequestInfo {
                 request_id: req.request_id.clone(),
                 node_name: req.node_name,
@@ -267,6 +285,13 @@ async fn handle_incoming(
                 Err(_) => {
                     let mut map = pending.write().await;
                     map.remove(&req.request_id);
+                    events::emit(
+                        EventType::JoinTimeout,
+                        Some(&pending_node_name),
+                        Some(&pending_endpoint),
+                        Some(&format!("request_id={}", req.request_id)),
+                        None,
+                    );
                     JoinResponse {
                         accepted: false,
                         mesh_name: None,
@@ -431,6 +456,13 @@ pub async fn announce_peer_to_mesh(
         }
         if let Err(e) = announce_peer(peer.endpoint, peering_port, record, encryption_key).await {
             warn!(target_peer = %peer.name, target_endpoint = %peer.endpoint, error = %e, "announcement failed after retries");
+            events::emit(
+                EventType::PeerAnnounceFailed,
+                Some(&peer.name),
+                Some(&peer.endpoint.to_string()),
+                Some(&format!("error={e}")),
+                None,
+            );
             failed += 1;
         } else {
             debug!(target_peer = %peer.name, record = %record.name, "announced peer");

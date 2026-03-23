@@ -12,6 +12,7 @@ use syfrah_core::secret::MeshSecret;
 
 use crate::config::{self, Tuning};
 use crate::control::{self, ControlHandler, ControlRequest, ControlResponse};
+use crate::events::{self, EventType};
 use crate::peering::{self, AutoAcceptConfig, PeeringState};
 use crate::store::{self, NodeState};
 use crate::wg;
@@ -313,6 +314,13 @@ pub async fn run_daemon(
     );
 
     store::write_pid()?;
+    events::emit(
+        EventType::DaemonStarted,
+        None,
+        None,
+        None,
+        Some(tuning.max_events),
+    );
 
     let wg_pubkey = wg_keypair.public.clone();
     let peering_state = Arc::new(PeeringState::new());
@@ -329,6 +337,7 @@ pub async fn run_daemon(
     let accepted_recon = metrics_reconciliations.clone();
     let accepted_enc_key = enc_key;
     let accepted_peering_port = peering_port;
+    let accepted_max_events = tuning.max_events;
     let on_accepted: peering::OnAccepted = Arc::new(move |new_record| {
         accepted_recv.fetch_add(1, Ordering::Relaxed);
         let pubkey = accepted_wg_pubkey.clone();
@@ -336,6 +345,7 @@ pub async fn run_daemon(
         let record = new_record.clone();
         let enc = accepted_enc_key;
         let pp = accepted_peering_port;
+        let max_ev = accepted_max_events;
         tokio::spawn(async move {
             // Add to WG
             if let Err(e) = wg::upsert_peer(&pubkey, &record) {
@@ -343,6 +353,13 @@ pub async fn run_daemon(
             } else {
                 recon.fetch_add(1, Ordering::Relaxed);
                 info!(peer = %record.name, endpoint = %record.endpoint, "peer accepted and added to WG");
+                events::emit(
+                    EventType::PeerActive,
+                    Some(&record.name),
+                    Some(&record.endpoint.to_string()),
+                    Some(&format!("mesh_ipv6={}", record.mesh_ipv6)),
+                    Some(max_ev),
+                );
             }
             // Save to store (atomic — no more load+push+save race)
             if let Err(e) = store::upsert_peer(&record) {
@@ -353,6 +370,13 @@ pub async fn run_daemon(
             let (_ok, failed) = peering::announce_peer_to_mesh(&record, &known, &enc, pp).await;
             if failed > 0 {
                 let _ = store::inc_metric("announcements_failed", failed as u64);
+                events::emit(
+                    EventType::PeerAnnounceFailed,
+                    Some(&record.name),
+                    None,
+                    Some(&format!("failed_count={failed}")),
+                    Some(max_ev),
+                );
             }
         });
     });
@@ -365,6 +389,7 @@ pub async fn run_daemon(
         wg_pubkey: wg_pubkey.clone(),
         peering_port,
         on_accepted: on_accepted.clone(),
+        max_events: tuning.max_events,
     });
 
     let control_path = store::control_socket_path();
@@ -377,8 +402,16 @@ pub async fn run_daemon(
     let announce_wg_pubkey = wg_pubkey.clone();
     let announce_recv = metrics_received.clone();
     let announce_recon = metrics_reconciliations.clone();
+    let announce_max_events = tuning.max_events;
     let on_announce: Arc<dyn Fn(PeerRecord) + Send + Sync> = Arc::new(move |record| {
         announce_recv.fetch_add(1, Ordering::Relaxed);
+        events::emit(
+            EventType::PeerAnnounceReceived,
+            Some(&record.name),
+            Some(&record.endpoint.to_string()),
+            Some(&format!("mesh_ipv6={}", record.mesh_ipv6)),
+            Some(announce_max_events),
+        );
         let pubkey = announce_wg_pubkey.clone();
         let recon = announce_recon.clone();
         let record = record.clone();
@@ -429,6 +462,7 @@ pub async fn run_daemon(
     let unreachable_timeout_secs = tuning.unreachable_timeout.as_secs();
     let health_counter = metrics_unreachable.clone();
     let health_recon = metrics_reconciliations.clone();
+    let health_max_events = tuning.max_events;
     let health_check = async {
         let mut interval = tokio::time::interval(tuning.health_check_interval);
         loop {
@@ -469,6 +503,39 @@ pub async fn run_daemon(
                         health_counter.fetch_add(1, Ordering::Relaxed);
                     }
                 }
+
+                // Recovery: unreachable → active if recent handshake
+                if peer.status == PeerStatus::Unreachable
+                    && current.saturating_sub(peer.last_seen) < unreachable_timeout_secs
+                {
+                    info!(peer = %peer.name, last_seen = peer.last_seen, "peer recovered, marking active");
+                    peer.status = PeerStatus::Active;
+                    changed = true;
+                    events::emit(
+                        EventType::PeerRecovered,
+                        Some(&peer.name),
+                        Some(&peer.endpoint.to_string()),
+                        Some("handshake resumed"),
+                        Some(health_max_events),
+                    );
+                }
+
+                // Detection: active → unreachable if no handshake for too long
+                if peer.status == PeerStatus::Active
+                    && current.saturating_sub(peer.last_seen) > unreachable_timeout_secs
+                {
+                    info!(peer = %peer.name, last_seen = peer.last_seen, timeout_secs = unreachable_timeout_secs, "marking peer as unreachable");
+                    peer.status = PeerStatus::Unreachable;
+                    health_counter.fetch_add(1, Ordering::Relaxed);
+                    changed = true;
+                    events::emit(
+                        EventType::PeerUnreachable,
+                        Some(&peer.name),
+                        Some(&peer.endpoint.to_string()),
+                        Some(&format!("no handshake for {unreachable_timeout_secs}s")),
+                        Some(health_max_events),
+                    );
+                }
             }
 
             // Persist changes atomically
@@ -477,12 +544,21 @@ pub async fn run_daemon(
                     let _ = store::upsert_peer(peer);
                 }
             }
+
+            events::emit(
+                EventType::HealthCheckRun,
+                None,
+                None,
+                Some(&format!("peers_checked={}", peers.len())),
+                Some(health_max_events),
+            );
         }
     };
 
     // Reconciliation loop: compare stored peers with WireGuard config
     let reconcile_wg_pubkey = wg_pubkey.clone();
     let reconcile_recon = health_recon;
+    let reconcile_max_events = tuning.max_events;
     let reconcile = async {
         let mut interval = tokio::time::interval(tuning.reconcile_interval);
         loop {
@@ -512,6 +588,14 @@ pub async fn run_daemon(
                     reconcile_recon.fetch_add(1, Ordering::Relaxed);
                 }
             }
+
+            events::emit(
+                EventType::ReconciliationRun,
+                None,
+                None,
+                Some(&format!("stored_peers={}", stored_peers.len())),
+                Some(reconcile_max_events),
+            );
         }
     };
 
@@ -529,6 +613,13 @@ pub async fn run_daemon(
     let _ = std::fs::remove_file(store::control_socket_path());
     wg::teardown_interface()?;
     store::remove_pid();
+    events::emit(
+        EventType::DaemonStopped,
+        None,
+        None,
+        None,
+        Some(tuning.max_events),
+    );
     info!("daemon stopped");
     Ok(())
 }
@@ -541,6 +632,7 @@ struct DaemonControlHandler {
     wg_pubkey: Key,
     peering_port: u16,
     on_accepted: peering::OnAccepted,
+    max_events: u64,
 }
 
 #[async_trait::async_trait]
@@ -628,6 +720,13 @@ impl ControlHandler for DaemonControlHandler {
                             region: None,
                             zone: None,
                         };
+                        events::emit(
+                            EventType::JoinManuallyAccepted,
+                            Some(&info.node_name),
+                            Some(&info.endpoint.to_string()),
+                            None,
+                            Some(self.max_events),
+                        );
                         (self.on_accepted)(new_record);
                         ControlResponse::PeeringAccepted {
                             peer_name: info.node_name,
@@ -639,8 +738,17 @@ impl ControlHandler for DaemonControlHandler {
                 }
             }
             ControlRequest::PeeringReject { request_id, reason } => {
-                match self.peering_state.reject(&request_id, reason).await {
-                    Ok(()) => ControlResponse::Ok,
+                match self.peering_state.reject(&request_id, reason.clone()).await {
+                    Ok(()) => {
+                        events::emit(
+                            EventType::JoinRejected,
+                            None,
+                            None,
+                            reason.as_deref(),
+                            Some(self.max_events),
+                        );
+                        ControlResponse::Ok
+                    }
                     Err(e) => ControlResponse::Error {
                         message: e.to_string(),
                     },
