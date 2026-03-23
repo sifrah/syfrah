@@ -237,7 +237,9 @@ pub async fn run_join(
 /// Restart daemon from saved state.
 pub async fn run_start() -> anyhow::Result<()> {
     let state = store::load().map_err(|_| {
-        anyhow::anyhow!("no mesh state found. Run 'syfrah fabric init' or 'syfrah fabric join' first.")
+        anyhow::anyhow!(
+            "no mesh state found. Run 'syfrah fabric init' or 'syfrah fabric join' first."
+        )
     })?;
 
     let mesh_secret: MeshSecret = state
