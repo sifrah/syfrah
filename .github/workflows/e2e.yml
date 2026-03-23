@@ -18,11 +18,68 @@ on:
       - 'tests/**'
 
 jobs:
-  e2e:
-    name: E2E Tests (Docker)
+  # ── Build Docker image once ──────────────────────────────
+  build:
+    name: Build image
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run E2E tests
-        run: ./tests/e2e/run.sh
+      - name: Build Docker image
+        run: docker build -t syfrah-e2e-test -f tests/e2e/Dockerfile . --quiet
+
+      - name: Save image
+        run: docker save syfrah-e2e-test | gzip > /tmp/syfrah-e2e-test.tar.gz
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-image
+          path: /tmp/syfrah-e2e-test.tar.gz
+          retention-days: 1
+
+  # ── Discover which layers have E2E tests ─────────────────
+  discover:
+    name: Discover layers
+    runs-on: ubuntu-latest
+    outputs:
+      layers: ${{ steps.find.outputs.layers }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: find
+        run: |
+          # Extract unique layer names from scenario filenames
+          # e.g., 01_fabric_mesh.sh → fabric, 21_compute_vm.sh → compute
+          layers=$(ls tests/e2e/scenarios/*.sh 2>/dev/null | \
+            xargs -I{} basename {} | \
+            sed 's/^[0-9]*_\([a-z]*\)_.*/\1/' | \
+            sort -u | \
+            jq -R . | jq -sc .)
+          echo "layers=$layers" >> "$GITHUB_OUTPUT"
+          echo "Found layers: $layers"
+
+  # ── Run E2E tests per layer (parallel) ───────────────────
+  test:
+    name: E2E / ${{ matrix.layer }}
+    needs: [build, discover]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        layer: ${{ fromJson(needs.discover.outputs.layers) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download image
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-image
+          path: /tmp
+
+      - name: Load image
+        run: docker load < /tmp/syfrah-e2e-test.tar.gz
+
+      - name: Run ${{ matrix.layer }} E2E tests
+        env:
+          SKIP_BUILD: "1"
+        run: ./tests/e2e/run.sh ${{ matrix.layer }}

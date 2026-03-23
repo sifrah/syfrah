@@ -36,9 +36,13 @@ audit:
 run *ARGS:
     cargo run --bin syfrah -- {{ARGS}}
 
-# Run E2E tests (requires Docker)
+# Run all E2E tests (requires Docker)
 e2e:
     ./tests/e2e/run.sh
+
+# Run E2E tests for a specific layer
+e2e-layer LAYER:
+    ./tests/e2e/run.sh {{LAYER}}
 
 # Sync READMEs into documentation site pages
 docs-sync:
