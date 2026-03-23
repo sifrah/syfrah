@@ -1,5 +1,5 @@
 use crate::daemon::{self, DaemonConfig};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::net::SocketAddr;
 
 pub async fn run(
@@ -21,4 +21,5 @@ pub async fn run(
         zone,
     })
     .await
+    .context("Failed to initialize mesh. If a mesh already exists, run: syfrah fabric leave")
 }
