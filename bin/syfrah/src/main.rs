@@ -195,9 +195,19 @@ fn setup_logging(daemon_mode: bool) {
     }
 }
 
-/// Spawn the daemon in background via re-exec with `start --foreground`.
+/// Spawn the daemon in background via double-fork + re-exec with `start --foreground`.
 /// State must already be saved before calling this.
+///
+/// Uses the classic double-fork pattern so that:
+/// 1. Parent forks -> intermediate child
+/// 2. Intermediate forks -> grandchild (the daemon), then exits
+/// 3. Parent reaps intermediate (no zombie)
+/// 4. Grandchild calls setsid + exec, is reparented to init
+#[cfg(unix)]
 fn background_daemon() -> Result<()> {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+
     let exe = std::env::current_exe()?;
 
     // Open the log file for stderr so we can capture startup errors
@@ -205,48 +215,82 @@ fn background_daemon() -> Result<()> {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".syfrah");
     let _ = std::fs::create_dir_all(&log_dir);
-    let stderr_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_dir.join("syfrah.log"))?;
+    let log_path = log_dir.join("syfrah.log");
 
-    #[cfg(unix)]
-    let child = {
-        use std::os::unix::process::CommandExt;
-        let mut cmd = std::process::Command::new(&exe);
-        cmd.args(["fabric", "start", "--foreground"])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::from(stderr_file));
-        // Create a new session so the daemon survives terminal close
-        unsafe {
-            cmd.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
+    // First fork
+    let pid1 = unsafe { libc::fork() };
+    if pid1 < 0 {
+        anyhow::bail!("fork failed");
+    }
+    if pid1 == 0 {
+        // Intermediate child: setsid, fork again, then exit
+        unsafe { libc::setsid() };
+
+        let pid2 = unsafe { libc::fork() };
+        if pid2 < 0 {
+            std::process::exit(1);
         }
-        cmd.spawn()?
-    };
+        if pid2 > 0 {
+            // Intermediate exits immediately — grandchild becomes orphan
+            std::process::exit(0);
+        }
 
-    #[cfg(not(unix))]
-    let child = std::process::Command::new(&exe)
-        .args(["fabric", "start", "--foreground"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::from(stderr_file))
-        .spawn()?;
+        // Grandchild: redirect stdio and exec the daemon
+        unsafe {
+            let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
+            if devnull >= 0 {
+                libc::dup2(devnull, 0); // stdin
+                libc::dup2(devnull, 1); // stdout
+                if devnull > 2 {
+                    libc::close(devnull);
+                }
+            }
+            // Redirect stderr to log file
+            if let Ok(log_cstr) = std::ffi::CString::new(log_path.to_string_lossy().as_bytes()) {
+                let log_fd = libc::open(
+                    log_cstr.as_ptr(),
+                    libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND,
+                    0o644,
+                );
+                if log_fd >= 0 {
+                    libc::dup2(log_fd, 2); // stderr
+                    if log_fd > 2 {
+                        libc::close(log_fd);
+                    }
+                }
+            }
+        }
 
-    // The child process will write its own PID file via run_daemon -> store::write_pid
-    // Wait briefly for it to start and write the PID file
+        // Exec the daemon — replaces current process
+        use std::os::unix::process::CommandExt;
+        let err = std::process::Command::new(&exe)
+            .args(["fabric", "start", "--foreground"])
+            .exec();
+        // If exec fails, write error and exit
+        eprintln!("exec failed: {err}");
+        std::process::exit(1);
+    }
+
+    // Parent: wait for intermediate child to exit (reap it, no zombie)
+    unsafe {
+        let mut status: libc::c_int = 0;
+        libc::waitpid(pid1, &mut status, 0);
+    }
+
+    // Wait briefly for the grandchild daemon to start and write PID file
     std::thread::sleep(std::time::Duration::from_millis(500));
     if let Some(pid) = syfrah_fabric::store::read_pid() {
         println!("Daemon started (pid {pid}).");
     } else {
-        // Use the spawned child PID as fallback
-        println!("Daemon started (pid {}).", child.id());
+        println!("Daemon starting in background...");
     }
     println!("Run 'syfrah fabric status' to check.");
     Ok(())
+}
+
+#[cfg(not(unix))]
+fn background_daemon() -> Result<()> {
+    anyhow::bail!("background daemon is only supported on Unix. Use --foreground instead.");
 }
 
 #[tokio::main]
@@ -333,12 +377,12 @@ async fn run() -> Result<()> {
                     setup_logging(true);
                     cli::start::run().await
                 } else {
-                    // Verify state exists before spawning background daemon
-                    if !syfrah_fabric::store::exists() {
-                        anyhow::bail!(
+                    // Validate state can be loaded before spawning background daemon
+                    syfrah_fabric::store::load().map_err(|_| {
+                        anyhow::anyhow!(
                             "no mesh state found. Run 'syfrah init' or 'syfrah join' first."
-                        );
-                    }
+                        )
+                    })?;
                     background_daemon()
                 }
             }
