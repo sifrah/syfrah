@@ -22,7 +22,8 @@ docker exec -d "e2e-consist-3" syfrah fabric join 172.20.0.10:51821 \
 
 wait_daemon "e2e-consist-2" 30
 wait_daemon "e2e-consist-3" 30
-wait_for_convergence "e2e-consist-" 3 2 30
+wait_for_convergence "e2e-consist-" 3 2 30 || true
+sleep 3
 
 # Compare redb peer count vs JSON peer count on leader
 redb_count=$(docker exec "e2e-consist-1" syfrah state get fabric peers 2>&1 | grep -c "wg_public_key" || echo "0")

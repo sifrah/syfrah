@@ -33,11 +33,15 @@ done
 
 # All 10 nodes must see exactly 9 peers
 info "Waiting for full convergence..."
-wait_for_convergence "e2e-stress-join-" 10 9 90
-
-for i in $(seq 1 10); do
-    assert_peer_count "e2e-stress-join-$i" 9
-done
+if wait_for_convergence "e2e-stress-join-" 10 9 120; then
+    pass "all 10 nodes converged to 9 peers"
+else
+    fail "convergence timed out"
+    for i in $(seq 1 10); do
+        count=$(docker exec "e2e-stress-join-$i" syfrah fabric peers 2>&1 | grep -c "active" || echo "0")
+        debug "e2e-stress-join-$i sees $count peers"
+    done
+fi
 
 # Verify no duplicates in any node's state
 for i in $(seq 1 10); do

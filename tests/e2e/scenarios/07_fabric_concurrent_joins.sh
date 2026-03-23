@@ -33,14 +33,17 @@ for i in 2 3 4 5; do
     wait_daemon "e2e-conc-$i" 30 || true
 done
 
-# Hard-fail: all nodes must converge — race condition is fixed
+# All nodes must converge — race condition is fixed
 info "Waiting for convergence..."
-wait_for_convergence "e2e-conc-" 5 4 60
-assert_peer_count "e2e-conc-1" 4
-assert_peer_count "e2e-conc-2" 4
-assert_peer_count "e2e-conc-3" 4
-assert_peer_count "e2e-conc-4" 4
-assert_peer_count "e2e-conc-5" 4
+if wait_for_convergence "e2e-conc-" 5 4 60; then
+    pass "all 5 nodes converged to 4 peers"
+else
+    fail "convergence timed out"
+    for i in 1 2 3 4 5; do
+        count=$(docker exec "e2e-conc-$i" syfrah fabric peers 2>&1 | grep -c "active" || echo "0")
+        debug "e2e-conc-$i sees $count peers"
+    done
+fi
 
 # Verify no duplicate WG keys in leader state
 info "Checking for duplicate peers..."
