@@ -85,6 +85,12 @@ enum FabricCommand {
     Stop,
     /// Show mesh and daemon status
     Status,
+    /// Show the event log
+    Events {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// List all peers
     Peers,
     /// Show the mesh secret
@@ -304,6 +310,10 @@ async fn main() -> Result<()> {
             FabricCommand::Status => {
                 setup_logging(false);
                 cli::status::run().await
+            }
+            FabricCommand::Events { json } => {
+                setup_logging(false);
+                cli::events::run(json).await
             }
             FabricCommand::Peers => {
                 setup_logging(false);

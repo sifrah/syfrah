@@ -20,6 +20,8 @@ pub struct Tuning {
     pub keepalive_interval: u16,
     pub join_timeout: Duration,
     pub exchange_timeout: Duration,
+    /// Maximum number of events to keep in the event log ring buffer.
+    pub max_events: u64,
 }
 
 impl Default for Tuning {
@@ -32,6 +34,7 @@ impl Default for Tuning {
             keepalive_interval: 25,
             join_timeout: Duration::from_secs(300),
             exchange_timeout: Duration::from_secs(30),
+            max_events: 100,
         }
     }
 }
@@ -44,6 +47,8 @@ struct ConfigFile {
     wireguard: WireguardSection,
     #[serde(default)]
     peering: PeeringSection,
+    #[serde(default)]
+    events: EventsSection,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -63,6 +68,11 @@ struct WireguardSection {
 struct PeeringSection {
     join_timeout: Option<u64>,
     exchange_timeout: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct EventsSection {
+    max_events: Option<u64>,
 }
 
 /// Load tuning from `~/.syfrah/config.toml`. Returns defaults if file
@@ -115,5 +125,6 @@ pub fn load_tuning() -> Result<Tuning, String> {
             .exchange_timeout
             .map(Duration::from_secs)
             .unwrap_or(defaults.exchange_timeout),
+        max_events: config.events.max_events.unwrap_or(defaults.max_events),
     })
 }
