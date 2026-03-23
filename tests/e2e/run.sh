@@ -17,14 +17,12 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FILTER="${1:-}"
 SKIP_BUILD="${SKIP_BUILD:-}"
 
-# Unique run ID to isolate parallel runs (each gets its own Docker network + subnet)
+# Network isolation: in DinD each job has its own Docker daemon, so fixed names are safe.
+# For parallel local runs, E2E_RUN_ID can be overridden.
 E2E_RUN_ID="${E2E_RUN_ID:-$$}"
 export E2E_NETWORK="syfrah-e2e-${E2E_RUN_ID}"
-# Generate a unique /24 subnet to avoid conflicts with parallel runs
-# Range: 172.20.<1-255>.0/24 (172.20.0.0/24 reserved for default)
-E2E_OCTET=$(( (E2E_RUN_ID % 255) + 1 ))
-export E2E_SUBNET="172.20.${E2E_OCTET}.0/24"
-export E2E_IP_PREFIX="172.20.${E2E_OCTET}"
+export E2E_SUBNET="172.20.0.0/24"
+export E2E_IP_PREFIX="172.20.0"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
