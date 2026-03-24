@@ -22,6 +22,15 @@ Open-source control plane to transform dedicated servers into a programmable clo
 - `wg.rs` — WireGuard interface management
 - `cli/` — CLI commands for `syfrah fabric ...`
 
+## Workflow
+- Project board: Backlog > Ready > In Progress > In Review > Done
+- Pick highest-priority, smallest task from Ready
+- Branch: `{issue-number}-{short-slug}` from `main`
+- Run `cargo fmt && cargo clippy && cargo test` before pushing
+- PR must include `Closes #N`
+- CI validates; green → merge + delete branch; red → fix + re-push
+- See `handbook/workflow.md` for the full contribution workflow
+
 ## Conventions
 - serde Serialize/Deserialize on all public types
 - thiserror for library errors, anyhow for binaries
