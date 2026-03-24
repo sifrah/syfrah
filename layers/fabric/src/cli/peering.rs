@@ -1,4 +1,5 @@
 use crate::control::{send_control_request, ControlRequest, ControlResponse};
+use crate::sanitize::sanitize;
 use crate::store;
 use crate::ui;
 use anyhow::Result;
@@ -87,7 +88,11 @@ pub async fn watch(pin: Option<String>) -> Result<()> {
                 seen.insert(req.request_id.clone());
 
                 let key_prefix = &req.wg_public_key[..20.min(req.wg_public_key.len())];
-                ui::join_request_card(&req.node_name, &req.endpoint.to_string(), key_prefix);
+                ui::join_request_card(
+                    &sanitize(&req.node_name),
+                    &req.endpoint.to_string(),
+                    key_prefix,
+                );
 
                 // Read from stdin
                 use std::io::Write;
@@ -105,11 +110,15 @@ pub async fn watch(pin: Option<String>) -> Result<()> {
                                 if ui::is_tty() {
                                     let green = console::Style::new().green();
                                     println!(
-                                        "     {} {peer_name} joined the mesh.\n",
-                                        green.apply_to("\u{2713}")
+                                        "     {} {} joined the mesh.\n",
+                                        green.apply_to("\u{2713}"),
+                                        sanitize(&peer_name)
                                     );
                                 } else {
-                                    println!("  Accepted: {peer_name} joined the mesh.\n");
+                                    println!(
+                                        "  Accepted: {} joined the mesh.\n",
+                                        sanitize(&peer_name)
+                                    );
                                 }
                             }
                             Ok(ControlResponse::Error { message }) => {
@@ -201,7 +210,7 @@ pub async fn list() -> Result<()> {
                     println!(
                         "{:<10} {:<16} {:<22} {:<20}",
                         r.request_id,
-                        truncate(&r.node_name, 15),
+                        truncate(&sanitize(&r.node_name), 15),
                         r.endpoint,
                         truncate(&r.wg_public_key, 19),
                     );
@@ -223,7 +232,7 @@ pub async fn accept(request_id: &str) -> Result<()> {
     .await?;
     match resp {
         ControlResponse::PeeringAccepted { peer_name } => {
-            ui::step_ok(&sp, &format!("{peer_name} joined the mesh."));
+            ui::step_ok(&sp, &format!("{} joined the mesh.", sanitize(&peer_name)));
         }
         ControlResponse::Error { message } => {
             ui::step_fail(&sp, &format!("Failed: {message}"));
