@@ -14,6 +14,15 @@ Open-source control plane to transform dedicated servers into a programmable clo
 - `layers/{forge,compute,storage,overlay,controlplane,org,iam,products}` — Future layers (README only)
 - `handbook/` — Project handbook (cross-cutting docs)
 
+## Workflow
+- Project board: Backlog > Ready > In Progress > In Review > Done
+- Pick highest-priority, smallest task from Ready
+- Branch: `{issue-number}-{short-slug}` from `main`
+- Run `cargo fmt && cargo clippy && cargo test` before pushing
+- PR must include `Closes #N`
+- CI validates; green → merge + delete branch; red → fix + re-push
+- See `handbook/workflow.md` for the full contribution workflow
+
 ## Key Modules (layers/fabric/src/)
 - `peering.rs` — TCP peering protocol (join requests, peer announcements, PIN auto-accept)
 - `control.rs` — Unix domain socket for CLI-daemon communication
