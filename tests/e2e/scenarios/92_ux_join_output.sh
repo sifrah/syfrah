@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 
 echo "── UX: Join Output ──"
+trap cleanup EXIT
 create_network
 
 start_node "e2e-ux-join-1" "172.20.0.10"

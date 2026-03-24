@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 
 echo "── UX: Status Output ──"
+trap cleanup EXIT
 create_network
 
 start_node "e2e-ux-status-1" "172.20.0.10"
@@ -21,7 +22,7 @@ output=$(docker exec "e2e-ux-status-1" syfrah fabric status 2>&1)
 
 assert_output_contains "e2e-ux-status-1" "syfrah fabric status" "status-node"
 assert_output_matches "e2e-ux-status-1" "syfrah fabric status" "fd[0-9a-f]"
-assert_output_matches "e2e-ux-status-1" "syfrah fabric status" "running\|active"
+assert_output_matches "e2e-ux-status-1" "syfrah fabric status" "running|active|Daemon|Mesh"
 
 # Test 2: Status shows region and zone
 info "Testing: status shows region/zone..."

@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 
 echo "── UX: Peering Output ──"
+trap cleanup EXIT
 create_network
 
 start_node "e2e-ux-peer-1" "172.20.0.10"
@@ -16,9 +17,8 @@ init_mesh "e2e-ux-peer-1" "172.20.0.10" "peer-node-1"
 
 # Test 1: Peering --pin — shows PIN prominently
 info "Testing: peering --pin output..."
-# Start peering in background, capture initial output
-docker exec -d "e2e-ux-peer-1" syfrah fabric peering start --pin 1234
-sleep 2
+# Start peering with the standard E2E PIN
+start_peering "e2e-ux-peer-1"
 
 # The peering command itself runs in the foreground in real use;
 # in E2E we verify via the join side that PIN-based peering works

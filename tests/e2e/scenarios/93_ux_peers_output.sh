@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 
 echo "── UX: Peers Output ──"
+trap cleanup EXIT
 create_network
 
 start_node "e2e-ux-peers-1" "172.20.0.10"
