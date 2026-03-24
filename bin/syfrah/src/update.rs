@@ -6,6 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
+use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
 use syfrah_fabric::ui;
 
@@ -46,25 +47,21 @@ fn is_newer(current: &str, latest: &str) -> bool {
     }
 }
 
-/// Determine the expected binary asset name for the current platform.
-fn asset_name() -> Result<String> {
-    let os = if cfg!(target_os = "linux") {
-        "linux"
-    } else if cfg!(target_os = "macos") {
-        "darwin"
-    } else {
-        bail!("unsupported OS for self-update");
-    };
+/// Return the Rust target triple for the current platform.
+fn platform_target() -> Result<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => Ok("x86_64-unknown-linux-musl"),
+        ("linux", "aarch64") => Ok("aarch64-unknown-linux-musl"),
+        ("macos", "x86_64") => Ok("x86_64-apple-darwin"),
+        ("macos", "aarch64") => Ok("aarch64-apple-darwin"),
+        (os, arch) => bail!("unsupported platform for self-update: {os}/{arch}"),
+    }
+}
 
-    let arch = if cfg!(target_arch = "x86_64") {
-        "amd64"
-    } else if cfg!(target_arch = "aarch64") {
-        "arm64"
-    } else {
-        bail!("unsupported architecture for self-update");
-    };
-
-    Ok(format!("syfrah-{os}-{arch}"))
+/// Determine the expected archive asset name for the current platform and version.
+fn asset_name(version: &str) -> Result<String> {
+    let target = platform_target()?;
+    Ok(format!("syfrah-{version}-{target}.tar.gz"))
 }
 
 /// Fetch the latest release metadata from GitHub.
@@ -126,7 +123,7 @@ pub fn run() -> Result<()> {
     ui::step_ok(&sp, &format!("Update available: v{current} -> {latest}"));
 
     // Step 2: find the right asset
-    let target = asset_name()?;
+    let target = asset_name(latest)?;
     let binary_asset = release
         .assets
         .iter()
@@ -193,9 +190,27 @@ pub fn run() -> Result<()> {
     }
     ui::step_ok(&sp, "Checksum verified");
 
-    // Step 6: atomic replace
+    // Step 6: extract binary from tar.gz and atomic replace
     let sp = ui::spinner("Installing update...");
     let current_exe = std::env::current_exe().context("failed to determine current executable")?;
+
+    // Extract the "syfrah" binary from the tar.gz archive
+    let decoder = GzDecoder::new(std::io::Cursor::new(&binary_data));
+    let mut archive = tar::Archive::new(decoder);
+    let mut extracted_binary = None;
+    for entry in archive.entries().context("failed to read tar entries")? {
+        let mut entry = entry.context("failed to read tar entry")?;
+        let path = entry.path().context("failed to read entry path")?;
+        if path.file_name().and_then(|n| n.to_str()) == Some("syfrah") {
+            let mut buf = Vec::new();
+            entry
+                .read_to_end(&mut buf)
+                .context("failed to read syfrah binary from archive")?;
+            extracted_binary = Some(buf);
+            break;
+        }
+    }
+    let binary_data = extracted_binary.context("archive does not contain a 'syfrah' binary")?;
 
     // Write to a temp file next to the current binary
     let parent = current_exe
@@ -265,11 +280,31 @@ mod tests {
     }
 
     #[test]
+    fn test_platform_target() {
+        let target = platform_target().unwrap();
+        // Must be one of the four supported targets
+        let valid = [
+            "x86_64-unknown-linux-musl",
+            "aarch64-unknown-linux-musl",
+            "x86_64-apple-darwin",
+            "aarch64-apple-darwin",
+        ];
+        assert!(valid.contains(&target), "unexpected target: {target}");
+    }
+
+    #[test]
     fn test_asset_name() {
-        let name = asset_name().unwrap();
-        assert!(name.starts_with("syfrah-"));
-        // Should contain OS and arch
-        assert!(name.contains("linux") || name.contains("darwin"));
-        assert!(name.contains("amd64") || name.contains("arm64"));
+        let name = asset_name("v0.3.0").unwrap();
+        assert!(name.starts_with("syfrah-v0.3.0-"));
+        assert!(name.ends_with(".tar.gz"));
+        // Should contain a valid Rust target triple
+        assert!(
+            name.contains("x86_64") || name.contains("aarch64"),
+            "missing arch in {name}"
+        );
+        assert!(
+            name.contains("linux-musl") || name.contains("apple-darwin"),
+            "missing OS in {name}"
+        );
     }
 }
