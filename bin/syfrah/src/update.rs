@@ -9,8 +9,7 @@ use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 use syfrah_fabric::ui;
 
-const GITHUB_API_URL: &str =
-    "https://api.github.com/repos/sifrah/syfrah/releases/latest";
+const GITHUB_API_URL: &str = "https://api.github.com/repos/sifrah/syfrah/releases/latest";
 
 /// Represents a GitHub release.
 #[derive(serde::Deserialize)]
@@ -76,9 +75,7 @@ fn fetch_latest_release() -> Result<Release> {
         .call()
         .context("failed to query GitHub releases API")?;
 
-    let release: Release = resp
-        .into_json()
-        .context("failed to parse release JSON")?;
+    let release: Release = resp.into_json().context("failed to parse release JSON")?;
     Ok(release)
 }
 
@@ -99,16 +96,10 @@ pub fn check() -> Result<bool> {
     let latest = &release.tag_name;
 
     if is_newer(current, latest) {
-        ui::step_ok(
-            &sp,
-            &format!("Update available: v{current} -> {latest}"),
-        );
+        ui::step_ok(&sp, &format!("Update available: v{current} -> {latest}"));
         Ok(true)
     } else {
-        ui::step_ok(
-            &sp,
-            &format!("Already up to date (v{current})"),
-        );
+        ui::step_ok(&sp, &format!("Already up to date (v{current})"));
         Ok(false)
     }
 }
@@ -132,10 +123,7 @@ pub fn run() -> Result<()> {
         ui::step_ok(&sp, &format!("Already up to date (v{current})"));
         return Ok(());
     }
-    ui::step_ok(
-        &sp,
-        &format!("Update available: v{current} -> {latest}"),
-    );
+    ui::step_ok(&sp, &format!("Update available: v{current} -> {latest}"));
 
     // Step 2: find the right asset
     let target = asset_name()?;
@@ -188,7 +176,10 @@ pub fn run() -> Result<()> {
         .take(256 * 1024 * 1024) // 256 MB limit
         .read_to_end(&mut binary_data)
         .context("failed to read binary data")?;
-    ui::step_ok(&sp, &format!("Downloaded {target} ({} bytes)", binary_data.len()));
+    ui::step_ok(
+        &sp,
+        &format!("Downloaded {target} ({} bytes)", binary_data.len()),
+    );
 
     // Step 5: verify checksum
     let sp = ui::spinner("Verifying checksum...");
@@ -198,9 +189,7 @@ pub fn run() -> Result<()> {
 
     if actual_hash != expected_hash {
         ui::step_fail(&sp, "Checksum mismatch");
-        bail!(
-            "checksum mismatch: expected {expected_hash}, got {actual_hash}"
-        );
+        bail!("checksum mismatch: expected {expected_hash}, got {actual_hash}");
     }
     ui::step_ok(&sp, "Checksum verified");
 
@@ -217,15 +206,17 @@ pub fn run() -> Result<()> {
     if let Err(e) = fs::write(&tmp_path, &binary_data) {
         ui::step_fail(&sp, "Failed to write update");
         if e.kind() == std::io::ErrorKind::PermissionDenied {
-            bail!("permission denied writing to {}. Try: sudo syfrah update", parent.display());
+            bail!(
+                "permission denied writing to {}. Try: sudo syfrah update",
+                parent.display()
+            );
         }
         bail!("failed to write temp file: {e}");
     }
 
     // chmod +x
     let perms = fs::Permissions::from_mode(0o755);
-    fs::set_permissions(&tmp_path, perms)
-        .context("failed to set executable permissions")?;
+    fs::set_permissions(&tmp_path, perms).context("failed to set executable permissions")?;
 
     // Atomic rename over the current binary
     if let Err(e) = fs::rename(&tmp_path, &current_exe) {
