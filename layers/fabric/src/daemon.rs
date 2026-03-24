@@ -62,7 +62,10 @@ pub fn setup_init(config: &DaemonConfig) -> anyhow::Result<DaemonReady> {
     let region = config
         .region
         .clone()
-        .unwrap_or_else(|| "region-1".to_string());
+        .unwrap_or_else(|| "default".to_string());
+    if config.region.is_none() {
+        ui::warn("No --region specified; using 'default'. Set --region to label this node.");
+    }
     let zone = config
         .zone
         .clone()
@@ -155,8 +158,8 @@ pub fn auto_init(
         public_endpoint: None,
         peering_port,
         peers: vec![],
-        region: Some("region-1".to_string()),
-        zone: Some("region-1-zone-1".to_string()),
+        region: Some("default".to_string()),
+        zone: Some("default-zone-1".to_string()),
         metrics: Default::default(),
     };
     store::save(&state)?;
@@ -195,8 +198,11 @@ pub async fn setup_join(
         config
             .region
             .clone()
-            .unwrap_or_else(|| "region-1".to_string()),
+            .unwrap_or_else(|| "default".to_string()),
     );
+    if config.region.is_none() {
+        ui::warn("No --region specified; using 'default'. Set --region to label this node.");
+    }
     let req_zone = config.zone.clone();
 
     let request = syfrah_core::mesh::JoinRequest {
@@ -264,7 +270,7 @@ async fn finalize_join(
     let region = config
         .region
         .clone()
-        .unwrap_or_else(|| "region-1".to_string());
+        .unwrap_or_else(|| "default".to_string());
     let zone = config
         .zone
         .clone()
@@ -1106,7 +1112,7 @@ impl ControlHandler for DaemonControlHandler {
                         // Use the joiner's region/zone from the request.
                         // If zone was not provided, auto-generate one
                         // using the current peer list.
-                        let region = info.region.unwrap_or_else(|| "region-1".to_string());
+                        let region = info.region.unwrap_or_else(|| "default".to_string());
                         let zone = info
                             .zone
                             .unwrap_or_else(|| store::generate_zone(&region, &state.peers));

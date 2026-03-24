@@ -45,8 +45,8 @@ else
 fi
 
 # Check that the leader sees the joiner's region/zone (not dashes)
-if echo "$output" | grep "node-2" | grep -q "region-1"; then
-    pass "leader sees joiner's region (region-1)"
+if echo "$output" | grep "node-2" | grep -q "default"; then
+    pass "leader sees joiner's region (default)"
 else
     fail "leader does not see joiner's region"
     echo "$output"
