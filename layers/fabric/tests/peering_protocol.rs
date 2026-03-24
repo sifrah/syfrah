@@ -349,7 +349,11 @@ fn pin_is_6_alphanumeric_chars() {
         );
         // Should not contain ambiguous characters
         assert!(
-            !pin.contains('0') && !pin.contains('O') && !pin.contains('1') && !pin.contains('I') && !pin.contains('L'),
+            !pin.contains('0')
+                && !pin.contains('O')
+                && !pin.contains('1')
+                && !pin.contains('I')
+                && !pin.contains('L'),
             "PIN should not contain ambiguous characters (0, O, 1, I, L), got: {pin}"
         );
     }
@@ -373,7 +377,10 @@ fn pin_rate_limiter_locks_out_after_max_attempts() {
 
     // A different IP should not be locked out
     let other_ip: IpAddr = "192.168.1.2".parse().unwrap();
-    assert!(!rl.is_locked_out(other_ip), "different IP should not be locked out");
+    assert!(
+        !rl.is_locked_out(other_ip),
+        "different IP should not be locked out"
+    );
 }
 
 use std::net::IpAddr;
@@ -479,10 +486,7 @@ async fn rate_limited_ip_gets_rejection() {
         Ok(Ok(resp)) => {
             assert!(!resp.accepted, "rate-limited request should be rejected");
             assert!(
-                resp.reason
-                    .as_deref()
-                    .unwrap_or("")
-                    .contains("too many"),
+                resp.reason.as_deref().unwrap_or("").contains("too many"),
                 "rejection reason should mention rate limiting"
             );
         }

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Mutex, oneshot, RwLock};
+use tokio::sync::{oneshot, Mutex, RwLock};
 use tracing::{debug, info, warn};
 
 use syfrah_core::mesh::{
@@ -320,10 +320,13 @@ async fn handle_incoming(
                                 mesh_secret: None,
                                 mesh_prefix: None,
                                 peers: vec![],
-                                reason: Some("too many failed PIN attempts, try again later".into()),
+                                reason: Some(
+                                    "too many failed PIN attempts, try again later".into(),
+                                ),
                                 approved_by: None,
                             };
-                            write_message(&mut stream, &PeeringMessage::JoinResponse(rejection)).await?;
+                            write_message(&mut stream, &PeeringMessage::JoinResponse(rejection))
+                                .await?;
                             return Ok(());
                         }
                     }
