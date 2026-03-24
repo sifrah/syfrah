@@ -20,10 +20,15 @@ Every merge to `main` automatically produces a new GitHub Release. There is no m
    | `[Feature]` or `feat:` | Minor (0.X.0) | `0.2.0 -> 0.3.0` |
    | Anything else | Patch (0.0.X) | `0.2.0 -> 0.2.1` |
 
-4. **CI gate** -- the workflow waits for CI checks to pass before proceeding.
-5. **Cargo.toml bump** -- the workflow updates `version` in `[workspace.package]` in the root `Cargo.toml`, commits with `release: vX.Y.Z [skip ci]`, and pushes directly to `main`.
-6. **Build** -- all four targets are built in parallel (same matrix as CI).
-7. **Release** -- binaries are packaged into `.tar.gz` archives, `SHA256SUMS.txt` is generated, a git tag `vX.Y.Z` is created, and a GitHub Release is published with all artifacts.
+4. **Version validation** -- each build job verifies that the version in `Cargo.toml` matches the calculated release version. The build fails immediately if they differ.
+5. **Build** -- all four targets are built in parallel (same matrix as CI).
+6. **Release** -- binaries are packaged into `.tar.gz` archives, `SHA256SUMS.txt` is generated, a git tag `vX.Y.Z` is created, and a GitHub Release is published with all artifacts.
+
+### Keeping Cargo.toml in sync
+
+The binary version reported by `syfrah --version` comes from `CARGO_PKG_VERSION`, which is baked in at compile time from `Cargo.toml`. The release workflow validates that `Cargo.toml` matches the computed release version and **will fail the build if they differ**.
+
+**Before merging a version-bumping PR**, update `version` in `[workspace.package]` in the root `Cargo.toml` to match the version that the release workflow will compute. All crates inherit this version via `version.workspace = true`.
 
 ### Influencing the version bump
 
