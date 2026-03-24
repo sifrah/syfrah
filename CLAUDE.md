@@ -14,6 +14,13 @@ Open-source control plane to transform dedicated servers into a programmable clo
 - `layers/{forge,compute,storage,overlay,controlplane,org,iam,products}` — Future layers (README only)
 - `handbook/` — Project handbook (cross-cutting docs)
 
+## Workflow
+- See `handbook/workflow.md` for the full contribution workflow
+- GitHub Project board (Kanban): Backlog → Ready → In Progress → In Review → Done
+- Only `task`-labeled issues are codable — pick from Ready, highest priority first
+- Branch naming: `{issue-number}-{short-slug}`
+- PR must pass CI before merge. Delete branch after merge.
+
 ## Key Modules (layers/fabric/src/)
 - `peering.rs` — TCP peering protocol (join requests, peer announcements, PIN auto-accept)
 - `control.rs` — Unix domain socket for CLI-daemon communication
