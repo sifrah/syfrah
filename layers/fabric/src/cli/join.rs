@@ -1,6 +1,5 @@
 use crate::daemon::{self, DaemonConfig};
-use crate::store;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::net::SocketAddr;
 
 pub async fn run(
@@ -12,12 +11,6 @@ pub async fn run(
     region: Option<String>,
     zone: Option<String>,
 ) -> Result<()> {
-    if store::exists() {
-        anyhow::bail!(
-            "Mesh state already exists. Run 'syfrah fabric leave' first to clear it, then retry the join."
-        );
-    }
-
     // Parse target: "1.2.3.4" → "1.2.3.4:51821", or "1.2.3.4:9999" as-is
     let target_addr: SocketAddr = if target.contains(':') {
         target
@@ -43,7 +36,4 @@ pub async fn run(
         pin,
     )
     .await
-    .context(format!(
-        "Failed to join mesh via {target}. Check that the target node is running and peering is active."
-    ))
 }
