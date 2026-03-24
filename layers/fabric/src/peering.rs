@@ -15,6 +15,7 @@ use syfrah_core::mesh::{
 };
 
 use crate::events::{self, EventType};
+use crate::sanitize::sanitize;
 
 const JOIN_TIMEOUT: Duration = Duration::from_secs(300);
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -284,19 +285,19 @@ async fn handle_incoming(
                 req.endpoint = SocketAddr::new(peer_addr.ip(), req.wg_listen_port);
                 info!(
                     "auto-detected endpoint for {}: {}",
-                    req.node_name, req.endpoint
+                    sanitize(&req.node_name), req.endpoint
                 );
             }
 
             info!(
-                node = %req.node_name,
+                node = %sanitize(&req.node_name),
                 endpoint = %req.endpoint,
                 request_id = %req.request_id,
                 "join request received"
             );
             events::emit(
                 EventType::JoinRequestReceived,
-                Some(&req.node_name),
+                Some(&sanitize(&req.node_name)),
                 Some(&req.endpoint.to_string()),
                 Some(&format!("request_id={}", req.request_id)),
                 None,
@@ -309,7 +310,7 @@ async fn handle_incoming(
                     p.name == req.node_name && p.status == syfrah_core::mesh::PeerStatus::Active
                 }) {
                     warn!(
-                        node = %req.node_name,
+                        node = %sanitize(&req.node_name),
                         "node name already in mesh — accepting will replace the old peer entry"
                     );
                 }
@@ -320,10 +321,10 @@ async fn handle_incoming(
                 let auto = auto_accept.read().await;
                 if let Some(ref config) = *auto {
                     if config.pin == *req_pin {
-                        info!(node = %req.node_name, request_id = %req.request_id, "PIN matched, auto-accepting");
+                        info!(node = %sanitize(&req.node_name), request_id = %req.request_id, "PIN matched, auto-accepting");
                         events::emit(
                             EventType::JoinAutoAccepted,
-                            Some(&req.node_name),
+                            Some(&sanitize(&req.node_name)),
                             Some(&req.endpoint.to_string()),
                             Some("pin-matched"),
                             None,
@@ -360,7 +361,7 @@ async fn handle_incoming(
                     .find(|p| p.info.node_name == info.node_name)
                     .map(|p| p.info.request_id.clone());
                 if let Some(old_id) = stale_id {
-                    info!(node = %info.node_name, old_request_id = %old_id, "replacing stale join request");
+                    info!(node = %sanitize(&info.node_name), old_request_id = %old_id, "replacing stale join request");
                     map.remove(&old_id);
                 }
                 // Enforce pending queue limit.
@@ -392,7 +393,7 @@ async fn handle_incoming(
                     map.remove(&req.request_id);
                     events::emit(
                         EventType::JoinTimeout,
-                        Some(&pending_node_name),
+                        Some(&sanitize(&pending_node_name)),
                         Some(&pending_endpoint),
                         Some(&format!("request_id={}", req.request_id)),
                         None,
@@ -417,7 +418,7 @@ async fn handle_incoming(
                 encryption_key.ok_or_else(|| PeeringError::Protocol("no encryption key".into()))?;
             let record = decrypt_record(&ciphertext, &enc_key)?;
             info!(
-                peer = %record.name,
+                peer = %sanitize(&record.name),
                 ipv6 = %record.mesh_ipv6,
                 from = %peer_addr,
                 "peer announce received"
@@ -571,17 +572,17 @@ pub async fn announce_peer_to_mesh(
             continue;
         }
         if let Err(e) = announce_peer(peer.endpoint, peering_port, record, encryption_key).await {
-            warn!(target_peer = %peer.name, target_endpoint = %peer.endpoint, error = %e, "announcement failed after retries");
+            warn!(target_peer = %sanitize(&peer.name), target_endpoint = %peer.endpoint, error = %e, "announcement failed after retries");
             events::emit(
                 EventType::PeerAnnounceFailed,
-                Some(&peer.name),
+                Some(&sanitize(&peer.name)),
                 Some(&peer.endpoint.to_string()),
                 Some(&format!("error={e}")),
                 None,
             );
             failed += 1;
         } else {
-            debug!(target_peer = %peer.name, record = %record.name, "announced peer");
+            debug!(target_peer = %sanitize(&peer.name), record = %sanitize(&record.name), "announced peer");
             succeeded += 1;
         }
     }

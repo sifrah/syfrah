@@ -1,5 +1,6 @@
 use std::time::SystemTime;
 
+use crate::sanitize::sanitize;
 use crate::{store, wg};
 use anyhow::Result;
 use syfrah_core::mesh::PeerStatus;
@@ -53,14 +54,14 @@ pub async fn run() -> Result<()> {
             ("-".into(), "-".into())
         };
 
-        let region = peer.region.as_deref().unwrap_or("-");
-        let zone = peer.zone.as_deref().unwrap_or("-");
+        let region = peer.region.as_deref().map(sanitize).unwrap_or_else(|| "-".into());
+        let zone = peer.zone.as_deref().map(sanitize).unwrap_or_else(|| "-".into());
 
         println!(
             "{:<18} {:<20} {:<24} {:<22} {:>8} {:>10} {:>10}",
-            truncate(&peer.name, 17),
-            truncate(region, 19),
-            truncate(zone, 23),
+            truncate(&sanitize(&peer.name), 17),
+            truncate(&region, 19),
+            truncate(&zone, 23),
             peer.endpoint,
             status,
             handshake_str,

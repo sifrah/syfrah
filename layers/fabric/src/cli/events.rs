@@ -1,6 +1,7 @@
 use anyhow::Result;
 
 use crate::events;
+use crate::sanitize::sanitize;
 
 pub async fn run(json: bool) -> Result<()> {
     let events =
@@ -30,14 +31,14 @@ pub async fn run(json: bool) -> Result<()> {
 
     for event in &events {
         let ts = format_timestamp(event.timestamp);
-        let peer = event.peer_name.as_deref().unwrap_or("-");
-        let details = event.details.as_deref().unwrap_or("");
+        let peer = event.peer_name.as_deref().map(sanitize).unwrap_or_else(|| "-".into());
+        let details = event.details.as_deref().map(sanitize).unwrap_or_default();
 
         println!(
             "{:<20} {:<24} {:<18} {}",
             ts,
             event.event_type.to_string(),
-            truncate(peer, 17),
+            truncate(&peer, 17),
             details,
         );
     }
