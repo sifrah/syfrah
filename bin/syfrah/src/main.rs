@@ -37,6 +37,12 @@ enum Commands {
         /// Only check if an update is available, don't install
         #[arg(long)]
         check: bool,
+        /// Skip automatic daemon restart (print manual instructions instead)
+        #[arg(long)]
+        no_restart: bool,
+        /// Skip confirmation when the node has active connections
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -510,12 +516,16 @@ async fn run() -> Result<()> {
             }
         },
         Commands::State { command } => syfrah_state::cli::run(command).await,
-        Commands::Update { check } => {
+        Commands::Update {
+            check,
+            no_restart,
+            force,
+        } => {
             if check {
                 update::check()?;
                 Ok(())
             } else {
-                update::run()
+                update::run(no_restart, force)
             }
         }
     }
