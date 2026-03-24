@@ -329,6 +329,16 @@ pub fn upsert_peer_bounded(peer: &PeerRecord, max_peers: usize) -> Result<bool, 
     Ok(true)
 }
 
+/// Check whether a peer with the given WG public key exists in the store.
+pub fn peer_exists(wg_public_key: &str) -> Result<bool, StoreError> {
+    if !LayerDb::layer_exists(LAYER_NAME) {
+        return Ok(false);
+    }
+    let db = open_db()?;
+    let existing: Option<PeerRecord> = db.get("peers", wg_public_key)?;
+    Ok(existing.is_some())
+}
+
 /// Return the number of stored peers.
 pub fn peer_count() -> Result<usize, StoreError> {
     if !LayerDb::layer_exists(LAYER_NAME) {

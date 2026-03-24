@@ -124,11 +124,16 @@ pub fn apply_peers(self_pubkey: &Key, peers: &[PeerRecord]) -> Result<(), WgErro
 
 /// Incrementally add or update a single peer, enforcing a maximum peer count.
 /// Returns `Err(WgError::PeerLimitExceeded)` if the peer is new and the
-/// WireGuard interface already has `max_peers` peers configured.
+/// current peer count already meets or exceeds `max_peers`.
+///
+/// `peer_count` and `peer_exists` are caller-supplied so that we avoid an
+/// O(n) `get_device()` call on every invocation.
 pub fn upsert_peer_bounded(
     self_pubkey: &Key,
     peer: &PeerRecord,
     max_peers: usize,
+    peer_count: usize,
+    peer_exists: bool,
 ) -> Result<(), WgError> {
     let peer_key = Key::from_base64(&peer.wg_public_key)
         .map_err(|_| WgError::InvalidKey(peer.wg_public_key.clone()))?;
@@ -138,12 +143,11 @@ pub fn upsert_peer_bounded(
     }
 
     // For non-removal operations, check the limit
-    if peer.status != syfrah_core::mesh::PeerStatus::Removed {
-        let device = get_device()?;
-        let already_exists = device.peers.iter().any(|p| p.config.public_key == peer_key);
-        if !already_exists && device.peers.len() >= max_peers {
-            return Err(WgError::PeerLimitExceeded(device.peers.len(), max_peers));
-        }
+    if peer.status != syfrah_core::mesh::PeerStatus::Removed
+        && !peer_exists
+        && peer_count >= max_peers
+    {
+        return Err(WgError::PeerLimitExceeded(peer_count, max_peers));
     }
 
     upsert_peer(self_pubkey, peer)
