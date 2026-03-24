@@ -455,7 +455,7 @@ async fn rate_limited_ip_gets_rejection() {
         let target: SocketAddr = format!("127.0.0.1:{peering_port}").parse().unwrap();
         // These will go to pending after the 2s delay; just fire and let them timeout
         let _ = tokio::time::timeout(
-            Duration::from_secs(4),
+            Duration::from_secs(10),
             send_join_request(target, join_request),
         )
         .await;
