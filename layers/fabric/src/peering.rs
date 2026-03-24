@@ -649,6 +649,16 @@ async fn handle_incoming(
 
             let record = decrypt_record(&ciphertext, &enc_key)?;
 
+            // Validate record fields (including WG key format) before any
+            // further processing to prevent malformed data from reaching
+            // crypto operations or downstream consumers.
+            if let Err(e) = validate_peer_record(&record) {
+                warn!(from = %peer_addr, error = %e, "rejecting peer announce: validation failed");
+                return Err(PeeringError::Protocol(format!(
+                    "invalid peer announce: {e}"
+                )));
+            }
+
             // Replay protection: reject announces with stale timestamps.
             if ReplayGuard::is_stale(record.last_seen) {
                 let age = now().saturating_sub(record.last_seen);
@@ -660,14 +670,6 @@ async fn handle_incoming(
                     "stale announce rejected"
                 );
                 return Ok(());
-            }
-
-            // Validate record fields
-            if let Err(e) = validate_peer_record(&record) {
-                warn!(from = %peer_addr, error = %e, "rejecting peer announce: validation failed");
-                return Err(PeeringError::Protocol(format!(
-                    "invalid peer announce: {e}"
-                )));
             }
 
             // Reject status=Removed from peer announces — only a node can remove itself
