@@ -30,9 +30,11 @@ impl MeshSecret {
         Self { bytes }
     }
 
+    /// RNG policy: all cryptographic material MUST use OsRng to draw
+    /// directly from the operating-system entropy source.
     pub fn generate() -> Self {
         let mut bytes = [0u8; SECRET_BYTES];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut bytes);
         Self { bytes }
     }
 
