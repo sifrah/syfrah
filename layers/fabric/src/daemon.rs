@@ -448,7 +448,10 @@ pub async fn run_daemon(
     );
 
     let wg_pubkey = wg_keypair.public.clone();
-    let peering_state = Arc::new(PeeringState::new());
+    let peering_state = Arc::new(PeeringState::with_limits(
+        tuning.max_concurrent_connections,
+        tuning.max_pending_joins,
+    ));
     let enc_key = mesh_secret.encryption_key();
 
     let metrics_received = Arc::new(AtomicU64::new(0));
@@ -569,6 +572,7 @@ pub async fn run_daemon(
     let persist_recv = metrics_received.clone();
     let persist_recon = metrics_reconciliations.clone();
     let persist_unreach = metrics_unreachable.clone();
+    let persist_peering_state = peering_state.clone();
     let persist = async {
         let mut interval = tokio::time::interval(tuning.persist_interval);
         loop {
@@ -580,6 +584,14 @@ pub async fn run_daemon(
                 persist_unreach.load(Ordering::Relaxed),
             );
             let _ = store::set_metric("daemon_started_at", daemon_started);
+            let _ = store::set_metric(
+                "connections_rejected",
+                persist_peering_state.connections_rejected(),
+            );
+            let _ = store::set_metric(
+                "connections_active",
+                persist_peering_state.connections_active(),
+            );
         }
     };
 

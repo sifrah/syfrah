@@ -22,6 +22,10 @@ pub struct Tuning {
     pub exchange_timeout: Duration,
     /// Maximum number of events to keep in the event log ring buffer.
     pub max_events: u64,
+    /// Maximum concurrent peering connections (default 100).
+    pub max_concurrent_connections: usize,
+    /// Maximum pending join requests (default 100).
+    pub max_pending_joins: usize,
 }
 
 impl Default for Tuning {
@@ -35,6 +39,8 @@ impl Default for Tuning {
             join_timeout: Duration::from_secs(300),
             exchange_timeout: Duration::from_secs(30),
             max_events: 100,
+            max_concurrent_connections: 100,
+            max_pending_joins: 100,
         }
     }
 }
@@ -68,6 +74,8 @@ struct WireguardSection {
 struct PeeringSection {
     join_timeout: Option<u64>,
     exchange_timeout: Option<u64>,
+    max_concurrent_connections: Option<usize>,
+    max_pending_joins: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -126,5 +134,13 @@ pub fn load_tuning() -> Result<Tuning, String> {
             .map(Duration::from_secs)
             .unwrap_or(defaults.exchange_timeout),
         max_events: config.events.max_events.unwrap_or(defaults.max_events),
+        max_concurrent_connections: config
+            .peering
+            .max_concurrent_connections
+            .unwrap_or(defaults.max_concurrent_connections),
+        max_pending_joins: config
+            .peering
+            .max_pending_joins
+            .unwrap_or(defaults.max_pending_joins),
     })
 }
