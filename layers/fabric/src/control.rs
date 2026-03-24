@@ -276,6 +276,8 @@ mod tests {
 
     #[tokio::test]
     async fn control_slow_client_times_out() {
+        tokio::time::pause();
+
         use std::sync::atomic::{AtomicBool, Ordering};
         use tokio::net::UnixListener;
 
@@ -304,7 +306,7 @@ mod tests {
         // Accept the connection and handle it; should timeout within CONTROL_READ_TIMEOUT
         let (stream, _) = listener.accept().await.unwrap();
         let result = tokio::time::timeout(
-            Duration::from_secs(10),
+            CONTROL_READ_TIMEOUT + Duration::from_secs(1),
             handle_control_connection(stream, handler),
         )
         .await
