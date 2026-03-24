@@ -55,8 +55,8 @@ for i in $(seq 1 $NODE_COUNT); do
     # No epoch dates
     assert_no_epoch_dates "$node"
 
-    # Consistent peer count
-    assert_consistent_peer_count "$node"
+    # Correct peer count
+    assert_peer_count "$node" "$EXPECTED_PEERS"
 done
 
 cleanup

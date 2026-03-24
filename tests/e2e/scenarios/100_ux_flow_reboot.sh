@@ -26,8 +26,9 @@ assert_peer_count "e2e-flow-reboot-2" 1
 info "Step 1: Restarting server 2..."
 docker restart "e2e-flow-reboot-2"
 
-# Step 2: Wait for daemon to come back
+# Step 2: Wait for daemon to come back (container needs time to restart fully)
 info "Step 2: Waiting for daemon recovery..."
+sleep 5
 wait_daemon "e2e-flow-reboot-2" 60
 
 # Step 3: Status shows daemon running
