@@ -128,6 +128,10 @@ pub fn apply_peers(self_pubkey: &Key, peers: &[PeerRecord]) -> Result<(), WgErro
 ///
 /// `peer_count` and `peer_exists` are caller-supplied so that we avoid an
 /// O(n) `get_device()` call on every invocation.
+///
+/// **Note:** Because the caller reads these values before calling this function,
+/// there is a TOCTOU window: concurrent upserts may both pass the limit check.
+/// The peer cap is therefore a soft limit, not a hard guarantee.
 pub fn upsert_peer_bounded(
     self_pubkey: &Key,
     peer: &PeerRecord,
@@ -405,6 +409,124 @@ mod tests {
     fn iface_name_valid() {
         let name = iface_name().unwrap();
         assert_eq!(name.as_str_lossy(), INTERFACE_NAME);
+    }
+
+    fn make_peer(pubkey: &str, status: syfrah_core::mesh::PeerStatus) -> PeerRecord {
+        PeerRecord {
+            name: "test-peer".into(),
+            wg_public_key: pubkey.into(),
+            endpoint: "203.0.113.1:51820".parse().unwrap(),
+            mesh_ipv6: "fd12:3456:7800::1".parse().unwrap(),
+            last_seen: 0,
+            status,
+            region: None,
+            zone: None,
+        }
+    }
+
+    #[test]
+    fn upsert_peer_bounded_rejects_new_peer_at_limit() {
+        let self_kp = generate_keypair();
+        let peer_kp = generate_keypair();
+        let peer = make_peer(
+            &peer_kp.public.to_base64(),
+            syfrah_core::mesh::PeerStatus::Active,
+        );
+
+        let result = upsert_peer_bounded(&self_kp.public, &peer, 10, 10, false);
+        assert!(matches!(result, Err(WgError::PeerLimitExceeded(10, 10))));
+    }
+
+    #[test]
+    fn upsert_peer_bounded_rejects_new_peer_over_limit() {
+        let self_kp = generate_keypair();
+        let peer_kp = generate_keypair();
+        let peer = make_peer(
+            &peer_kp.public.to_base64(),
+            syfrah_core::mesh::PeerStatus::Active,
+        );
+
+        let result = upsert_peer_bounded(&self_kp.public, &peer, 5, 7, false);
+        assert!(matches!(result, Err(WgError::PeerLimitExceeded(7, 5))));
+    }
+
+    #[test]
+    fn upsert_peer_bounded_skips_self() {
+        let self_kp = generate_keypair();
+        let peer = make_peer(
+            &self_kp.public.to_base64(),
+            syfrah_core::mesh::PeerStatus::Active,
+        );
+
+        // Should succeed (no-op) even at limit, because it's self
+        let result = upsert_peer_bounded(&self_kp.public, &peer, 0, 0, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn upsert_peer_bounded_rejects_at_zero_max() {
+        let self_kp = generate_keypair();
+        let peer_kp = generate_keypair();
+        let peer = make_peer(
+            &peer_kp.public.to_base64(),
+            syfrah_core::mesh::PeerStatus::Active,
+        );
+
+        let result = upsert_peer_bounded(&self_kp.public, &peer, 0, 0, false);
+        assert!(matches!(result, Err(WgError::PeerLimitExceeded(0, 0))));
+    }
+
+    #[test]
+    fn upsert_peer_bounded_allows_existing_peer_at_limit() {
+        let self_kp = generate_keypair();
+        let peer_kp = generate_keypair();
+        let peer = make_peer(
+            &peer_kp.public.to_base64(),
+            syfrah_core::mesh::PeerStatus::Active,
+        );
+
+        // Existing peer (peer_exists=true) should pass even when at limit
+        let result = upsert_peer_bounded(&self_kp.public, &peer, 10, 10, true);
+        // This calls upsert_peer which requires a real WG interface, so it will
+        // fail with a WG error — but it should NOT fail with PeerLimitExceeded.
+        assert!(!matches!(result, Err(WgError::PeerLimitExceeded(_, _))));
+    }
+
+    #[test]
+    fn upsert_peer_bounded_allows_removal_at_limit() {
+        let self_kp = generate_keypair();
+        let peer_kp = generate_keypair();
+        let peer = make_peer(
+            &peer_kp.public.to_base64(),
+            syfrah_core::mesh::PeerStatus::Removed,
+        );
+
+        // Removed peer should pass even when at limit and not previously known
+        let result = upsert_peer_bounded(&self_kp.public, &peer, 10, 10, false);
+        assert!(!matches!(result, Err(WgError::PeerLimitExceeded(_, _))));
+    }
+
+    #[test]
+    fn upsert_peer_bounded_allows_new_peer_under_limit() {
+        let self_kp = generate_keypair();
+        let peer_kp = generate_keypair();
+        let peer = make_peer(
+            &peer_kp.public.to_base64(),
+            syfrah_core::mesh::PeerStatus::Active,
+        );
+
+        // New peer under limit should pass the limit check
+        let result = upsert_peer_bounded(&self_kp.public, &peer, 10, 5, false);
+        assert!(!matches!(result, Err(WgError::PeerLimitExceeded(_, _))));
+    }
+
+    #[test]
+    fn upsert_peer_bounded_invalid_key() {
+        let self_kp = generate_keypair();
+        let peer = make_peer("not-valid-base64", syfrah_core::mesh::PeerStatus::Active);
+
+        let result = upsert_peer_bounded(&self_kp.public, &peer, 10, 0, false);
+        assert!(matches!(result, Err(WgError::InvalidKey(_))));
     }
 
     // Integration tests (require root) are skipped in normal CI.

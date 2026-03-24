@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::Semaphore;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use wireguard_control::{Key, KeyPair};
 
 use syfrah_core::addressing;
@@ -572,9 +572,6 @@ pub async fn run_daemon(
     let metrics_unreachable = Arc::new(AtomicU64::new(0));
     let metrics_announces_dropped = Arc::new(AtomicU64::new(0));
     let metrics_peer_limit_reached = Arc::new(AtomicU64::new(0));
-    let metrics_health_check_failures = Arc::new(AtomicU64::new(0));
-    let metrics_reconcile_failures = Arc::new(AtomicU64::new(0));
-    let metrics_store_failures = Arc::new(AtomicU64::new(0));
     let daemon_started = now();
 
     // on_accepted callback: when a peer is accepted (manual or PIN), add to WG + store + announce
@@ -586,7 +583,6 @@ pub async fn run_daemon(
     let accepted_max_events = tuning.max_events;
     let accepted_max_peers = max_peers;
     let accepted_peer_limit_counter = metrics_peer_limit_reached.clone();
-    let accepted_store_failures = metrics_store_failures.clone();
     let on_accepted: peering::OnAccepted = Arc::new(move |new_record| {
         accepted_recv.fetch_add(1, Ordering::Relaxed);
         let pubkey = accepted_wg_pubkey.clone();
@@ -597,15 +593,13 @@ pub async fn run_daemon(
         let max_ev = accepted_max_events;
         let mp = accepted_max_peers;
         let plr = accepted_peer_limit_counter.clone();
-        let sf = accepted_store_failures.clone();
         tokio::spawn(async move {
-            // Check store peer limit before adding
+            // Check store peer limit before adding (fail closed: skip upsert on store error)
             let current_count = match store::peer_count() {
                 Ok(c) => c,
                 Err(e) => {
-                    warn!(error = %e, "on_accepted: failed to read peer count from store");
-                    sf.fetch_add(1, Ordering::Relaxed);
-                    0
+                    warn!(error = %e, "on_accepted: failed to read peer count, skipping upsert");
+                    return;
                 }
             };
             let threshold = mp * 4 / 5; // 80%
@@ -618,7 +612,13 @@ pub async fn run_daemon(
                 );
             }
 
-            let exists = store::peer_exists(&record.wg_public_key).unwrap_or(false);
+            let exists = match store::peer_exists(&record.wg_public_key) {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(error = %e, "on_accepted: failed to check peer existence, skipping upsert");
+                    return;
+                }
+            };
 
             // Add to WG (bounded)
             match wg::upsert_peer_bounded(&pubkey, &record, mp, current_count, exists) {
@@ -668,14 +668,7 @@ pub async fn run_daemon(
                 Ok(true) => {}
             }
             // Announce to existing peers
-            let known = match store::get_peers() {
-                Ok(peers) => peers,
-                Err(e) => {
-                    error!(error = %e, "on_accepted: failed to load peers for announce, skipping");
-                    sf.fetch_add(1, Ordering::Relaxed);
-                    return;
-                }
-            };
+            let known = store::get_peers().unwrap_or_default();
             let (_ok, failed) = peering::announce_peer_to_mesh(&record, &known, &enc, pp).await;
             if failed > 0 {
                 let _ = store::inc_metric("announcements_failed", failed as u64);
@@ -717,7 +710,6 @@ pub async fn run_daemon(
     let announce_dropped = metrics_announces_dropped.clone();
     let announce_peer_limit = metrics_peer_limit_reached.clone();
     let announce_max_peers = max_peers;
-    let announce_store_failures = metrics_store_failures.clone();
     let on_announce: Arc<dyn Fn(PeerRecord) + Send + Sync> = Arc::new(move |record| {
         announce_recv.fetch_add(1, Ordering::Relaxed);
         events::emit(
@@ -751,18 +743,16 @@ pub async fn run_daemon(
         let record = record.clone();
         let mp = announce_max_peers;
         let plr = announce_peer_limit.clone();
-        let sf = announce_store_failures.clone();
         let max_ev = announce_max_events;
         tokio::spawn(async move {
             let _permit = permit; // held until task completes
 
-            // Check store peer count before processing
+            // Check store peer count before processing (fail closed: skip on store error)
             let current_count = match store::peer_count() {
                 Ok(c) => c,
                 Err(e) => {
-                    warn!(error = %e, "on_announce: failed to read peer count from store");
-                    sf.fetch_add(1, Ordering::Relaxed);
-                    0
+                    warn!(error = %e, "on_announce: failed to read peer count, skipping upsert");
+                    return;
                 }
             };
             let threshold = mp * 4 / 5; // 80%
@@ -775,7 +765,13 @@ pub async fn run_daemon(
                 );
             }
 
-            let exists = store::peer_exists(&record.wg_public_key).unwrap_or(false);
+            let exists = match store::peer_exists(&record.wg_public_key) {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(error = %e, "on_announce: failed to check peer existence, skipping upsert");
+                    return;
+                }
+            };
 
             // Add to WG (bounded)
             match wg::upsert_peer_bounded(&pubkey, &record, mp, current_count, exists) {
@@ -837,9 +833,6 @@ pub async fn run_daemon(
     let persist_unreach = metrics_unreachable.clone();
     let persist_dropped = metrics_announces_dropped.clone();
     let persist_peer_limit = metrics_peer_limit_reached.clone();
-    let persist_health_failures = metrics_health_check_failures.clone();
-    let persist_reconcile_failures = metrics_reconcile_failures.clone();
-    let persist_store_failures = metrics_store_failures.clone();
     let persist_peering_state = peering_state.clone();
     let persist = async {
         let mut interval = tokio::time::interval(tuning.persist_interval);
@@ -865,18 +858,6 @@ pub async fn run_daemon(
                 "peer_limit_reached",
                 persist_peer_limit.load(Ordering::Relaxed),
             );
-            let _ = store::set_metric(
-                "health_check_failures",
-                persist_health_failures.load(Ordering::Relaxed),
-            );
-            let _ = store::set_metric(
-                "reconcile_failures",
-                persist_reconcile_failures.load(Ordering::Relaxed),
-            );
-            let _ = store::set_metric(
-                "store_failures",
-                persist_store_failures.load(Ordering::Relaxed),
-            );
         }
     };
 
@@ -885,32 +866,15 @@ pub async fn run_daemon(
     let health_counter = metrics_unreachable.clone();
     let health_recon = metrics_reconciliations.clone();
     let health_max_events = tuning.max_events;
-    let health_failures = metrics_health_check_failures.clone();
-    let health_store_failures = metrics_store_failures.clone();
     let health_check = async {
         let mut interval = tokio::time::interval(tuning.health_check_interval);
         loop {
             interval.tick().await;
 
             // Get WireGuard handshake data for all peers
-            let wg_peers = match wg::interface_summary() {
-                Ok(s) => s.peers,
-                Err(e) => {
-                    warn!(error = %e, "health check: WireGuard interface unavailable");
-                    health_failures.fetch_add(1, Ordering::Relaxed);
-                    continue;
-                }
-            };
+            let wg_peers = wg::interface_summary().map(|s| s.peers).unwrap_or_default();
 
-            let mut peers = match store::get_peers() {
-                Ok(p) => p,
-                Err(e) => {
-                    error!(error = %e, "health check: failed to load peers from store");
-                    health_failures.fetch_add(1, Ordering::Relaxed);
-                    health_store_failures.fetch_add(1, Ordering::Relaxed);
-                    continue;
-                }
-            };
+            let mut peers = store::get_peers().unwrap_or_default();
             let current = now();
             let mut changed = false;
 
@@ -980,10 +944,7 @@ pub async fn run_daemon(
             // Persist changes atomically
             if changed {
                 for peer in &peers {
-                    if let Err(e) = store::upsert_peer(peer) {
-                        warn!(peer = %sanitize(&peer.name), error = %e, "health check: failed to persist peer state");
-                        health_store_failures.fetch_add(1, Ordering::Relaxed);
-                    }
+                    let _ = store::upsert_peer(peer);
                 }
             }
 
@@ -1001,27 +962,16 @@ pub async fn run_daemon(
     let reconcile_wg_pubkey = wg_pubkey.clone();
     let reconcile_recon = health_recon;
     let reconcile_max_events = tuning.max_events;
-    let reconcile_failures = metrics_reconcile_failures.clone();
-    let reconcile_store_failures = metrics_store_failures.clone();
     let reconcile = async {
         let mut interval = tokio::time::interval(tuning.reconcile_interval);
         loop {
             interval.tick().await;
 
-            let stored_peers = match store::get_peers() {
-                Ok(p) => p,
-                Err(e) => {
-                    error!(error = %e, "reconciliation: failed to load peers from store");
-                    reconcile_failures.fetch_add(1, Ordering::Relaxed);
-                    reconcile_store_failures.fetch_add(1, Ordering::Relaxed);
-                    continue;
-                }
-            };
+            let stored_peers = store::get_peers().unwrap_or_default();
             let wg_summary = match wg::interface_summary() {
                 Ok(s) => s,
                 Err(e) => {
-                    warn!(error = %e, "reconciliation: WireGuard interface unavailable");
-                    reconcile_failures.fetch_add(1, Ordering::Relaxed);
+                    warn!("reconciliation: WireGuard interface unavailable: {e}");
                     continue;
                 }
             };

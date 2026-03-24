@@ -335,8 +335,7 @@ pub fn peer_exists(wg_public_key: &str) -> Result<bool, StoreError> {
         return Ok(false);
     }
     let db = open_db()?;
-    let existing: Option<PeerRecord> = db.get("peers", wg_public_key)?;
-    Ok(existing.is_some())
+    Ok(db.exists("peers", wg_public_key)?)
 }
 
 /// Return the number of stored peers.
@@ -345,8 +344,7 @@ pub fn peer_count() -> Result<usize, StoreError> {
         return Ok(0);
     }
     let db = open_db()?;
-    let entries: Vec<(String, PeerRecord)> = db.list("peers")?;
-    Ok(entries.len())
+    Ok(db.count("peers")? as usize)
 }
 
 /// Get all peers from redb.
