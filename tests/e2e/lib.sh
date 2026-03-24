@@ -465,7 +465,7 @@ assert_all_commands_valid() {
     output=$(docker exec "$container" sh -c "$cmd" 2>&1 || true)
     # Extract anything that looks like "syfrah ..."
     local suggested
-    suggested=$(echo "$output" | grep -oE "syfrah [a-z]+ [a-z]+" | sort -u)
+    suggested=$(echo "$output" | grep -oE "syfrah [a-z]+ [a-z]+" | sort -u || true)
     for suggestion in $suggested; do
         local subcmd
         subcmd=$(echo "$suggestion" | awk '{print $2, $3}')
