@@ -321,12 +321,23 @@ fn background_daemon() -> Result<()> {
         libc::waitpid(pid1, &mut status, 0);
     }
 
-    // Wait briefly for the grandchild daemon to start and write PID file
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    if let Some(pid) = syfrah_fabric::store::read_pid() {
-        println!("Daemon started (pid {pid}).");
-    } else {
-        println!("Daemon starting in background...");
+    // Wait for the grandchild daemon to start and write its PID file.
+    // Poll up to 5s — the daemon needs time to open redb, set up WG, etc.
+    let mut daemon_pid = None;
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if let Some(pid) = syfrah_fabric::store::daemon_running() {
+            daemon_pid = Some(pid);
+            break;
+        }
+    }
+    match daemon_pid {
+        Some(pid) => {
+            println!("Daemon started (pid {pid}).");
+        }
+        None => {
+            eprintln!("Warning: daemon may have failed to start. Check logs: ~/.syfrah/syfrah.log");
+        }
     }
     println!("Run 'syfrah fabric status' to check.");
     Ok(())

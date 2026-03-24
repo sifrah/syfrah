@@ -283,7 +283,50 @@ fn upsert_same_peer_twice_updates_not_duplicates() {
     });
 }
 
-// ── Test 5: JSON/redb consistency after concurrent upserts ──
+// ── Test 5: clear() removes all state — join works immediately after ──
+
+#[test]
+fn clear_removes_all_state_single_call() {
+    with_temp_home(|| {
+        // Precondition: state exists (save was called in with_temp_home)
+        assert!(store::exists(), "state should exist before clear");
+
+        // Add a peer and set a metric so both redb tables have data
+        let peer = make_test_peer("pre-clear", 1);
+        store::upsert_peer(&peer).unwrap();
+        store::set_metric("daemon_started_at", 1234567890).unwrap();
+
+        // A single clear() must wipe everything
+        store::clear().unwrap();
+
+        assert!(
+            !store::exists(),
+            "store::exists() must return false after clear()"
+        );
+
+        // Saving new state must succeed (simulates a fresh join)
+        let new_state = make_node_state();
+        store::save(&new_state).unwrap();
+
+        assert!(store::exists(), "state should exist after re-save");
+
+        // Verify that old peers and metrics are gone
+        let peers = store::get_peers().unwrap();
+        assert!(
+            peers.is_empty(),
+            "peers should be empty after clear + fresh save, got {}",
+            peers.len()
+        );
+
+        let loaded = store::load().unwrap();
+        assert_eq!(
+            loaded.metrics.daemon_started_at, 0,
+            "daemon_started_at should be 0 after clear + fresh save"
+        );
+    });
+}
+
+// ── Test 6: JSON/redb consistency after concurrent upserts ────
 
 #[test]
 fn json_and_redb_consistent_after_concurrent_upserts() {
