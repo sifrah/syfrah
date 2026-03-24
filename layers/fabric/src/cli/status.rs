@@ -16,11 +16,19 @@ pub async fn run() -> Result<()> {
     println!("WG port:   {}", state.wg_listen_port);
     println!(
         "Region:    {}",
-        state.region.as_deref().map(sanitize).unwrap_or_else(|| "(not set)".into())
+        state
+            .region
+            .as_deref()
+            .map(sanitize)
+            .unwrap_or_else(|| "(not set)".into())
     );
     println!(
         "Zone:      {}",
-        state.zone.as_deref().map(sanitize).unwrap_or_else(|| "(not set)".into())
+        state
+            .zone
+            .as_deref()
+            .map(sanitize)
+            .unwrap_or_else(|| "(not set)".into())
     );
     println!("Secret:    {}", state.mesh_secret);
     println!("Peering:   port {}", state.peering_port);

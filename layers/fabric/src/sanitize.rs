@@ -31,10 +31,7 @@ mod tests {
 
     #[test]
     fn strips_newlines() {
-        assert_eq!(
-            sanitize("evil\n[WARN] FAKE\nstuff"),
-            "evil[WARN] FAKEstuff"
-        );
+        assert_eq!(sanitize("evil\n[WARN] FAKE\nstuff"), "evil[WARN] FAKEstuff");
     }
 
     #[test]

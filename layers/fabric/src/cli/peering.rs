@@ -88,7 +88,11 @@ pub async fn watch(pin: Option<String>) -> Result<()> {
                 seen.insert(req.request_id.clone());
 
                 let key_prefix = &req.wg_public_key[..20.min(req.wg_public_key.len())];
-                ui::join_request_card(&sanitize(&req.node_name), &req.endpoint.to_string(), key_prefix);
+                ui::join_request_card(
+                    &sanitize(&req.node_name),
+                    &req.endpoint.to_string(),
+                    key_prefix,
+                );
 
                 // Read from stdin
                 use std::io::Write;
@@ -111,7 +115,10 @@ pub async fn watch(pin: Option<String>) -> Result<()> {
                                         sanitize(&peer_name)
                                     );
                                 } else {
-                                    println!("  Accepted: {} joined the mesh.\n", sanitize(&peer_name));
+                                    println!(
+                                        "  Accepted: {} joined the mesh.\n",
+                                        sanitize(&peer_name)
+                                    );
                                 }
                             }
                             Ok(ControlResponse::Error { message }) => {

@@ -54,8 +54,16 @@ pub async fn run() -> Result<()> {
             ("-".into(), "-".into())
         };
 
-        let region = peer.region.as_deref().map(sanitize).unwrap_or_else(|| "-".into());
-        let zone = peer.zone.as_deref().map(sanitize).unwrap_or_else(|| "-".into());
+        let region = peer
+            .region
+            .as_deref()
+            .map(sanitize)
+            .unwrap_or_else(|| "-".into());
+        let zone = peer
+            .zone
+            .as_deref()
+            .map(sanitize)
+            .unwrap_or_else(|| "-".into());
 
         println!(
             "{:<18} {:<20} {:<24} {:<22} {:>8} {:>10} {:>10}",

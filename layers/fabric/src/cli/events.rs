@@ -31,7 +31,11 @@ pub async fn run(json: bool) -> Result<()> {
 
     for event in &events {
         let ts = format_timestamp(event.timestamp);
-        let peer = event.peer_name.as_deref().map(sanitize).unwrap_or_else(|| "-".into());
+        let peer = event
+            .peer_name
+            .as_deref()
+            .map(sanitize)
+            .unwrap_or_else(|| "-".into());
         let details = event.details.as_deref().map(sanitize).unwrap_or_default();
 
         println!(

@@ -285,7 +285,8 @@ async fn handle_incoming(
                 req.endpoint = SocketAddr::new(peer_addr.ip(), req.wg_listen_port);
                 info!(
                     "auto-detected endpoint for {}: {}",
-                    sanitize(&req.node_name), req.endpoint
+                    sanitize(&req.node_name),
+                    req.endpoint
                 );
             }
 
