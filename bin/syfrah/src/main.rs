@@ -183,6 +183,11 @@ fn setup_logging(daemon_mode: bool) {
             .join("syfrah.log");
         if let Some(parent) = log_path.parent() {
             let _ = std::fs::create_dir_all(parent);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+            }
         }
         if let Ok(meta) = std::fs::metadata(&log_path) {
             if meta.len() > 10 * 1024 * 1024 {
@@ -195,6 +200,11 @@ fn setup_logging(daemon_mode: bool) {
             .append(true)
             .open(&log_path)
             .expect("failed to open log file");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&log_path, std::fs::Permissions::from_mode(0o644));
+        }
         if json_mode {
             tracing_subscriber::fmt()
                 .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -241,6 +251,11 @@ fn background_daemon() -> Result<()> {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".syfrah");
     let _ = std::fs::create_dir_all(&log_dir);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&log_dir, std::fs::Permissions::from_mode(0o700));
+    }
     let log_path = log_dir.join("syfrah.log");
 
     // First fork

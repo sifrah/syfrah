@@ -1401,6 +1401,7 @@ name = "syfrah-core"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
+ "base64 0.22.1",
  "bs58",
  "ipnet",
  "rand",

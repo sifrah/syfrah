@@ -77,6 +77,18 @@ fn state_dir() -> PathBuf {
         .join(".syfrah")
 }
 
+/// Create the state directory if it doesn't exist and set permissions to 0o700.
+fn ensure_state_dir() -> Result<(), StoreError> {
+    let dir = state_dir();
+    fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 fn state_file() -> PathBuf {
     state_dir().join("state.json")
 }
@@ -90,8 +102,8 @@ pub fn exists() -> bool {
 /// Save node state.
 /// Writes to both redb (primary) and JSON (backward compat for E2E tests).
 pub fn save(state: &NodeState) -> Result<(), StoreError> {
+    ensure_state_dir()?;
     let dir = state_dir();
-    fs::create_dir_all(&dir)?;
 
     // Write to redb
     let db = open_db()?;
@@ -318,8 +330,8 @@ fn open_db() -> Result<LayerDb, StoreError> {
 
 /// Write JSON only (no redb) for backward compat.
 fn save_json_only(state: &NodeState) -> Result<(), StoreError> {
+    ensure_state_dir()?;
     let dir = state_dir();
-    fs::create_dir_all(&dir)?;
     let file = state_file();
     let tmp = dir.join("state.json.tmp");
     let json = serde_json::to_string_pretty(state)?;
@@ -349,8 +361,8 @@ fn pid_file() -> PathBuf {
 pub fn write_pid() -> Result<fs::File, StoreError> {
     use std::io::Write;
 
+    ensure_state_dir()?;
     let dir = state_dir();
-    fs::create_dir_all(&dir)?;
 
     let path = pid_file();
 
@@ -401,7 +413,7 @@ pub fn write_pid() -> Result<fs::File, StoreError> {
     // Restrict permissions
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o644));
     }
 
     // Ensure PID content is correct on the locked fd
@@ -415,8 +427,7 @@ pub fn write_pid() -> Result<fs::File, StoreError> {
 /// Non-unix fallback (no flock).
 #[cfg(not(unix))]
 pub fn write_pid() -> Result<(), StoreError> {
-    let dir = state_dir();
-    fs::create_dir_all(&dir)?;
+    ensure_state_dir()?;
     fs::write(pid_file(), std::process::id().to_string())?;
     Ok(())
 }
