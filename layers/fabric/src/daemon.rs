@@ -465,11 +465,29 @@ pub async fn run_start() -> anyhow::Result<()> {
 }
 
 /// Leave the mesh.
-pub async fn run_leave() -> anyhow::Result<()> {
-    if !store::exists() {
-        println!("No mesh configured.");
-        return Ok(());
+///
+/// Returns `true` if there was a mesh to leave, `false` if nothing was configured.
+pub async fn run_leave() -> anyhow::Result<bool> {
+    // Stop the daemon first (if running) so it cannot recreate state files.
+    if let Some(pid) = store::daemon_running() {
+        #[cfg(unix)]
+        {
+            if store::is_syfrah_process(pid) {
+                unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+                // Give the daemon a moment to shut down gracefully
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        }
     }
+
+    if !store::exists() {
+        // Even when no mesh state exists, clean up any leftover runtime files
+        // (PID file, control socket) that might remain from a partial cleanup.
+        store::remove_pid();
+        let _ = std::fs::remove_file(store::control_socket_path());
+        return Ok(false);
+    }
+
     let sp = ui::spinner("Tearing down WireGuard interface...");
     if let Err(e) = wg::teardown_interface() {
         ui::step_fail(&sp, &format!("Could not tear down interface: {e}"));
@@ -477,10 +495,11 @@ pub async fn run_leave() -> anyhow::Result<()> {
         ui::step_ok(&sp, "Interface removed");
     }
     let sp = ui::spinner("Cleaning up state...");
-    let _ = std::fs::remove_file(store::control_socket_path());
+    // Clear all state atomically: redb, JSON, PID file, control socket, and
+    // any other files in ~/.syfrah. store::clear() removes the entire directory.
     store::clear()?;
     ui::step_ok(&sp, "Left the mesh. State cleared.");
-    Ok(())
+    Ok(true)
 }
 
 /// The main daemon loop.
