@@ -217,6 +217,7 @@ pub fn run() -> Result<()> {
         .parent()
         .context("current exe has no parent directory")?;
     let tmp_path: PathBuf = parent.join(".syfrah-update.tmp");
+    let backup_path: PathBuf = parent.join("syfrah.bak");
 
     if let Err(e) = fs::write(&tmp_path, &binary_data) {
         ui::step_fail(&sp, "Failed to write update");
@@ -233,6 +234,14 @@ pub fn run() -> Result<()> {
     let perms = fs::Permissions::from_mode(0o755);
     fs::set_permissions(&tmp_path, perms).context("failed to set executable permissions")?;
 
+    // Back up current binary for rollback
+    if let Err(e) = fs::copy(&current_exe, &backup_path) {
+        let _ = fs::remove_file(&tmp_path);
+        ui::step_fail(&sp, "Failed to back up current binary");
+        bail!("failed to create backup at {}: {e}", backup_path.display());
+    }
+    let _ = fs::set_permissions(&backup_path, fs::Permissions::from_mode(0o755));
+
     // Atomic rename over the current binary
     if let Err(e) = fs::rename(&tmp_path, &current_exe) {
         let _ = fs::remove_file(&tmp_path);
@@ -247,11 +256,43 @@ pub fn run() -> Result<()> {
     }
 
     ui::step_ok(&sp, &format!("Updated to {latest}"));
+    ui::step_ok(
+        &sp,
+        &format!("Previous binary saved to {}", backup_path.display()),
+    );
 
-    // Step 7: warn about running daemon
+    // Step 7: try restarting daemon, rollback if it fails
     if syfrah_fabric::store::read_pid().is_some() {
-        ui::warn("A daemon is running. Restart it to use the new version:");
-        ui::warn("  syfrah fabric stop && syfrah fabric start");
+        ui::warn("A daemon is running. Restarting with new binary...");
+        let restart_ok = std::process::Command::new(&current_exe)
+            .args(["fabric", "stop"])
+            .status()
+            .is_ok_and(|s| s.success())
+            && std::process::Command::new(&current_exe)
+                .args(["fabric", "start"])
+                .status()
+                .is_ok_and(|s| s.success());
+
+        if !restart_ok {
+            ui::warn("New binary failed to restart daemon. Rolling back...");
+            if fs::rename(&backup_path, &current_exe).is_ok() {
+                let _ = fs::set_permissions(&current_exe, fs::Permissions::from_mode(0o755));
+                // Try starting the old daemon
+                let _ = std::process::Command::new(&current_exe)
+                    .args(["fabric", "start"])
+                    .status();
+                ui::warn("Rolled back to previous binary and restarted daemon.");
+                ui::warn("Check release notes for compatibility issues.");
+                return Ok(());
+            }
+            ui::warn("Rollback failed. Restore manually:");
+            ui::warn(&format!(
+                "  cp {} {}",
+                backup_path.display(),
+                current_exe.display()
+            ));
+            return Ok(());
+        }
     }
 
     ui::success(&format!("syfrah updated to {latest} successfully."));
