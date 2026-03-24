@@ -28,6 +28,8 @@ pass "init output contains IPv6 address"
 echo "$output" | grep -qi "region\|zone" || fail "init output missing region/zone"
 pass "init output contains region/zone"
 
+wait_daemon "e2e-ux-init-1" 30
+
 # Test 2: Init output — all suggested commands are valid syfrah commands
 info "Testing: init suggested commands..."
 assert_all_commands_valid "e2e-ux-init-1" "syfrah fabric status"
@@ -37,8 +39,6 @@ info "Testing: init output no raw errors..."
 assert_output_not_contains "e2e-ux-init-1" "syfrah fabric status" "anyhow"
 assert_output_not_contains "e2e-ux-init-1" "syfrah fabric status" "os error"
 assert_output_not_contains "e2e-ux-init-1" "syfrah fabric status" "stack backtrace"
-
-wait_daemon "e2e-ux-init-1" 30
 
 # Test 4: Double init — says "already exists", suggests leave
 info "Testing: double init..."

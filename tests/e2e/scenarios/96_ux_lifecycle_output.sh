@@ -29,7 +29,7 @@ sleep 2
 # Test 2: Stop when not running — "not running", no error
 info "Testing: stop when already stopped..."
 output_stop2=$(docker exec "e2e-ux-life-1" syfrah fabric stop 2>&1 || true)
-if echo "$output_stop2" | grep -qi "not running\|already\|nothing"; then
+if echo "$output_stop2" | grep -qi "not running\|already\|nothing\|no daemon"; then
     pass "stop when stopped: says not running"
 else
     fail "stop when stopped: unclear: $(echo "$output_stop2" | head -3)"
