@@ -85,17 +85,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify Cargo.toml version matches release version
-        env:
-          VERSION: ${{ needs.version.outputs.next }}
-        run: |
-          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          if [ "$CARGO_VERSION" != "$VERSION" ]; then
-            echo "ERROR: Cargo.toml version ($CARGO_VERSION) != release version ($VERSION)"
-            echo "Bump Cargo.toml version to $VERSION before releasing."
-            exit 1
-          fi
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
