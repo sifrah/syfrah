@@ -84,17 +84,15 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - uses: actions/checkout@v4
-
       - name: Copy install script
-        run: |
-          mkdir -p artifacts
-          cp scripts/install.sh artifacts/install.sh
+        run: cp scripts/install.sh artifacts/install.sh
 
       - name: Collect archives and generate checksums
         run: |
