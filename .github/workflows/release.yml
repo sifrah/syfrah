@@ -2,8 +2,8 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -12,8 +12,53 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # ── Check if version changed ──────────────────────────────
+  check-version:
+    name: Check version
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version and check tag
+        id: check
+        run: |
+          version=$(grep '^version' Cargo.toml | head -1 | sed 's/version *= *"\(.*\)"/\1/')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Cargo.toml version: $version"
+
+          if git rev-parse "v${version}" >/dev/null 2>&1; then
+            echo "Tag v${version} already exists — skipping release"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Tag v${version} does not exist — will release"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── Wait for CI to pass ───────────────────────────────────
+  ci:
+    name: Wait for CI
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for CI workflow
+        uses: lewagon/wait-on-check-action@v1.3.4
+        with:
+          ref: ${{ github.sha }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          check-regexp: ^(Secret scan|Validate .gitignore|Format|Discover crates|syfrah-.*)$
+          wait-interval: 10
+
+  # ── Build all targets ─────────────────────────────────────
   build:
     name: Build ${{ matrix.target }}
+    needs: [check-version, ci]
+    if: needs.check-version.outputs.should_release == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -59,29 +104,17 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-musl'
         run: cross build --release --target ${{ matrix.target }}
 
-      - name: Package binary
-        run: |
-          BIN=syfrah
-          SRC=target/${{ matrix.target }}/release/$BIN
-          ARCHIVE=${BIN}-${{ github.ref_name }}-${{ matrix.target }}
-
-          mkdir -p staging
-          cp "$SRC" staging/$BIN
-          cd staging
-          tar czf ../${ARCHIVE}.tar.gz $BIN
-          cd ..
-
-          echo "ARCHIVE=${ARCHIVE}.tar.gz" >> "$GITHUB_ENV"
-
-      - name: Upload artifact
+      - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: ${{ env.ARCHIVE }}
+          path: target/${{ matrix.target }}/release/syfrah
 
+  # ── Create release ────────────────────────────────────────
   release:
     name: Create Release
-    needs: build
+    needs: [check-version, build]
+    if: needs.check-version.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -91,19 +124,31 @@ jobs:
         with:
           path: artifacts
 
-      - name: Copy install script
-        run: cp scripts/install.sh artifacts/install.sh
-
-      - name: Collect archives and generate checksums
+      - name: Package archives, install script, and checksums
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
         run: |
           mkdir -p release
-          find artifacts -name '*.tar.gz' -exec cp {} release/ \;
-          cp artifacts/install.sh release/install.sh
+          for target_dir in artifacts/*/; do
+            target=$(basename "$target_dir")
+            archive="syfrah-v${VERSION}-${target}.tar.gz"
+            chmod +x "${target_dir}syfrah"
+            tar czf "release/${archive}" -C "$target_dir" syfrah
+          done
+          cp scripts/install.sh release/install.sh
           cd release
           sha256sum *.tar.gz > SHA256SUMS.txt
+
+      - name: Create git tag
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          git tag "v${VERSION}"
+          git push origin "v${VERSION}"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ needs.check-version.outputs.version }}
           generate_release_notes: true
           files: release/*
