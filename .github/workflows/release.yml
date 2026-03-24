@@ -12,7 +12,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ── Auto-determine version and bump Cargo.toml ──────────
+  # ── Auto-determine version ─────────────────────────────
   version:
     name: Determine version
     runs-on: ubuntu-latest
@@ -24,24 +24,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Skip if HEAD is a release commit
-        id: guard
-        run: |
-          MSG=$(git log -1 --format=%s)
-          if echo "$MSG" | grep -q '^release:'; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "HEAD commit is a release commit — skipping"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Calculate next version
         id: calc
-        if: steps.guard.outputs.skip == 'false'
         run: |
           # Get latest tag
           LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
           echo "Latest tag: $LATEST"
+
+          # Skip if HEAD is already tagged
+          HEAD_TAGS=$(git tag --points-at HEAD)
+          if [ -n "$HEAD_TAGS" ]; then
+            echo "HEAD is already tagged: $HEAD_TAGS — skipping"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           # Parse semver
           SEMVER=${LATEST#v}
@@ -67,54 +63,10 @@ jobs:
           echo "should_release=true" >> "$GITHUB_OUTPUT"
           echo "Next version: v$NEXT"
 
-  # ── Wait for CI to pass ───────────────────────────────────
-  ci:
-    name: Wait for CI
-    needs: version
-    if: needs.version.outputs.should_release == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Wait for CI workflow
-        uses: lewagon/wait-on-check-action@v1.3.4
-        with:
-          ref: ${{ github.sha }}
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          check-regexp: ^(Secret scan|Validate .gitignore|Format|Discover crates|syfrah-.*)$
-          wait-interval: 10
-
-  # ── Bump Cargo.toml and push ─────────────────────────────
-  bump:
-    name: Bump version
-    needs: [version, ci]
-    if: needs.version.outputs.should_release == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Update Cargo.toml
-        env:
-          VERSION: ${{ needs.version.outputs.next }}
-        run: |
-          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
-          echo "Updated Cargo.toml to version $VERSION"
-          grep '^version' Cargo.toml
-
-      - name: Commit and push version bump
-        env:
-          VERSION: ${{ needs.version.outputs.next }}
-        run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          git add Cargo.toml
-          git commit -m "release: v${VERSION} [skip ci]"
-          git push origin main
-
   # ── Build all targets ─────────────────────────────────────
   build:
     name: Build ${{ matrix.target }}
-    needs: [version, bump]
+    needs: version
     if: needs.version.outputs.should_release == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
@@ -132,8 +84,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: main
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -143,24 +93,24 @@ jobs:
         with:
           key: release-${{ matrix.target }}
 
-      # Linux x86_64 musl: install musl-tools
       - name: Install musl-tools (x86_64)
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      # Linux aarch64: use cross for cross-compilation
       - name: Install cross
         if: matrix.target == 'aarch64-unknown-linux-musl'
         run: cargo install cross --locked
 
-      # Build with cargo for native targets
       - name: Build (cargo)
         if: matrix.target != 'aarch64-unknown-linux-musl'
+        env:
+          SYFRAH_VERSION: ${{ needs.version.outputs.next }}
         run: cargo build --release --target ${{ matrix.target }}
 
-      # Build with cross for aarch64-linux-musl
       - name: Build (cross)
         if: matrix.target == 'aarch64-unknown-linux-musl'
+        env:
+          SYFRAH_VERSION: ${{ needs.version.outputs.next }}
         run: cross build --release --target ${{ matrix.target }}
 
       - name: Upload binary
