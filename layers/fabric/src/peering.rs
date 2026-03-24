@@ -649,9 +649,7 @@ async fn handle_incoming(
 
             let record = decrypt_record(&ciphertext, &enc_key)?;
 
-            // Validate record fields (including WG key format) before any
-            // further processing to prevent malformed data from reaching
-            // crypto operations or downstream consumers.
+            // Validate before any further processing (field reads, stale check, etc.).
             if let Err(e) = validate_peer_record(&record) {
                 warn!(from = %peer_addr, error = %e, "rejecting peer announce: validation failed");
                 return Err(PeeringError::Protocol(format!(
@@ -969,5 +967,70 @@ mod tests {
     fn replay_guard_rejects_timestamp_just_past_boundary() {
         let past = now().saturating_sub(MAX_ANNOUNCE_AGE_SECS + 1);
         assert!(ReplayGuard::is_stale(past));
+    }
+
+    /// Malformed WG key with a stale timestamp must be rejected by validation,
+    /// not silently swallowed by the stale-timestamp early return.
+    #[tokio::test]
+    async fn malformed_wg_key_rejected_before_stale_check() {
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::TcpListener;
+
+        // Build a record with an invalid WG key and a stale last_seen.
+        // If validation runs first, we get Err(Protocol("invalid peer announce ...")).
+        // If the stale check ran first, we'd get Ok(()) — the bug this test guards against.
+        let bad_record = PeerRecord {
+            name: "node-test".into(),
+            wg_public_key: "not-a-valid-key".into(),
+            endpoint: "127.0.0.1:51820".parse().unwrap(),
+            mesh_ipv6: "fd00::1".parse().unwrap(),
+            last_seen: now().saturating_sub(MAX_ANNOUNCE_AGE_SECS + 200),
+            status: PeerStatus::Active,
+            region: None,
+            zone: None,
+        };
+
+        let enc_key = [0xABu8; 32];
+        let ciphertext = encrypt_record(&bad_record, &enc_key).unwrap();
+        let msg = PeeringMessage::PeerAnnounce(ciphertext);
+        let payload = serde_json::to_vec(&msg).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Send the announce from a client connection.
+        let client = tokio::spawn(async move {
+            let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let len = payload.len() as u32;
+            stream.write_all(&len.to_be_bytes()).await.unwrap();
+            stream.write_all(&payload).await.unwrap();
+            stream.flush().await.unwrap();
+        });
+
+        let (server_stream, peer_addr) = listener.accept().await.unwrap();
+
+        let result = handle_incoming(
+            server_stream,
+            peer_addr,
+            Arc::new(RwLock::new(HashMap::new())),
+            Some(enc_key),
+            Arc::new(|_: PeerRecord| {}),
+            Arc::new(RwLock::new(None)),
+            Arc::new(|_: PeerRecord| {}),
+            Arc::new(Mutex::new(PinRateLimiter::new())),
+            100,
+            Arc::new(ReplayGuard::new()),
+        )
+        .await;
+
+        client.await.unwrap();
+
+        // Must be a Protocol error about invalid peer announce, NOT Ok(()).
+        let err = result.expect_err("malformed WG key should be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid peer announce"),
+            "expected 'invalid peer announce', got: {msg}"
+        );
     }
 }
