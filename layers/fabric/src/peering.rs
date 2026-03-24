@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{oneshot, Mutex, RwLock};
+use tokio::sync::{oneshot, Mutex, RwLock, Semaphore};
 use tracing::{debug, info, warn};
 
 use syfrah_core::mesh::{
@@ -25,6 +26,11 @@ const MAX_PIN_ATTEMPTS: usize = 5;
 const PIN_LOCKOUT_WINDOW: Duration = Duration::from_secs(600); // 10 minutes
 /// Delay before responding to a failed PIN attempt (slows enumeration).
 const PIN_FAIL_DELAY: Duration = Duration::from_secs(2);
+
+/// Default maximum concurrent peering connections.
+const DEFAULT_MAX_CONNECTIONS: usize = 100;
+/// Default maximum pending join requests.
+const DEFAULT_MAX_PENDING_JOINS: usize = 100;
 
 /// Per-IP rate limiter for PIN attempts.
 pub struct PinRateLimiter {
@@ -123,6 +129,14 @@ pub struct PeeringState {
     listener_active: Arc<RwLock<bool>>,
     auto_accept: Arc<RwLock<Option<AutoAcceptConfig>>>,
     pin_rate_limiter: Arc<Mutex<PinRateLimiter>>,
+    /// Metrics: total connections rejected due to limit.
+    connections_rejected: Arc<AtomicU64>,
+    /// Metrics: currently active connections.
+    connections_active: Arc<AtomicU64>,
+    /// Max concurrent connections (configurable).
+    max_connections: usize,
+    /// Max pending join requests (configurable).
+    max_pending_joins: usize,
 }
 
 impl Default for PeeringState {
@@ -133,12 +147,31 @@ impl Default for PeeringState {
 
 impl PeeringState {
     pub fn new() -> Self {
+        Self::with_limits(DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_PENDING_JOINS)
+    }
+
+    /// Create a PeeringState with custom connection and pending-join limits.
+    pub fn with_limits(max_connections: usize, max_pending_joins: usize) -> Self {
         Self {
             pending: Arc::new(RwLock::new(HashMap::new())),
             listener_active: Arc::new(RwLock::new(false)),
             auto_accept: Arc::new(RwLock::new(None)),
             pin_rate_limiter: Arc::new(Mutex::new(PinRateLimiter::new())),
+            connections_rejected: Arc::new(AtomicU64::new(0)),
+            connections_active: Arc::new(AtomicU64::new(0)),
+            max_connections,
+            max_pending_joins,
         }
+    }
+
+    /// Return the number of connections rejected due to the concurrency limit.
+    pub fn connections_rejected(&self) -> u64 {
+        self.connections_rejected.load(Ordering::Relaxed)
+    }
+
+    /// Return the number of currently active connections.
+    pub fn connections_active(&self) -> u64 {
+        self.connections_active.load(Ordering::Relaxed)
     }
 
     pub async fn is_active(&self) -> bool {
@@ -205,7 +238,13 @@ impl PeeringState {
         self.set_active(true).await;
         let addr: SocketAddr = format!("0.0.0.0:{port}").parse().unwrap();
         let listener = TcpListener::bind(addr).await?;
-        info!(port = port, "peering listener started");
+        let semaphore = Arc::new(Semaphore::new(self.max_connections));
+        info!(
+            port = port,
+            max_connections = self.max_connections,
+            max_pending_joins = self.max_pending_joins,
+            "peering listener started"
+        );
 
         loop {
             let (stream, peer_addr) = match listener.accept().await {
@@ -216,6 +255,24 @@ impl PeeringState {
                 }
             };
 
+            // Enforce concurrent connection limit via semaphore.
+            let permit = match semaphore.clone().try_acquire_owned() {
+                Ok(p) => p,
+                Err(_) => {
+                    self.connections_rejected.fetch_add(1, Ordering::Relaxed);
+                    warn!(
+                        peer = %peer_addr,
+                        active = self.connections_active.load(Ordering::Relaxed),
+                        limit = self.max_connections,
+                        "connection limit reached, rejecting"
+                    );
+                    // Drop the stream immediately (TCP RST).
+                    drop(stream);
+                    continue;
+                }
+            };
+
+            self.connections_active.fetch_add(1, Ordering::Relaxed);
             debug!("peering connection from {peer_addr}");
 
             let pending = self.pending.clone();
@@ -224,8 +281,11 @@ impl PeeringState {
             let auto_accept = self.auto_accept.clone();
             let on_accepted = on_accepted.clone();
             let rate_limiter = self.pin_rate_limiter.clone();
+            let active_counter = self.connections_active.clone();
+            let max_pending = self.max_pending_joins;
 
             tokio::spawn(async move {
+                let _permit = permit; // held until this task ends
                 if let Err(e) = handle_incoming(
                     stream,
                     peer_addr,
@@ -235,11 +295,13 @@ impl PeeringState {
                     auto_accept,
                     on_accepted,
                     rate_limiter,
+                    max_pending,
                 )
                 .await
                 {
                     debug!("peering connection from {peer_addr} failed: {e}");
                 }
+                active_counter.fetch_sub(1, Ordering::Relaxed);
             });
         }
 
@@ -258,8 +320,12 @@ async fn handle_incoming(
     auto_accept: Arc<RwLock<Option<AutoAcceptConfig>>>,
     on_accepted: OnAccepted,
     rate_limiter: Arc<Mutex<PinRateLimiter>>,
+    max_pending_joins: usize,
 ) -> Result<(), PeeringError> {
-    let msg = read_message(&mut stream).await?;
+    // Apply read timeout to protect against slowloris attacks.
+    let msg = tokio::time::timeout(EXCHANGE_TIMEOUT, read_message(&mut stream))
+        .await
+        .map_err(|_| PeeringError::Timeout)??;
 
     match msg {
         PeeringMessage::JoinRequest(mut req) => {
@@ -405,6 +471,14 @@ async fn handle_incoming(
                 if let Some(old_id) = stale_id {
                     info!(node = %info.node_name, old_request_id = %old_id, "replacing stale join request");
                     map.remove(&old_id);
+                }
+                // Enforce pending queue limit.
+                if map.len() >= max_pending_joins {
+                    warn!(
+                        limit = max_pending_joins,
+                        "pending join queue full, rejecting request"
+                    );
+                    return Err(PeeringError::Protocol("too many pending joins".into()));
                 }
                 map.insert(
                     req.request_id.clone(),
