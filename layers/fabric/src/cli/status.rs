@@ -1,3 +1,4 @@
+use crate::sanitize::sanitize;
 use crate::{config, store, wg};
 use anyhow::Result;
 
@@ -8,18 +9,26 @@ pub async fn run() -> Result<()> {
         )
     })?;
 
-    println!("Mesh:      {}", state.mesh_name);
-    println!("Node:      {}", state.node_name);
+    println!("Mesh:      {}", sanitize(&state.mesh_name));
+    println!("Node:      {}", sanitize(&state.node_name));
     println!("Mesh IPv6: {}", state.mesh_ipv6);
     println!("Prefix:    {}/48", state.mesh_prefix);
     println!("WG port:   {}", state.wg_listen_port);
     println!(
         "Region:    {}",
-        state.region.as_deref().unwrap_or("(not set)")
+        state
+            .region
+            .as_deref()
+            .map(sanitize)
+            .unwrap_or_else(|| "(not set)".into())
     );
     println!(
         "Zone:      {}",
-        state.zone.as_deref().unwrap_or("(not set)")
+        state
+            .zone
+            .as_deref()
+            .map(sanitize)
+            .unwrap_or_else(|| "(not set)".into())
     );
     println!("Secret:    {}", state.mesh_secret);
     println!("Peering:   port {}", state.peering_port);

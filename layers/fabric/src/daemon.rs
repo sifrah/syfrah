@@ -15,6 +15,7 @@ use crate::config::{self, Tuning};
 use crate::control::{self, ControlHandler, ControlRequest, ControlResponse};
 use crate::events::{self, EventType};
 use crate::peering::{self, AutoAcceptConfig, PeeringState};
+use crate::sanitize::sanitize;
 use crate::store::{self, NodeState};
 use crate::ui;
 use crate::wg;
@@ -509,20 +510,20 @@ pub async fn run_daemon(
                         let _ = store::inc_metric("peer_limit_reached", 1);
                         events::emit(
                             EventType::PeerLimitReached,
-                            Some(&record.name),
+                            Some(&sanitize(&record.name)),
                             Some(&record.endpoint.to_string()),
                             Some(&format!("max_peers={mp}")),
                             Some(max_ev),
                         );
                     }
-                    warn!(peer = %record.name, endpoint = %record.endpoint, error = %e, "failed to add peer to WG");
+                    warn!(peer = %sanitize(&record.name), endpoint = %record.endpoint, error = %e, "failed to add peer to WG");
                 }
                 Ok(()) => {
                     recon.fetch_add(1, Ordering::Relaxed);
-                    info!(peer = %record.name, endpoint = %record.endpoint, "peer accepted and added to WG");
+                    info!(peer = %sanitize(&record.name), endpoint = %record.endpoint, "peer accepted and added to WG");
                     events::emit(
                         EventType::PeerActive,
-                        Some(&record.name),
+                        Some(&sanitize(&record.name)),
                         Some(&record.endpoint.to_string()),
                         Some(&format!("mesh_ipv6={}", record.mesh_ipv6)),
                         Some(max_ev),
@@ -532,19 +533,19 @@ pub async fn run_daemon(
             // Save to store (bounded — reject if over limit)
             match store::upsert_peer_bounded(&record, mp) {
                 Ok(false) => {
-                    warn!(peer = %record.name, max = mp, "peer limit reached, not persisting new peer");
+                    warn!(peer = %sanitize(&record.name), max = mp, "peer limit reached, not persisting new peer");
                     plr.fetch_add(1, Ordering::Relaxed);
                     let _ = store::inc_metric("peer_limit_reached", 1);
                     events::emit(
                         EventType::PeerLimitReached,
-                        Some(&record.name),
+                        Some(&sanitize(&record.name)),
                         Some(&record.endpoint.to_string()),
                         Some(&format!("store max_peers={mp}")),
                         Some(max_ev),
                     );
                 }
                 Err(e) => {
-                    warn!(peer = %record.name, error = %e, "failed to persist peer");
+                    warn!(peer = %sanitize(&record.name), error = %e, "failed to persist peer");
                 }
                 Ok(true) => {}
             }
@@ -555,7 +556,7 @@ pub async fn run_daemon(
                 let _ = store::inc_metric("announcements_failed", failed as u64);
                 events::emit(
                     EventType::PeerAnnounceFailed,
-                    Some(&record.name),
+                    Some(&sanitize(&record.name)),
                     None,
                     Some(&format!("failed_count={failed}")),
                     Some(max_ev),
@@ -595,7 +596,7 @@ pub async fn run_daemon(
         announce_recv.fetch_add(1, Ordering::Relaxed);
         events::emit(
             EventType::PeerAnnounceReceived,
-            Some(&record.name),
+            Some(&sanitize(&record.name)),
             Some(&record.endpoint.to_string()),
             Some(&format!("mesh_ipv6={}", record.mesh_ipv6)),
             Some(announce_max_events),
@@ -605,7 +606,7 @@ pub async fn run_daemon(
         let permit = match announce_sem.clone().try_acquire_owned() {
             Ok(p) => p,
             Err(_) => {
-                warn!(peer = %record.name, "announce processing at capacity, dropping");
+                warn!(peer = %sanitize(&record.name), "announce processing at capacity, dropping");
                 announce_dropped.fetch_add(1, Ordering::Relaxed);
                 let _ = store::inc_metric("announces_dropped", 1);
                 events::emit(
@@ -648,35 +649,35 @@ pub async fn run_daemon(
                         let _ = store::inc_metric("peer_limit_reached", 1);
                         events::emit(
                             EventType::PeerLimitReached,
-                            Some(&record.name),
+                            Some(&sanitize(&record.name)),
                             Some(&record.endpoint.to_string()),
                             Some(&format!("max_peers={mp}")),
                             Some(max_ev),
                         );
                     }
-                    warn!(peer = %record.name, endpoint = %record.endpoint, error = %e, "failed to upsert announced peer");
+                    warn!(peer = %sanitize(&record.name), endpoint = %record.endpoint, error = %e, "failed to upsert announced peer");
                 }
                 Ok(()) => {
                     recon.fetch_add(1, Ordering::Relaxed);
-                    debug!(peer = %record.name, endpoint = %record.endpoint, "peer upserted via announce");
+                    debug!(peer = %sanitize(&record.name), endpoint = %record.endpoint, "peer upserted via announce");
                 }
             }
             // Save to store (bounded)
             match store::upsert_peer_bounded(&record, mp) {
                 Ok(false) => {
-                    warn!(peer = %record.name, max = mp, "peer limit reached, not persisting announced peer");
+                    warn!(peer = %sanitize(&record.name), max = mp, "peer limit reached, not persisting announced peer");
                     plr.fetch_add(1, Ordering::Relaxed);
                     let _ = store::inc_metric("peer_limit_reached", 1);
                     events::emit(
                         EventType::PeerLimitReached,
-                        Some(&record.name),
+                        Some(&sanitize(&record.name)),
                         Some(&record.endpoint.to_string()),
                         Some(&format!("store max_peers={mp}")),
                         Some(max_ev),
                     );
                 }
                 Err(e) => {
-                    warn!(peer = %record.name, error = %e, "failed to persist announced peer");
+                    warn!(peer = %sanitize(&record.name), error = %e, "failed to persist announced peer");
                 }
                 Ok(true) => {}
             }
@@ -766,10 +767,10 @@ pub async fn run_daemon(
                     changed = true;
 
                     if old_status == PeerStatus::Unreachable && peer.status == PeerStatus::Active {
-                        info!(peer = %peer.name, last_seen = peer.last_seen, "peer recovered, marking active");
+                        info!(peer = %sanitize(&peer.name), last_seen = peer.last_seen, "peer recovered, marking active");
                     }
                     if old_status == PeerStatus::Active && peer.status == PeerStatus::Unreachable {
-                        info!(peer = %peer.name, last_seen = peer.last_seen, timeout_secs = unreachable_timeout_secs, "marking peer as unreachable");
+                        info!(peer = %sanitize(&peer.name), last_seen = peer.last_seen, timeout_secs = unreachable_timeout_secs, "marking peer as unreachable");
                         health_counter.fetch_add(1, Ordering::Relaxed);
                     }
                 }
@@ -778,12 +779,12 @@ pub async fn run_daemon(
                 if peer.status == PeerStatus::Unreachable
                     && current.saturating_sub(peer.last_seen) < unreachable_timeout_secs
                 {
-                    info!(peer = %peer.name, last_seen = peer.last_seen, "peer recovered, marking active");
+                    info!(peer = %sanitize(&peer.name), last_seen = peer.last_seen, "peer recovered, marking active");
                     peer.status = PeerStatus::Active;
                     changed = true;
                     events::emit(
                         EventType::PeerRecovered,
-                        Some(&peer.name),
+                        Some(&sanitize(&peer.name)),
                         Some(&peer.endpoint.to_string()),
                         Some("handshake resumed"),
                         Some(health_max_events),
@@ -794,13 +795,13 @@ pub async fn run_daemon(
                 if peer.status == PeerStatus::Active
                     && current.saturating_sub(peer.last_seen) > unreachable_timeout_secs
                 {
-                    info!(peer = %peer.name, last_seen = peer.last_seen, timeout_secs = unreachable_timeout_secs, "marking peer as unreachable");
+                    info!(peer = %sanitize(&peer.name), last_seen = peer.last_seen, timeout_secs = unreachable_timeout_secs, "marking peer as unreachable");
                     peer.status = PeerStatus::Unreachable;
                     health_counter.fetch_add(1, Ordering::Relaxed);
                     changed = true;
                     events::emit(
                         EventType::PeerUnreachable,
-                        Some(&peer.name),
+                        Some(&sanitize(&peer.name)),
                         Some(&peer.endpoint.to_string()),
                         Some(&format!("no handshake for {unreachable_timeout_secs}s")),
                         Some(health_max_events),
@@ -851,9 +852,9 @@ pub async fn run_daemon(
                 .collect();
             let missing = peers_needing_reconciliation(&stored_peers, &wg_keys);
             for peer in missing {
-                info!(peer = %peer.name, endpoint = %peer.endpoint, "reconciling: adding missing peer to WireGuard");
+                info!(peer = %sanitize(&peer.name), endpoint = %peer.endpoint, "reconciling: adding missing peer to WireGuard");
                 if let Err(e) = wg::upsert_peer(&reconcile_wg_pubkey, peer) {
-                    warn!(peer = %peer.name, error = %e, "reconciliation failed");
+                    warn!(peer = %sanitize(&peer.name), error = %e, "reconciliation failed");
                 } else {
                     reconcile_recon.fetch_add(1, Ordering::Relaxed);
                 }
@@ -1002,7 +1003,7 @@ impl ControlHandler for DaemonControlHandler {
                         };
                         events::emit(
                             EventType::JoinManuallyAccepted,
-                            Some(&info.node_name),
+                            Some(&sanitize(&info.node_name)),
                             Some(&info.endpoint.to_string()),
                             None,
                             Some(self.max_events),

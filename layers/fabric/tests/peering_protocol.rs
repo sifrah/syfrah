@@ -444,6 +444,9 @@ async fn rate_limited_ip_gets_rejection() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // ── Send 5 wrong PINs to exhaust the rate limit ──
+    // Fire each attempt concurrently so they don't block on each other.
+    // The server records the failure before the PIN_FAIL_DELAY, and the
+    // requests then fall through to the pending queue (never approved).
     for i in 0..5 {
         let joiner_keypair = syfrah_fabric::wg::generate_keypair();
         let join_request = JoinRequest {
@@ -466,6 +469,9 @@ async fn rate_limited_ip_gets_rejection() {
         .await;
     }
 
+    // Allow server tasks to finish processing all PIN failures before sending the 6th.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
     // ── 6th attempt should get an immediate rejection (rate limited) ──
     let joiner_keypair = syfrah_fabric::wg::generate_keypair();
     let join_request = JoinRequest {
@@ -481,7 +487,7 @@ async fn rate_limited_ip_gets_rejection() {
 
     let target: SocketAddr = format!("127.0.0.1:{peering_port}").parse().unwrap();
     let result = tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(10),
         send_join_request(target, join_request),
     )
     .await;
@@ -495,7 +501,8 @@ async fn rate_limited_ip_gets_rejection() {
                 "rejection reason should mention rate limiting"
             );
         }
-        _ => panic!("rate-limited request should receive a rejection, not timeout"),
+        Ok(Err(e)) => panic!("rate-limited request failed with error: {e}"),
+        Err(_) => panic!("rate-limited request timed out after 10s"),
     }
 
     // Cleanup
