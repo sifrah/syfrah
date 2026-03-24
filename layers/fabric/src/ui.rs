@@ -146,7 +146,11 @@ pub fn join_request_card(node_name: &str, endpoint: &str, wg_key_prefix: &str) {
 }
 
 /// Print a peering-active banner.
-pub fn peering_banner(port: u16, pin: Option<&str>) {
+///
+/// When `continuous` is true (`--watch` mode), shows "Press Ctrl+C to stop."
+/// In default mode, just says "Waiting for join request..." since it exits
+/// after the first accept/reject.
+pub fn peering_banner(port: u16, pin: Option<&str>, continuous: bool) {
     if is_tty() {
         let green = Style::new().green();
         println!(
@@ -156,9 +160,11 @@ pub fn peering_banner(port: u16, pin: Option<&str>) {
         if let Some(p) = pin {
             println!("  Mode: auto-accept with PIN");
             println!("  Nodes can join with: syfrah fabric join <this-ip> --pin {p}");
-        } else {
+        } else if continuous {
             println!("  Mode: manual approval (you will be prompted for each join request)");
             println!("  Press Ctrl+C to stop.");
+        } else {
+            println!("  Waiting for join request...");
         }
         println!();
     } else {
@@ -166,9 +172,11 @@ pub fn peering_banner(port: u16, pin: Option<&str>) {
         if let Some(p) = pin {
             println!("Mode: auto-accept with PIN");
             println!("Nodes can join with: syfrah fabric join <this-ip> --pin {p}");
-        } else {
+        } else if continuous {
             println!("Mode: manual approval");
             println!("Press Ctrl+C to stop.");
+        } else {
+            println!("Waiting for join request...");
         }
         println!();
     }
