@@ -4,10 +4,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{oneshot, RwLock, Semaphore};
+use tokio::sync::{oneshot, Mutex, RwLock, Semaphore};
 use tracing::{debug, info, warn};
 
 use syfrah_core::mesh::{
@@ -24,6 +25,65 @@ const MAX_MSG_SIZE: u32 = 65536;
 const DEFAULT_MAX_CONNECTIONS: usize = 100;
 /// Default maximum pending join requests.
 const DEFAULT_MAX_PENDING_JOINS: usize = 100;
+
+/// Maximum age (in seconds) for a PeerAnnounce timestamp before it is rejected.
+const MAX_ANNOUNCE_AGE_SECS: u64 = 600;
+/// Window (in seconds) for deduplicating identical announce ciphertexts.
+const DEDUP_WINDOW_SECS: u64 = 300;
+
+/// Replay protection guard for PeerAnnounce messages.
+///
+/// Rejects announces that are:
+/// 1. Older than `MAX_ANNOUNCE_AGE_SECS` (stale timestamp).
+/// 2. Duplicates of a previously seen ciphertext within `DEDUP_WINDOW_SECS`.
+pub struct ReplayGuard {
+    /// SHA-256 hash -> timestamp when it was first seen.
+    seen: Mutex<HashMap<[u8; 32], u64>>,
+}
+
+impl Default for ReplayGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ReplayGuard {
+    pub fn new() -> Self {
+        Self {
+            seen: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Check whether a ciphertext is a duplicate. Returns `true` if the
+    /// ciphertext has already been seen within the dedup window.
+    pub async fn is_duplicate(&self, ciphertext: &[u8]) -> bool {
+        let hash = sha256(ciphertext);
+        let current = now();
+        let mut seen = self.seen.lock().await;
+
+        // Periodically evict expired entries (piggyback on every check).
+        seen.retain(|_, ts| current.saturating_sub(*ts) < DEDUP_WINDOW_SECS);
+
+        if let std::collections::hash_map::Entry::Vacant(e) = seen.entry(hash) {
+            e.insert(current);
+            false
+        } else {
+            true
+        }
+    }
+
+    /// Check whether a PeerRecord timestamp is too old.
+    pub fn is_stale(record_last_seen: u64) -> bool {
+        let current = now();
+        current.saturating_sub(record_last_seen) > MAX_ANNOUNCE_AGE_SECS
+    }
+}
+
+fn sha256(data: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hasher.finalize().into()
+}
 
 #[derive(Debug, Error)]
 pub enum PeeringError {
@@ -91,6 +151,8 @@ pub struct PeeringState {
     max_connections: usize,
     /// Max pending join requests (configurable).
     max_pending_joins: usize,
+    /// Replay protection for PeerAnnounce messages.
+    replay_guard: Arc<ReplayGuard>,
 }
 
 impl Default for PeeringState {
@@ -114,6 +176,7 @@ impl PeeringState {
             connections_active: Arc::new(AtomicU64::new(0)),
             max_connections,
             max_pending_joins,
+            replay_guard: Arc::new(ReplayGuard::new()),
         }
     }
 
@@ -235,6 +298,7 @@ impl PeeringState {
             let on_accepted = on_accepted.clone();
             let active_counter = self.connections_active.clone();
             let max_pending = self.max_pending_joins;
+            let replay_guard = self.replay_guard.clone();
 
             tokio::spawn(async move {
                 let _permit = permit; // held until this task ends
@@ -247,6 +311,7 @@ impl PeeringState {
                     auto_accept,
                     on_accepted,
                     max_pending,
+                    replay_guard,
                 )
                 .await
                 {
@@ -271,6 +336,7 @@ async fn handle_incoming(
     auto_accept: Arc<RwLock<Option<AutoAcceptConfig>>>,
     on_accepted: OnAccepted,
     max_pending_joins: usize,
+    replay_guard: Arc<ReplayGuard>,
 ) -> Result<(), PeeringError> {
     // Apply read timeout to protect against slowloris attacks.
     let msg = tokio::time::timeout(EXCHANGE_TIMEOUT, read_message(&mut stream))
@@ -415,7 +481,31 @@ async fn handle_incoming(
         PeeringMessage::PeerAnnounce(ciphertext) => {
             let enc_key =
                 encryption_key.ok_or_else(|| PeeringError::Protocol("no encryption key".into()))?;
+
+            // Replay protection: drop duplicate ciphertexts within the dedup window.
+            if replay_guard.is_duplicate(&ciphertext).await {
+                debug!(
+                    from = %peer_addr,
+                    "duplicate announce dropped (same ciphertext seen within dedup window)"
+                );
+                return Ok(());
+            }
+
             let record = decrypt_record(&ciphertext, &enc_key)?;
+
+            // Replay protection: reject announces with stale timestamps.
+            if ReplayGuard::is_stale(record.last_seen) {
+                let age = now().saturating_sub(record.last_seen);
+                debug!(
+                    peer = %record.name,
+                    from = %peer_addr,
+                    age_secs = age,
+                    max_age_secs = MAX_ANNOUNCE_AGE_SECS,
+                    "stale announce rejected"
+                );
+                return Ok(());
+            }
+
             info!(
                 peer = %record.name,
                 ipv6 = %record.mesh_ipv6,
@@ -515,7 +605,10 @@ pub async fn announce_peer(
     encryption_key: &[u8; 32],
 ) -> Result<(), PeeringError> {
     let target = SocketAddr::new(target_endpoint.ip(), peering_port);
-    let ciphertext = encrypt_record(record, encryption_key)?;
+    // Stamp the record with the current time for replay protection.
+    let mut stamped = record.clone();
+    stamped.last_seen = now();
+    let ciphertext = encrypt_record(&stamped, encryption_key)?;
 
     let mut last_err = None;
     for attempt in 0..ANNOUNCE_MAX_RETRIES {
@@ -632,4 +725,52 @@ pub fn generate_pin() -> String {
     use rand::Rng;
     let n: u16 = rand::thread_rng().gen_range(1000..10000);
     n.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn replay_guard_detects_duplicate_ciphertext() {
+        let guard = ReplayGuard::new();
+        let data = b"test-ciphertext-payload";
+
+        // First time: not a duplicate.
+        assert!(!guard.is_duplicate(data).await);
+        // Second time: duplicate.
+        assert!(guard.is_duplicate(data).await);
+    }
+
+    #[tokio::test]
+    async fn replay_guard_allows_different_ciphertexts() {
+        let guard = ReplayGuard::new();
+        assert!(!guard.is_duplicate(b"payload-a").await);
+        assert!(!guard.is_duplicate(b"payload-b").await);
+    }
+
+    #[test]
+    fn replay_guard_rejects_stale_timestamp() {
+        let stale = now().saturating_sub(MAX_ANNOUNCE_AGE_SECS + 100);
+        assert!(ReplayGuard::is_stale(stale));
+    }
+
+    #[test]
+    fn replay_guard_accepts_fresh_timestamp() {
+        let fresh = now();
+        assert!(!ReplayGuard::is_stale(fresh));
+    }
+
+    #[test]
+    fn replay_guard_accepts_timestamp_at_boundary() {
+        // Exactly at the boundary (age == MAX_ANNOUNCE_AGE_SECS) should pass.
+        let at_boundary = now().saturating_sub(MAX_ANNOUNCE_AGE_SECS);
+        assert!(!ReplayGuard::is_stale(at_boundary));
+    }
+
+    #[test]
+    fn replay_guard_rejects_timestamp_just_past_boundary() {
+        let past = now().saturating_sub(MAX_ANNOUNCE_AGE_SECS + 1);
+        assert!(ReplayGuard::is_stale(past));
+    }
 }
