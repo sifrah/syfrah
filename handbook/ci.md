@@ -110,6 +110,23 @@ Some tests require root privileges or WireGuard kernel support. These are marked
 sudo cargo test -- --ignored
 ```
 
+## Branch protection
+
+The `main` branch is protected by a GitHub ruleset named **main-protection**. The ruleset enforces:
+
+| Rule | Effect |
+|---|---|
+| **Pull request required** | All changes reach `main` through a PR. Stale reviews are dismissed on push. `required_approving_review_count` is 0 because the repo owner works solo. |
+| **Required status checks** | `Format`, `syfrah-core`, `syfrah-fabric`, `syfrah-bin`, and `syfrah-state` must pass. Branches must be up-to-date before merge (strict mode). |
+| **No force-push** | `non_fast_forward` rule prevents history rewrites on `main`. |
+| **No deletion** | `main` cannot be deleted. |
+
+Repository admins can bypass the ruleset when necessary.
+
+### CODEOWNERS
+
+`.github/CODEOWNERS` assigns `@sifrah` as the default reviewer for all paths. GitHub automatically requests a review from matching code owners on every PR.
+
 ## Cache
 
 Each per-crate job uses `Swatinem/rust-cache` with a per-crate cache key. This means the first build of a new layer is slow, but subsequent builds reuse the cache.
