@@ -11,7 +11,8 @@ use tokio::sync::{oneshot, Mutex, RwLock, Semaphore};
 use tracing::{debug, info, warn};
 
 use syfrah_core::mesh::{
-    decrypt_record, encrypt_record, JoinRequest, JoinResponse, PeerRecord, PeeringMessage,
+    decrypt_record, encrypt_record, validate_join_request, validate_join_response,
+    validate_peer_record, JoinRequest, JoinResponse, PeerRecord, PeerStatus, PeeringMessage,
 };
 
 use crate::events::{self, EventType};
@@ -329,7 +330,15 @@ async fn handle_incoming(
 
     match msg {
         PeeringMessage::JoinRequest(mut req) => {
-            // Auto-detect endpoint: if 0.0.0.0, use TCP peer IP
+            // Validate all fields before processing
+            if let Err(e) = validate_join_request(&req) {
+                warn!(from = %peer_addr, error = %e, "rejecting join request: validation failed");
+                return Err(PeeringError::Protocol(format!("invalid join request: {e}")));
+            }
+
+            // Auto-detect endpoint: if 0.0.0.0, use TCP peer IP.
+            // This runs after validation because validate_join_request
+            // intentionally allows unspecified endpoints for auto-detect.
             if req.endpoint.ip().is_unspecified() {
                 req.endpoint = SocketAddr::new(peer_addr.ip(), req.wg_listen_port);
                 info!(
@@ -525,6 +534,28 @@ async fn handle_incoming(
             let enc_key =
                 encryption_key.ok_or_else(|| PeeringError::Protocol("no encryption key".into()))?;
             let record = decrypt_record(&ciphertext, &enc_key)?;
+
+            // Validate record fields
+            if let Err(e) = validate_peer_record(&record) {
+                warn!(from = %peer_addr, error = %e, "rejecting peer announce: validation failed");
+                return Err(PeeringError::Protocol(format!(
+                    "invalid peer announce: {e}"
+                )));
+            }
+
+            // Reject status=Removed from peer announces — only a node can remove itself
+            // via the leave flow, not via an announce from another peer.
+            if record.status == PeerStatus::Removed {
+                warn!(
+                    from = %peer_addr,
+                    peer = %record.name,
+                    "rejecting peer announce with status=Removed (potential attack)"
+                );
+                return Err(PeeringError::Protocol(
+                    "peer announce with status=Removed is not allowed".to_string(),
+                ));
+            }
+
             info!(
                 peer = %record.name,
                 ipv6 = %record.mesh_ipv6,
@@ -608,7 +639,16 @@ pub async fn send_join_request(
         .map_err(|_| PeeringError::Timeout)??;
 
     match msg {
-        PeeringMessage::JoinResponse(resp) => Ok(resp),
+        PeeringMessage::JoinResponse(resp) => {
+            // Validate peer list size limit
+            if let Err(e) = validate_join_response(&resp) {
+                warn!(error = %e, "rejecting join response: validation failed");
+                return Err(PeeringError::Protocol(format!(
+                    "invalid join response: {e}"
+                )));
+            }
+            Ok(resp)
+        }
         _ => Err(PeeringError::Protocol("expected JoinResponse".into())),
     }
 }
