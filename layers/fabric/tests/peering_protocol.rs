@@ -501,7 +501,8 @@ async fn rate_limited_ip_gets_rejection() {
                 "rejection reason should mention rate limiting"
             );
         }
-        _ => panic!("rate-limited request should receive a rejection, not timeout"),
+        Ok(Err(e)) => panic!("rate-limited request failed with error: {e}"),
+        Err(_) => panic!("rate-limited request timed out after 10s"),
     }
 
     // Cleanup
