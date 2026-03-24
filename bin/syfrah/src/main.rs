@@ -336,9 +336,7 @@ fn background_daemon() -> Result<()> {
             println!("Daemon started (pid {pid}).");
         }
         None => {
-            eprintln!(
-                "Warning: daemon may have failed to start. Check logs: ~/.syfrah/syfrah.log"
-            );
+            eprintln!("Warning: daemon may have failed to start. Check logs: ~/.syfrah/syfrah.log");
         }
     }
     println!("Run 'syfrah fabric status' to check.");

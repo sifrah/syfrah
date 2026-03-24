@@ -478,8 +478,7 @@ pub async fn run_leave() -> anyhow::Result<bool> {
                 // Wait for the daemon process to actually exit (up to 10s).
                 // Just sleeping a fixed 2s was not enough — the daemon may
                 // still hold file locks when we try to remove the state dir.
-                let deadline =
-                    tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
                 loop {
                     let alive = unsafe { libc::kill(pid as i32, 0) } == 0;
                     if !alive {
@@ -980,9 +979,8 @@ pub async fn run_daemon(
     // SIGTERM but the daemon dies immediately without cleanup.
     #[cfg(unix)]
     let terminate = async {
-        let mut sig =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("failed to register SIGTERM handler");
+        let mut sig = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to register SIGTERM handler");
         sig.recv().await;
     };
     #[cfg(not(unix))]
