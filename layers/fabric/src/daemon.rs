@@ -438,7 +438,9 @@ pub async fn run_daemon(
         tuning.unreachable_timeout.as_secs(),
     );
 
-    store::write_pid()?;
+    // Acquire exclusive PID file lock. The returned file handle must be kept
+    // alive for the entire daemon lifetime — dropping it releases the flock.
+    let _pid_lock = store::write_pid()?;
     events::emit(
         EventType::DaemonStarted,
         None,
