@@ -4,7 +4,7 @@
 
 The syfrah daemon reads optional configuration from `~/.syfrah/config.toml` at startup. Every setting has a sensible default, so the file is not required. Create it only when you need to tune behavior for your environment.
 
-If the file does not exist, the daemon starts with built-in defaults. If the file exists but contains invalid TOML or unrecognized keys, the daemon refuses to start and prints the parse error.
+If the file does not exist, the daemon starts with built-in defaults. If the file exists but contains invalid TOML syntax or type mismatches (e.g. a string where an integer is expected), the daemon refuses to start and prints the parse error. Unrecognized keys are silently ignored — double-check spelling if a setting does not seem to take effect.
 
 ## File location
 
