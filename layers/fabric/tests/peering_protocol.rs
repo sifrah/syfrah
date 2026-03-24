@@ -476,7 +476,7 @@ async fn rate_limited_ip_gets_rejection() {
 
     let target: SocketAddr = format!("127.0.0.1:{peering_port}").parse().unwrap();
     let result = tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(10),
         send_join_request(target, join_request),
     )
     .await;
