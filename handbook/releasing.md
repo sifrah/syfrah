@@ -4,34 +4,46 @@
 
 Syfrah follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). All crates in the workspace share a single version defined in the root `Cargo.toml` under `[workspace.package]`. Individual crates inherit the version with `version.workspace = true`.
 
-## Version bumps
+## Automated releases
 
-To bump the version, update the single source of truth:
+Every merge to `main` automatically produces a new GitHub Release. There is no manual version bump required.
 
-```toml
-# Cargo.toml (root)
-[workspace.package]
-version = "0.2.0"
+### How it works
+
+1. **Trigger** -- the `Release` workflow runs on every push to `main` and on `workflow_dispatch`.
+2. **Loop prevention** -- if the HEAD commit message starts with `release:`, the workflow exits immediately. This prevents the version-bump commit from triggering another release.
+3. **Version calculation** -- the workflow inspects commit messages since the last git tag and determines the next version:
+
+   | Commit message contains | Bump | Example |
+   |--------------------------|------|---------|
+   | `BREAKING` or `breaking:` | Major (X.0.0) | `0.2.0 -> 1.0.0` |
+   | `[Feature]` or `feat:` | Minor (0.X.0) | `0.2.0 -> 0.3.0` |
+   | Anything else | Patch (0.0.X) | `0.2.0 -> 0.2.1` |
+
+4. **CI gate** -- the workflow waits for CI checks to pass before proceeding.
+5. **Cargo.toml bump** -- the workflow updates `version` in `[workspace.package]` in the root `Cargo.toml`, commits with `release: vX.Y.Z [skip ci]`, and pushes directly to `main`.
+6. **Build** -- all four targets are built in parallel (same matrix as CI).
+7. **Release** -- binaries are packaged into `.tar.gz` archives, `SHA256SUMS.txt` is generated, a git tag `vX.Y.Z` is created, and a GitHub Release is published with all artifacts.
+
+### Influencing the version bump
+
+To trigger a minor version bump, include `feat:` or `[Feature]` in at least one commit message in your PR:
+
+```
+feat: add mesh event log
 ```
 
-All crates pick up the new version automatically.
+To trigger a major version bump, include `BREAKING` or `breaking:` in a commit message:
 
-## Release checklist
+```
+breaking: remove legacy peering protocol
+```
 
-1. **Update CHANGELOG.md** — move items from `Unreleased` to a new version section with today's date.
-2. **Bump version** — edit `version` in `[workspace.package]` in the root `Cargo.toml`.
-3. **Run CI locally** — `just ci` (fmt + clippy + test).
-4. **Commit & push to main** — `git commit -m "Release v0.x.y"` and push (or merge a PR).
+If no commit matches these patterns, the patch version is incremented.
 
-The release workflow detects the new version, waits for CI to pass, builds all targets, creates the git tag, and publishes the GitHub Release automatically. No manual tagging or release creation required.
+### Manual release
 
-## Changelog format
-
-The project uses [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Every user-facing change should be recorded under one of: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`.
-
-## Pre-release versions
-
-For pre-release builds, use SemVer pre-release identifiers: `0.2.0-alpha.1`, `0.2.0-rc.1`.
+You can also trigger a release manually via the GitHub Actions UI using `workflow_dispatch`. This uses the same auto-increment logic.
 
 ## Targets
 
@@ -44,25 +56,17 @@ For pre-release builds, use SemVer pre-release identifiers: `0.2.0-alpha.1`, `0.
 
 Linux binaries are statically linked via musl so they run on any Linux distribution with no runtime dependencies.
 
-## Release workflow
-
-The `Release` workflow (`.github/workflows/release.yml`) runs automatically on every push to `main` and on `workflow_dispatch`:
-
-1. **check-version** — reads the version from the root `Cargo.toml` and checks whether the corresponding `v{version}` tag already exists. If the tag exists, the workflow stops early.
-2. **ci** — waits for the CI workflow checks to pass on the same commit.
-3. **build** — builds all four targets in parallel (same matrix as before).
-4. **release** — packages each binary into a `.tar.gz` archive, copies `install.sh`, generates `SHA256SUMS.txt`, creates the git tag `v{version}`, and publishes a GitHub Release with auto-generated release notes and all artifacts attached.
-
 ## Artifacts
 
 Each release contains:
 
 ```
-syfrah-v0.1.0-x86_64-unknown-linux-musl.tar.gz
-syfrah-v0.1.0-aarch64-unknown-linux-musl.tar.gz
-syfrah-v0.1.0-x86_64-apple-darwin.tar.gz
-syfrah-v0.1.0-aarch64-apple-darwin.tar.gz
+syfrah-vX.Y.Z-x86_64-unknown-linux-musl.tar.gz
+syfrah-vX.Y.Z-aarch64-unknown-linux-musl.tar.gz
+syfrah-vX.Y.Z-x86_64-apple-darwin.tar.gz
+syfrah-vX.Y.Z-aarch64-apple-darwin.tar.gz
 SHA256SUMS.txt
+install.sh
 ```
 
 ## Verifying a download
