@@ -11,7 +11,8 @@ use tokio::sync::{oneshot, Mutex, RwLock, Semaphore};
 use tracing::{debug, info, warn};
 
 use syfrah_core::mesh::{
-    decrypt_record, encrypt_record, JoinRequest, JoinResponse, PeerRecord, PeeringMessage,
+    decrypt_record, encrypt_record, validate_join_request, validate_join_response,
+    validate_peer_record, JoinRequest, JoinResponse, PeerRecord, PeerStatus, PeeringMessage,
 };
 
 use crate::events::{self, EventType};
@@ -87,6 +88,8 @@ pub enum PeeringError {
     Timeout,
     #[error("rejected: {0}")]
     Rejected(String),
+    #[error("peer limit exceeded: {current} peers (max {max})")]
+    PeerLimitExceeded { current: usize, max: usize },
 }
 
 /// Metadata about a pending join request (serializable for CLI display).
@@ -119,6 +122,7 @@ pub struct AutoAcceptConfig {
     pub wg_pubkey: wireguard_control::Key,
     pub encryption_key: [u8; 32],
     pub peering_port: u16,
+    pub max_peers: usize,
 }
 
 /// Callback type invoked when a peer is accepted (either manually or via PIN).
@@ -330,7 +334,15 @@ async fn handle_incoming(
 
     match msg {
         PeeringMessage::JoinRequest(mut req) => {
-            // Auto-detect endpoint: if 0.0.0.0, use TCP peer IP
+            // Validate all fields before processing
+            if let Err(e) = validate_join_request(&req) {
+                warn!(from = %peer_addr, error = %e, "rejecting join request: validation failed");
+                return Err(PeeringError::Protocol(format!("invalid join request: {e}")));
+            }
+
+            // Auto-detect endpoint: if 0.0.0.0, use TCP peer IP.
+            // This runs after validation because validate_join_request
+            // intentionally allows unspecified endpoints for auto-detect.
             if req.endpoint.ip().is_unspecified() {
                 req.endpoint = SocketAddr::new(peer_addr.ip(), req.wg_listen_port);
                 info!(
@@ -410,6 +422,39 @@ async fn handle_incoming(
 
                     // Case-insensitive comparison for alphanumeric PINs
                     if config.pin.eq_ignore_ascii_case(req_pin) {
+                        // Check peer limit before accepting
+                        let current_peers = crate::store::peer_count().unwrap_or(0);
+                        if current_peers >= config.max_peers {
+                            warn!(
+                                node = %sanitize(&req.node_name),
+                                current = current_peers,
+                                max = config.max_peers,
+                                "peer limit reached, rejecting join request"
+                            );
+                            events::emit(
+                                EventType::PeerLimitReached,
+                                Some(&sanitize(&req.node_name)),
+                                Some(&req.endpoint.to_string()),
+                                Some(&format!("max_peers={}", config.max_peers)),
+                                None,
+                            );
+                            let response = JoinResponse {
+                                accepted: false,
+                                mesh_name: None,
+                                mesh_secret: None,
+                                mesh_prefix: None,
+                                peers: vec![],
+                                reason: Some(format!(
+                                    "peer limit reached ({}/{})",
+                                    current_peers, config.max_peers
+                                )),
+                                approved_by: None,
+                            };
+                            write_message(&mut stream, &PeeringMessage::JoinResponse(response))
+                                .await?;
+                            return Ok(());
+                        }
+
                         info!(node = %sanitize(&req.node_name), request_id = %req.request_id, "PIN matched, auto-accepting");
                         events::emit(
                             EventType::JoinAutoAccepted,
@@ -527,6 +572,28 @@ async fn handle_incoming(
             let enc_key =
                 encryption_key.ok_or_else(|| PeeringError::Protocol("no encryption key".into()))?;
             let record = decrypt_record(&ciphertext, &enc_key)?;
+
+            // Validate record fields
+            if let Err(e) = validate_peer_record(&record) {
+                warn!(from = %peer_addr, error = %e, "rejecting peer announce: validation failed");
+                return Err(PeeringError::Protocol(format!(
+                    "invalid peer announce: {e}"
+                )));
+            }
+
+            // Reject status=Removed from peer announces — only a node can remove itself
+            // via the leave flow, not via an announce from another peer.
+            if record.status == PeerStatus::Removed {
+                warn!(
+                    from = %peer_addr,
+                    peer = %sanitize(&record.name),
+                    "rejecting peer announce with status=Removed (potential attack)"
+                );
+                return Err(PeeringError::Protocol(
+                    "peer announce with status=Removed is not allowed".to_string(),
+                ));
+            }
+
             info!(
                 peer = %sanitize(&record.name),
                 ipv6 = %record.mesh_ipv6,
@@ -610,7 +677,16 @@ pub async fn send_join_request(
         .map_err(|_| PeeringError::Timeout)??;
 
     match msg {
-        PeeringMessage::JoinResponse(resp) => Ok(resp),
+        PeeringMessage::JoinResponse(resp) => {
+            // Validate peer list size limit
+            if let Err(e) = validate_join_response(&resp) {
+                warn!(error = %e, "rejecting join response: validation failed");
+                return Err(PeeringError::Protocol(format!(
+                    "invalid join response: {e}"
+                )));
+            }
+            Ok(resp)
+        }
         _ => Err(PeeringError::Protocol("expected JoinResponse".into())),
     }
 }
