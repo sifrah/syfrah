@@ -171,6 +171,9 @@ pub fn auto_init(
 
 /// Setup the join flow: send join request, save state, print info.
 /// Returns a DaemonReady that can be passed to run_daemon.
+///
+/// On failure, any partial state (WireGuard interface, persisted state) is
+/// rolled back so the user can retry without running `leave` first.
 pub async fn setup_join(
     target: SocketAddr,
     config: &DaemonConfig,
@@ -209,7 +212,13 @@ pub async fn setup_join(
     ui::step_ok(&sp, &format!("Connected to {target}"));
 
     let sp = ui::spinner("Waiting for approval...");
-    let response = peering::send_join_request(target, request).await?;
+    let response = match peering::send_join_request(target, request).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            ui::step_fail(&sp, &format!("Failed: {e}"));
+            return Err(map_join_error(e, target));
+        }
+    };
 
     if !response.accepted {
         let reason = response.reason.unwrap_or_else(|| "no reason given".into());
@@ -218,13 +227,33 @@ pub async fn setup_join(
     }
     ui::step_ok(&sp, "Approved");
 
+    // Everything below writes state — wrap in rollback on error.
+    match finalize_join(config, &wg_keypair, endpoint, &response).await {
+        Ok(ready) => Ok(ready),
+        Err(e) => {
+            warn!(flow = "join", error = %e, "join failed after approval, rolling back");
+            rollback_join_state();
+            Err(e)
+        }
+    }
+}
+
+/// Finalize the join after approval: setup WG interface, save state, print info.
+/// Separated from `setup_join` so the caller can rollback on any error here.
+async fn finalize_join(
+    config: &DaemonConfig,
+    wg_keypair: &KeyPair,
+    endpoint: SocketAddr,
+    response: &syfrah_core::mesh::JoinResponse,
+) -> anyhow::Result<DaemonReady> {
     let mesh_secret_str = response
         .mesh_secret
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("accepted but no mesh secret"))?;
     let mesh_secret: MeshSecret = mesh_secret_str
         .parse()
         .map_err(|e| anyhow::anyhow!("invalid mesh secret: {e}"))?;
-    let mesh_name = response.mesh_name.unwrap_or_else(|| "mesh".into());
+    let mesh_name = response.mesh_name.as_deref().unwrap_or("mesh");
     let mesh_prefix = response
         .mesh_prefix
         .ok_or_else(|| anyhow::anyhow!("accepted but no mesh prefix"))?;
@@ -242,7 +271,7 @@ pub async fn setup_join(
         .unwrap_or_else(|| store::generate_zone(&region, &response.peers));
 
     let sp = ui::spinner("Setting up WireGuard interface...");
-    wg::setup_interface(&wg_keypair, config.wg_listen_port, mesh_ipv6)?;
+    wg::setup_interface(wg_keypair, config.wg_listen_port, mesh_ipv6)?;
     ui::step_ok(&sp, &format!("Interface syfrah0 up ({mesh_ipv6})"));
     info!(flow = "join", node = %config.node_name, "wireguard interface up");
 
@@ -260,8 +289,8 @@ pub async fn setup_join(
     }
 
     let state = NodeState {
-        mesh_name: mesh_name.clone(),
-        mesh_secret: mesh_secret_str,
+        mesh_name: mesh_name.to_string(),
+        mesh_secret: mesh_secret_str.clone(),
         wg_private_key: wg_keypair.private.to_base64(),
         wg_public_key: wg_keypair.public.to_base64(),
         mesh_ipv6,
@@ -295,7 +324,7 @@ pub async fn setup_join(
 
     let my_record = build_record(
         &config.node_name,
-        &wg_keypair,
+        wg_keypair,
         endpoint,
         mesh_ipv6,
         Some(&region),
@@ -303,10 +332,43 @@ pub async fn setup_join(
     );
     Ok(DaemonReady {
         my_record,
-        wg_keypair,
+        wg_keypair: KeyPair::from_private(wg_keypair.private.clone()),
         mesh_secret,
         peering_port: config.peering_port,
     })
+}
+
+/// Roll back any partial state left by a failed join attempt.
+/// Tears down WireGuard interface and clears persisted state so the user
+/// can retry without running `leave` first.
+fn rollback_join_state() {
+    if let Err(e) = wg::teardown_interface() {
+        debug!(error = %e, "rollback: no interface to tear down (expected)");
+    }
+    if store::exists() {
+        if let Err(e) = store::clear() {
+            warn!(error = %e, "rollback: failed to clear state");
+        }
+    }
+}
+
+/// Map peering errors during join to user-friendly messages.
+fn map_join_error(err: peering::PeeringError, target: SocketAddr) -> anyhow::Error {
+    match &err {
+        peering::PeeringError::Io(io_err) if io_err.kind() == std::io::ErrorKind::UnexpectedEof => {
+            anyhow::anyhow!(
+                "Connection closed by {target}. The target node may not have peering active.\n  \
+                 Ask the operator to run: syfrah fabric peering start"
+            )
+        }
+        peering::PeeringError::Timeout => {
+            anyhow::anyhow!(
+                "Connection to {target} timed out. The target node may not be reachable or peering may not be active.\n  \
+                 Ask the operator to run: syfrah fabric peering start"
+            )
+        }
+        _ => err.into(),
+    }
 }
 
 /// Run the join flow: join mesh and run daemon (foreground).
@@ -1383,5 +1445,58 @@ mod tests {
         let wg_keys = vec![]; // not in WG, but it's Removed
         let needing = peers_needing_reconciliation(&peers, &wg_keys);
         assert!(needing.is_empty());
+    }
+
+    // ── map_join_error tests ──
+
+    #[test]
+    fn map_join_error_unexpected_eof_is_friendly() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "early eof");
+        let peering_err = crate::peering::PeeringError::Io(io_err);
+        let target: SocketAddr = "203.0.113.1:51821".parse().unwrap();
+        let mapped = map_join_error(peering_err, target);
+        let msg = mapped.to_string();
+        assert!(
+            msg.contains("Connection closed by"),
+            "expected friendly message, got: {msg}"
+        );
+        assert!(
+            msg.contains("peering"),
+            "should suggest peering, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn map_join_error_timeout_is_friendly() {
+        let peering_err = crate::peering::PeeringError::Timeout;
+        let target: SocketAddr = "203.0.113.1:51821".parse().unwrap();
+        let mapped = map_join_error(peering_err, target);
+        let msg = mapped.to_string();
+        assert!(
+            msg.contains("timed out"),
+            "expected timeout message, got: {msg}"
+        );
+        assert!(
+            msg.contains("peering"),
+            "should suggest peering, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn map_join_error_other_passes_through() {
+        let peering_err = crate::peering::PeeringError::Protocol("something weird".into());
+        let target: SocketAddr = "203.0.113.1:51821".parse().unwrap();
+        let mapped = map_join_error(peering_err, target);
+        let msg = mapped.to_string();
+        assert!(
+            msg.contains("something weird"),
+            "other errors pass through, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn rollback_join_state_is_safe_when_no_state() {
+        // rollback should not panic even when there's nothing to clean up
+        rollback_join_state();
     }
 }
