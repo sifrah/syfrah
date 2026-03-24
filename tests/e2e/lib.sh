@@ -340,6 +340,187 @@ wait_for_convergence() {
     return 1
 }
 
+# ── UX output assertions ─────────────────────────────────────
+
+# Verify command output contains an expected string
+# Usage: assert_output_contains <container> "<command>" "<expected>"
+assert_output_contains() {
+    local container="$1" cmd="$2" expected="$3"
+    local output
+    output=$(docker exec "$container" sh -c "$cmd" 2>&1)
+    if echo "$output" | grep -qF "$expected"; then
+        pass "$cmd output contains '$expected'"
+    else
+        fail "$cmd output missing '$expected'. Got: $(echo "$output" | head -5)"
+    fi
+}
+
+# Verify command output does NOT contain a forbidden string
+# Usage: assert_output_not_contains <container> "<command>" "<forbidden>"
+assert_output_not_contains() {
+    local container="$1" cmd="$2" forbidden="$3"
+    local output
+    output=$(docker exec "$container" sh -c "$cmd" 2>&1)
+    if echo "$output" | grep -qF "$forbidden"; then
+        fail "$cmd output contains forbidden '$forbidden'"
+    else
+        pass "$cmd output clean (no '$forbidden')"
+    fi
+}
+
+# Verify command output matches a regex
+# Usage: assert_output_matches <container> "<command>" "<regex>"
+assert_output_matches() {
+    local container="$1" cmd="$2" regex="$3"
+    local output
+    output=$(docker exec "$container" sh -c "$cmd" 2>&1)
+    if echo "$output" | grep -qE "$regex"; then
+        pass "$cmd matches /$regex/"
+    else
+        fail "$cmd does not match /$regex/. Got: $(echo "$output" | head -5)"
+    fi
+}
+
+# ── UX peer table assertions ────────────────────────────────
+
+# Verify no duplicate peer names in peers output
+# Usage: assert_no_duplicate_peers <container>
+assert_no_duplicate_peers() {
+    local container="$1"
+    local output dupes
+    output=$(docker exec "$container" syfrah fabric peers 2>&1 | tail -n +3)
+    dupes=$(echo "$output" | awk '{print $1}' | sort | uniq -d)
+    if [ -z "$dupes" ]; then
+        pass "$container: no duplicate peers"
+    else
+        fail "$container: duplicate peers found: $dupes"
+    fi
+}
+
+# Verify region and zone are populated (not "-") for all peers
+# Usage: assert_regions_displayed <container>
+assert_regions_displayed() {
+    local container="$1"
+    local output
+    output=$(docker exec "$container" syfrah fabric peers 2>&1 | tail -n +3)
+    if echo "$output" | grep -qE "\s-\s+-\s+"; then
+        fail "$container: peers have empty region/zone"
+    else
+        pass "$container: all peers have region/zone"
+    fi
+}
+
+# Verify no epoch dates (20535d, 19000d, etc.)
+# Usage: assert_no_epoch_dates <container>
+assert_no_epoch_dates() {
+    local container="$1"
+    local output
+    output=$(docker exec "$container" syfrah fabric peers 2>&1)
+    if echo "$output" | grep -qE "[0-9]{4,}d ago"; then
+        fail "$container: epoch date found in peers output"
+    else
+        pass "$container: no epoch dates"
+    fi
+}
+
+# ── UX state assertions ─────────────────────────────────────
+
+# Verify state is fully clean after leave
+# Usage: assert_clean_state <container>
+assert_clean_state() {
+    local container="$1"
+    local remnants
+    remnants=$(docker exec "$container" sh -c \
+        'ls ~/.syfrah/state.json ~/.syfrah/daemon.pid 2>/dev/null; test -d ~/.syfrah && ls ~/.syfrah/*.redb 2>/dev/null' || true)
+    if [ -z "$remnants" ]; then
+        pass "$container: state fully clean"
+    else
+        fail "$container: state remnants found: $remnants"
+    fi
+}
+
+# Verify join can be retried after failure without leave
+# Usage: assert_join_retry_works <container> <target> <ip> <name>
+assert_join_retry_works() {
+    local container="$1" target="$2" ip="$3" name="$4"
+    # First attempt should fail or succeed
+    # Second attempt must not say "state already exists"
+    local output
+    output=$(docker exec "$container" syfrah fabric join "$target" \
+        --node-name "$name" --endpoint "$ip:51820" 2>&1 || true)
+    if echo "$output" | grep -qi "state already exists"; then
+        fail "$container: retry blocked by phantom state"
+    else
+        pass "$container: join retry not blocked"
+    fi
+}
+
+# ── UX command suggestion assertions ─────────────────────────
+
+# Verify that every command mentioned in output actually exists
+# Usage: assert_all_commands_valid <container> "<command>"
+assert_all_commands_valid() {
+    local container="$1" cmd="$2"
+    local output
+    output=$(docker exec "$container" sh -c "$cmd" 2>&1 || true)
+    # Extract anything that looks like "syfrah ..."
+    local suggested
+    suggested=$(echo "$output" | grep -oE "syfrah [a-z]+ [a-z]+" | sort -u)
+    for suggestion in $suggested; do
+        local subcmd
+        subcmd=$(echo "$suggestion" | awk '{print $2, $3}')
+        if docker exec "$container" syfrah $subcmd --help >/dev/null 2>&1; then
+            pass "suggested command '$suggestion' exists"
+        else
+            fail "suggested command '$suggestion' does NOT exist"
+        fi
+    done
+}
+
+# Verify error output suggests a specific next command
+# Usage: assert_command_suggests <container> "<command>" "<expected_suggestion>"
+assert_command_suggests() {
+    local container="$1" cmd="$2" expected_suggestion="$3"
+    local output
+    output=$(docker exec "$container" sh -c "$cmd" 2>&1 || true)
+    if echo "$output" | grep -qF "$expected_suggestion"; then
+        pass "$cmd suggests '$expected_suggestion'"
+    else
+        fail "$cmd does not suggest '$expected_suggestion'"
+    fi
+}
+
+# ── UX cross-command consistency assertions ──────────────────
+
+# Verify region is the same across status and peers
+# Usage: assert_consistent_region <container>
+assert_consistent_region() {
+    local container="$1"
+    local status_region peers_region
+    status_region=$(docker exec "$container" syfrah fabric status 2>&1 | grep -i region | awk '{print $NF}')
+    peers_region=$(docker exec "$container" syfrah fabric peers 2>&1 | tail -n +3 | head -1 | awk '{print $2}')
+    if [ "$status_region" = "$peers_region" ]; then
+        pass "$container: region consistent (status=peers=$status_region)"
+    else
+        fail "$container: region mismatch (status=$status_region, peers=$peers_region)"
+    fi
+}
+
+# Verify peer count in status matches lines in peers
+# Usage: assert_consistent_peer_count <container>
+assert_consistent_peer_count() {
+    local container="$1"
+    local status_count peers_count
+    peers_count=$(docker exec "$container" syfrah fabric peers 2>&1 | tail -n +3 | grep -c "active\|unreach" || echo 0)
+    # status should show same number
+    status_count=$(docker exec "$container" syfrah fabric status 2>&1 | grep -i "peer" | grep -oE "[0-9]+" | head -1)
+    if [ "$peers_count" = "$status_count" ]; then
+        pass "$container: peer count consistent ($peers_count)"
+    else
+        fail "$container: peer count mismatch (peers=$peers_count, status=$status_count)"
+    fi
+}
+
 # ── Cleanup ───────────────────────────────────────────────────
 
 cleanup() {
