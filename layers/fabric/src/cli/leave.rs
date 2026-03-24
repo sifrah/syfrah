@@ -5,8 +5,14 @@ use anyhow::Result;
 pub async fn run() -> Result<()> {
     let sp = ui::spinner("Leaving mesh...");
     match daemon::run_leave().await {
-        Ok(()) => {
-            ui::step_ok(&sp, "Left the mesh. State cleared.");
+        Ok(true) => {
+            // run_leave already printed detailed progress; just finish the
+            // outer spinner so the CLI output stays tidy.
+            sp.finish_and_clear();
+            Ok(())
+        }
+        Ok(false) => {
+            ui::step_ok(&sp, "No mesh configured. Nothing to do.");
             Ok(())
         }
         Err(e) => {
