@@ -66,6 +66,7 @@ async fn join_with_pin_auto_accept() {
             wg_pubkey: leader_keypair.public.clone(),
             encryption_key,
             peering_port,
+            max_peers: 1000,
         }))
         .await;
 
@@ -191,6 +192,7 @@ async fn join_with_wrong_pin_falls_to_pending() {
             wg_pubkey: leader_keypair.public.clone(),
             encryption_key,
             peering_port,
+            max_peers: 1000,
         }))
         .await;
 
@@ -283,6 +285,7 @@ async fn join_without_pin_goes_to_pending() {
             wg_pubkey: leader_keypair.public.clone(),
             encryption_key,
             peering_port,
+            max_peers: 1000,
         }))
         .await;
 
@@ -421,6 +424,7 @@ async fn rate_limited_ip_gets_rejection() {
             wg_pubkey: leader_keypair.public.clone(),
             encryption_key,
             peering_port,
+            max_peers: 1000,
         }))
         .await;
 

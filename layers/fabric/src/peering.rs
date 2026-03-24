@@ -87,6 +87,8 @@ pub enum PeeringError {
     Timeout,
     #[error("rejected: {0}")]
     Rejected(String),
+    #[error("peer limit exceeded: {current} peers (max {max})")]
+    PeerLimitExceeded { current: usize, max: usize },
 }
 
 /// Metadata about a pending join request (serializable for CLI display).
@@ -119,6 +121,7 @@ pub struct AutoAcceptConfig {
     pub wg_pubkey: wireguard_control::Key,
     pub encryption_key: [u8; 32],
     pub peering_port: u16,
+    pub max_peers: usize,
 }
 
 /// Callback type invoked when a peer is accepted (either manually or via PIN).
@@ -417,6 +420,39 @@ async fn handle_incoming(
 
                     // Case-insensitive comparison for alphanumeric PINs
                     if config.pin.eq_ignore_ascii_case(req_pin) {
+                        // Check peer limit before accepting
+                        let current_peers = crate::store::peer_count().unwrap_or(0);
+                        if current_peers >= config.max_peers {
+                            warn!(
+                                node = %req.node_name,
+                                current = current_peers,
+                                max = config.max_peers,
+                                "peer limit reached, rejecting join request"
+                            );
+                            events::emit(
+                                EventType::PeerLimitReached,
+                                Some(&req.node_name),
+                                Some(&req.endpoint.to_string()),
+                                Some(&format!("max_peers={}", config.max_peers)),
+                                None,
+                            );
+                            let response = JoinResponse {
+                                accepted: false,
+                                mesh_name: None,
+                                mesh_secret: None,
+                                mesh_prefix: None,
+                                peers: vec![],
+                                reason: Some(format!(
+                                    "peer limit reached ({}/{})",
+                                    current_peers, config.max_peers
+                                )),
+                                approved_by: None,
+                            };
+                            write_message(&mut stream, &PeeringMessage::JoinResponse(response))
+                                .await?;
+                            return Ok(());
+                        }
+
                         info!(node = %req.node_name, request_id = %req.request_id, "PIN matched, auto-accepting");
                         events::emit(
                             EventType::JoinAutoAccepted,

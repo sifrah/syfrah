@@ -45,6 +45,8 @@ pub enum EventType {
     PeerRemoved,
     ReconciliationRun,
     HealthCheckRun,
+    AnnounceDropped,
+    PeerLimitReached,
 }
 
 impl std::fmt::Display for EventType {
@@ -65,6 +67,8 @@ impl std::fmt::Display for EventType {
             EventType::PeerRemoved => "peer-removed",
             EventType::ReconciliationRun => "reconciliation-run",
             EventType::HealthCheckRun => "health-check-run",
+            EventType::AnnounceDropped => "announce-dropped",
+            EventType::PeerLimitReached => "peer-limit-reached",
         };
         write!(f, "{s}")
     }
