@@ -74,7 +74,7 @@ impl ReplayGuard {
 
     /// Return a monotonically increasing approximation of epoch seconds.
     /// Immune to wall-clock jumps after construction.
-    fn monotonic_epoch(&self) -> u64 {
+    pub(crate) fn monotonic_epoch(&self) -> u64 {
         self.epoch_anchor + self.instant_anchor.elapsed().as_secs()
     }
 
@@ -87,7 +87,7 @@ impl ReplayGuard {
 
         // Periodically evict expired entries (piggyback on every check).
         let window = Duration::from_secs(DEDUP_WINDOW_SECS);
-        seen.retain(|_, ts| now.duration_since(*ts) < window);
+        seen.retain(|_, ts| now.checked_duration_since(*ts).is_none_or(|d| d < window));
 
         if let std::collections::hash_map::Entry::Vacant(e) = seen.entry(hash) {
             e.insert(now);
@@ -667,7 +667,9 @@ async fn handle_incoming(
 
             // Replay protection: reject announces with stale timestamps.
             if replay_guard.is_stale(record.last_seen) {
-                let age = epoch_now().saturating_sub(record.last_seen);
+                let age = replay_guard
+                    .monotonic_epoch()
+                    .saturating_sub(record.last_seen);
                 debug!(
                     peer = %record.name,
                     from = %peer_addr,
@@ -995,5 +997,41 @@ mod tests {
             .monotonic_epoch()
             .saturating_sub(MAX_ANNOUNCE_AGE_SECS + 1);
         assert!(guard.is_stale(past));
+    }
+
+    #[tokio::test]
+    async fn replay_guard_evicts_entries_after_dedup_window() {
+        let guard = ReplayGuard::new();
+        let data = b"eviction-test-payload";
+
+        // Insert the entry, then backdate it beyond the dedup window.
+        assert!(!guard.is_duplicate(data).await);
+        {
+            let mut seen = guard.seen.lock().await;
+            let hash = sha256(data);
+            if let Some(ts) = seen.get_mut(&hash) {
+                *ts = Instant::now()
+                    .checked_sub(Duration::from_secs(DEDUP_WINDOW_SECS + 1))
+                    .expect("backdating should succeed");
+            }
+        }
+        // After eviction, the same payload should no longer be considered duplicate.
+        assert!(!guard.is_duplicate(data).await);
+    }
+
+    #[test]
+    fn monotonic_epoch_never_decreases() {
+        let guard = ReplayGuard::new();
+        let t1 = guard.monotonic_epoch();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let t2 = guard.monotonic_epoch();
+        assert!(t2 >= t1);
+    }
+
+    #[test]
+    fn replay_guard_accepts_future_timestamp() {
+        let guard = ReplayGuard::new();
+        let future = guard.monotonic_epoch() + 1000;
+        assert!(!guard.is_stale(future));
     }
 }
