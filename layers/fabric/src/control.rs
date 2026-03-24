@@ -44,9 +44,18 @@ pub async fn start_control_listener(socket_path: &Path, handler: Arc<dyn Control
     // Remove stale socket
     let _ = std::fs::remove_file(socket_path);
 
+    // Set restrictive umask *before* bind to eliminate the permission race window.
+    // The socket is created with mode 0o600 (owner-only) from the start.
+    #[cfg(unix)]
+    let old_umask = unsafe { libc::umask(0o177) };
+
     let listener = match UnixListener::bind(socket_path) {
         Ok(l) => l,
         Err(e) => {
+            #[cfg(unix)]
+            unsafe {
+                libc::umask(old_umask);
+            }
             warn!(
                 "failed to bind control socket at {}: {e}",
                 socket_path.display()
@@ -55,11 +64,10 @@ pub async fn start_control_listener(socket_path: &Path, handler: Arc<dyn Control
         }
     };
 
-    // Restrict permissions
+    // Restore the original umask immediately after bind
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600));
+    unsafe {
+        libc::umask(old_umask);
     }
 
     debug!("control socket listening at {}", socket_path.display());
