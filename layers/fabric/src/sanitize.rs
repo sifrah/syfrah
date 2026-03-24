@@ -5,7 +5,7 @@
 //! characters (including ANSI escape codes) and bounding string length.
 
 /// Maximum length for sanitized strings in log and CLI output.
-const MAX_SANITIZED_LEN: usize = 255;
+pub const MAX_SANITIZED_LEN: usize = 255;
 
 /// Sanitize an untrusted string for safe use in logs and CLI output.
 ///
