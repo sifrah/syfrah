@@ -21,11 +21,9 @@ All crates pick up the new version automatically.
 1. **Update CHANGELOG.md** — move items from `Unreleased` to a new version section with today's date.
 2. **Bump version** — edit `version` in `[workspace.package]` in the root `Cargo.toml`.
 3. **Run CI locally** — `just ci` (fmt + clippy + test).
-4. **Commit** — `git commit -m "Release v0.x.y"`.
-5. **Tag** — `git tag -a v0.x.y -m "v0.x.y"`.
-6. **Push** — `git push origin main --follow-tags`.
-7. **Verify CI** — wait for all checks to pass on the tagged commit.
-8. **Create GitHub release** — `gh release create v0.x.y --notes-from-tag` or write release notes from the CHANGELOG section.
+4. **Commit & push to main** — `git commit -m "Release v0.x.y"` and push (or merge a PR).
+
+The release workflow detects the new version, waits for CI to pass, builds all targets, creates the git tag, and publishes the GitHub Release automatically. No manual tagging or release creation required.
 
 ## Changelog format
 
@@ -48,12 +46,12 @@ Linux binaries are statically linked via musl so they run on any Linux distribut
 
 ## Release workflow
 
-The `Release` workflow (`.github/workflows/release.yml`) runs automatically when a `v*` tag is pushed:
+The `Release` workflow (`.github/workflows/release.yml`) runs automatically on every push to `main` and on `workflow_dispatch`:
 
-1. Builds all four targets in parallel
-2. Packages each binary into a `.tar.gz` archive
-3. Generates `SHA256SUMS.txt`
-4. Creates a GitHub Release with auto-generated release notes and all artifacts attached
+1. **check-version** — reads the version from the root `Cargo.toml` and checks whether the corresponding `v{version}` tag already exists. If the tag exists, the workflow stops early.
+2. **ci** — waits for the CI workflow checks to pass on the same commit.
+3. **build** — builds all four targets in parallel (same matrix as before).
+4. **release** — packages each binary into a `.tar.gz` archive, copies `install.sh`, generates `SHA256SUMS.txt`, creates the git tag `v{version}`, and publishes a GitHub Release with auto-generated release notes and all artifacts attached.
 
 ## Artifacts
 
