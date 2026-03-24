@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 use wireguard_control::{Key, KeyPair};
 
@@ -431,12 +432,17 @@ pub async fn run_daemon(
         Tuning::default()
     });
     info!(
-        "daemon tuning: health_check={}s reconcile={}s persist={}s unreachable={}s",
+        "daemon tuning: health_check={}s reconcile={}s persist={}s unreachable={}s max_peers={} max_concurrent_announces={}",
         tuning.health_check_interval.as_secs(),
         tuning.reconcile_interval.as_secs(),
         tuning.persist_interval.as_secs(),
         tuning.unreachable_timeout.as_secs(),
+        tuning.max_peers,
+        tuning.max_concurrent_announces,
     );
+
+    let announce_semaphore = Arc::new(Semaphore::new(tuning.max_concurrent_announces));
+    let max_peers = tuning.max_peers;
 
     store::write_pid()?;
     events::emit(
@@ -454,6 +460,8 @@ pub async fn run_daemon(
     let metrics_received = Arc::new(AtomicU64::new(0));
     let metrics_reconciliations = Arc::new(AtomicU64::new(0));
     let metrics_unreachable = Arc::new(AtomicU64::new(0));
+    let metrics_announces_dropped = Arc::new(AtomicU64::new(0));
+    let metrics_peer_limit_reached = Arc::new(AtomicU64::new(0));
     let daemon_started = now();
 
     // on_accepted callback: when a peer is accepted (manual or PIN), add to WG + store + announce
@@ -463,6 +471,8 @@ pub async fn run_daemon(
     let accepted_enc_key = enc_key;
     let accepted_peering_port = peering_port;
     let accepted_max_events = tuning.max_events;
+    let accepted_max_peers = max_peers;
+    let accepted_peer_limit_counter = metrics_peer_limit_reached.clone();
     let on_accepted: peering::OnAccepted = Arc::new(move |new_record| {
         accepted_recv.fetch_add(1, Ordering::Relaxed);
         let pubkey = accepted_wg_pubkey.clone();
@@ -471,24 +481,67 @@ pub async fn run_daemon(
         let enc = accepted_enc_key;
         let pp = accepted_peering_port;
         let max_ev = accepted_max_events;
+        let mp = accepted_max_peers;
+        let plr = accepted_peer_limit_counter.clone();
         tokio::spawn(async move {
-            // Add to WG
-            if let Err(e) = wg::upsert_peer(&pubkey, &record) {
-                warn!(peer = %record.name, endpoint = %record.endpoint, error = %e, "failed to add peer to WG");
-            } else {
-                recon.fetch_add(1, Ordering::Relaxed);
-                info!(peer = %record.name, endpoint = %record.endpoint, "peer accepted and added to WG");
-                events::emit(
-                    EventType::PeerActive,
-                    Some(&record.name),
-                    Some(&record.endpoint.to_string()),
-                    Some(&format!("mesh_ipv6={}", record.mesh_ipv6)),
-                    Some(max_ev),
+            // Check store peer limit before adding
+            let current_count = store::peer_count().unwrap_or(0);
+            let threshold = mp * 4 / 5; // 80%
+            if current_count >= threshold && current_count < mp {
+                warn!(
+                    current = current_count,
+                    max = mp,
+                    "peer count approaching limit ({}%)",
+                    current_count * 100 / mp
                 );
             }
-            // Save to store (atomic — no more load+push+save race)
-            if let Err(e) = store::upsert_peer(&record) {
-                warn!(peer = %record.name, error = %e, "failed to persist peer");
+
+            // Add to WG (bounded)
+            match wg::upsert_peer_bounded(&pubkey, &record, mp) {
+                Err(e) => {
+                    if matches!(e, wg::WgError::PeerLimitExceeded(_, _)) {
+                        plr.fetch_add(1, Ordering::Relaxed);
+                        let _ = store::inc_metric("peer_limit_reached", 1);
+                        events::emit(
+                            EventType::PeerLimitReached,
+                            Some(&record.name),
+                            Some(&record.endpoint.to_string()),
+                            Some(&format!("max_peers={mp}")),
+                            Some(max_ev),
+                        );
+                    }
+                    warn!(peer = %record.name, endpoint = %record.endpoint, error = %e, "failed to add peer to WG");
+                }
+                Ok(()) => {
+                    recon.fetch_add(1, Ordering::Relaxed);
+                    info!(peer = %record.name, endpoint = %record.endpoint, "peer accepted and added to WG");
+                    events::emit(
+                        EventType::PeerActive,
+                        Some(&record.name),
+                        Some(&record.endpoint.to_string()),
+                        Some(&format!("mesh_ipv6={}", record.mesh_ipv6)),
+                        Some(max_ev),
+                    );
+                }
+            }
+            // Save to store (bounded — reject if over limit)
+            match store::upsert_peer_bounded(&record, mp) {
+                Ok(false) => {
+                    warn!(peer = %record.name, max = mp, "peer limit reached, not persisting new peer");
+                    plr.fetch_add(1, Ordering::Relaxed);
+                    let _ = store::inc_metric("peer_limit_reached", 1);
+                    events::emit(
+                        EventType::PeerLimitReached,
+                        Some(&record.name),
+                        Some(&record.endpoint.to_string()),
+                        Some(&format!("store max_peers={mp}")),
+                        Some(max_ev),
+                    );
+                }
+                Err(e) => {
+                    warn!(peer = %record.name, error = %e, "failed to persist peer");
+                }
+                Ok(true) => {}
             }
             // Announce to existing peers
             let known = store::get_peers().unwrap_or_default();
@@ -515,6 +568,7 @@ pub async fn run_daemon(
         peering_port,
         on_accepted: on_accepted.clone(),
         max_events: tuning.max_events,
+        max_peers,
     });
 
     let control_path = store::control_socket_path();
@@ -528,6 +582,10 @@ pub async fn run_daemon(
     let announce_recv = metrics_received.clone();
     let announce_recon = metrics_reconciliations.clone();
     let announce_max_events = tuning.max_events;
+    let announce_sem = announce_semaphore.clone();
+    let announce_dropped = metrics_announces_dropped.clone();
+    let announce_peer_limit = metrics_peer_limit_reached.clone();
+    let announce_max_peers = max_peers;
     let on_announce: Arc<dyn Fn(PeerRecord) + Send + Sync> = Arc::new(move |record| {
         announce_recv.fetch_add(1, Ordering::Relaxed);
         events::emit(
@@ -537,19 +595,85 @@ pub async fn run_daemon(
             Some(&format!("mesh_ipv6={}", record.mesh_ipv6)),
             Some(announce_max_events),
         );
+
+        // Bound concurrent announce processing with a semaphore
+        let permit = match announce_sem.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                warn!(peer = %record.name, "announce processing at capacity, dropping");
+                announce_dropped.fetch_add(1, Ordering::Relaxed);
+                let _ = store::inc_metric("announces_dropped", 1);
+                events::emit(
+                    EventType::AnnounceDropped,
+                    Some(&record.name),
+                    Some(&record.endpoint.to_string()),
+                    Some("semaphore full"),
+                    Some(announce_max_events),
+                );
+                return;
+            }
+        };
+
         let pubkey = announce_wg_pubkey.clone();
         let recon = announce_recon.clone();
         let record = record.clone();
+        let mp = announce_max_peers;
+        let plr = announce_peer_limit.clone();
+        let max_ev = announce_max_events;
         tokio::spawn(async move {
-            if let Err(e) = wg::upsert_peer(&pubkey, &record) {
-                warn!(peer = %record.name, endpoint = %record.endpoint, error = %e, "failed to upsert announced peer");
-            } else {
-                recon.fetch_add(1, Ordering::Relaxed);
-                debug!(peer = %record.name, endpoint = %record.endpoint, "peer upserted via announce");
+            let _permit = permit; // held until task completes
+
+            // Check store peer count before processing
+            let current_count = store::peer_count().unwrap_or(0);
+            let threshold = mp * 4 / 5; // 80%
+            if current_count >= threshold && current_count < mp {
+                warn!(
+                    current = current_count,
+                    max = mp,
+                    "peer count approaching limit ({}%)",
+                    current_count * 100 / mp
+                );
             }
-            // Save to store (atomic)
-            if let Err(e) = store::upsert_peer(&record) {
-                warn!(peer = %record.name, error = %e, "failed to persist announced peer");
+
+            // Add to WG (bounded)
+            match wg::upsert_peer_bounded(&pubkey, &record, mp) {
+                Err(e) => {
+                    if matches!(e, wg::WgError::PeerLimitExceeded(_, _)) {
+                        plr.fetch_add(1, Ordering::Relaxed);
+                        let _ = store::inc_metric("peer_limit_reached", 1);
+                        events::emit(
+                            EventType::PeerLimitReached,
+                            Some(&record.name),
+                            Some(&record.endpoint.to_string()),
+                            Some(&format!("max_peers={mp}")),
+                            Some(max_ev),
+                        );
+                    }
+                    warn!(peer = %record.name, endpoint = %record.endpoint, error = %e, "failed to upsert announced peer");
+                }
+                Ok(()) => {
+                    recon.fetch_add(1, Ordering::Relaxed);
+                    debug!(peer = %record.name, endpoint = %record.endpoint, "peer upserted via announce");
+                }
+            }
+            // Save to store (bounded)
+            match store::upsert_peer_bounded(&record, mp) {
+                Ok(false) => {
+                    warn!(peer = %record.name, max = mp, "peer limit reached, not persisting announced peer");
+                    plr.fetch_add(1, Ordering::Relaxed);
+                    let _ = store::inc_metric("peer_limit_reached", 1);
+                    events::emit(
+                        EventType::PeerLimitReached,
+                        Some(&record.name),
+                        Some(&record.endpoint.to_string()),
+                        Some(&format!("store max_peers={mp}")),
+                        Some(max_ev),
+                    );
+                }
+                Err(e) => {
+                    warn!(peer = %record.name, error = %e, "failed to persist announced peer");
+                }
+                Ok(true) => {}
             }
         });
     });
@@ -569,6 +693,8 @@ pub async fn run_daemon(
     let persist_recv = metrics_received.clone();
     let persist_recon = metrics_reconciliations.clone();
     let persist_unreach = metrics_unreachable.clone();
+    let persist_dropped = metrics_announces_dropped.clone();
+    let persist_peer_limit = metrics_peer_limit_reached.clone();
     let persist = async {
         let mut interval = tokio::time::interval(tuning.persist_interval);
         loop {
@@ -580,6 +706,11 @@ pub async fn run_daemon(
                 persist_unreach.load(Ordering::Relaxed),
             );
             let _ = store::set_metric("daemon_started_at", daemon_started);
+            let _ = store::set_metric("announces_dropped", persist_dropped.load(Ordering::Relaxed));
+            let _ = store::set_metric(
+                "peer_limit_reached",
+                persist_peer_limit.load(Ordering::Relaxed),
+            );
         }
     };
 
@@ -758,6 +889,7 @@ struct DaemonControlHandler {
     peering_port: u16,
     on_accepted: peering::OnAccepted,
     max_events: u64,
+    max_peers: usize,
 }
 
 #[async_trait::async_trait]
@@ -784,6 +916,7 @@ impl ControlHandler for DaemonControlHandler {
                             wg_pubkey: self.wg_pubkey.clone(),
                             encryption_key: self.mesh_secret.encryption_key(),
                             peering_port: self.peering_port,
+                            max_peers: self.max_peers,
                         }))
                         .await;
                 }

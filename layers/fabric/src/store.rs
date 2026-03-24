@@ -66,6 +66,10 @@ pub struct Metrics {
     pub peers_marked_unreachable: u64,
     pub announcements_failed: u64,
     pub daemon_started_at: u64,
+    #[serde(default)]
+    pub announces_dropped: u64,
+    #[serde(default)]
+    pub peer_limit_reached: u64,
 }
 
 fn state_dir() -> PathBuf {
@@ -113,6 +117,8 @@ pub fn save(state: &NodeState) -> Result<(), StoreError> {
         )?;
         w.set_metric("announcements_failed", state.metrics.announcements_failed)?;
         w.set_metric("daemon_started_at", state.metrics.daemon_started_at)?;
+        w.set_metric("announces_dropped", state.metrics.announces_dropped)?;
+        w.set_metric("peer_limit_reached", state.metrics.peer_limit_reached)?;
         Ok(())
     })?;
 
@@ -206,6 +212,8 @@ fn load_from_redb_with(db: &LayerDb) -> Result<NodeState, StoreError> {
         peers_marked_unreachable: db.get_metric("peers_marked_unreachable")?,
         announcements_failed: db.get_metric("announcements_failed")?,
         daemon_started_at: db.get_metric("daemon_started_at")?,
+        announces_dropped: db.get_metric("announces_dropped")?,
+        peer_limit_reached: db.get_metric("peer_limit_reached")?,
     };
 
     Ok(NodeState {
@@ -281,6 +289,39 @@ pub fn upsert_peer(peer: &PeerRecord) -> Result<(), StoreError> {
         let _ = save_json_only(&state);
     }
     Ok(())
+}
+
+/// Add a peer atomically, but only if the peer count is below `max_peers`.
+/// If the peer already exists (by WG key), the update always succeeds
+/// (it doesn't increase the count). Returns `true` if stored, `false` if
+/// the limit was reached and the peer is new.
+pub fn upsert_peer_bounded(peer: &PeerRecord, max_peers: usize) -> Result<bool, StoreError> {
+    let db = open_db()?;
+
+    // Check if this peer already exists (updates are always allowed)
+    let existing: Option<PeerRecord> = db.get("peers", &peer.wg_public_key)?;
+    if existing.is_none() {
+        let entries: Vec<(String, PeerRecord)> = db.list("peers")?;
+        if entries.len() >= max_peers {
+            return Ok(false);
+        }
+    }
+
+    db.set("peers", &peer.wg_public_key, peer)?;
+    if let Ok(state) = load_from_redb_with(&db) {
+        let _ = save_json_only(&state);
+    }
+    Ok(true)
+}
+
+/// Return the number of stored peers.
+pub fn peer_count() -> Result<usize, StoreError> {
+    if !LayerDb::layer_exists(LAYER_NAME) {
+        return Ok(0);
+    }
+    let db = open_db()?;
+    let entries: Vec<(String, PeerRecord)> = db.list("peers")?;
+    Ok(entries.len())
 }
 
 /// Get all peers from redb.

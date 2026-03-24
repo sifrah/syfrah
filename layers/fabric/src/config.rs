@@ -22,6 +22,10 @@ pub struct Tuning {
     pub exchange_timeout: Duration,
     /// Maximum number of events to keep in the event log ring buffer.
     pub max_events: u64,
+    /// Maximum number of peers allowed in the mesh (WireGuard + store).
+    pub max_peers: usize,
+    /// Maximum number of concurrent announce-processing tasks.
+    pub max_concurrent_announces: usize,
 }
 
 impl Default for Tuning {
@@ -35,6 +39,8 @@ impl Default for Tuning {
             join_timeout: Duration::from_secs(300),
             exchange_timeout: Duration::from_secs(30),
             max_events: 100,
+            max_peers: 1000,
+            max_concurrent_announces: 50,
         }
     }
 }
@@ -49,6 +55,8 @@ struct ConfigFile {
     peering: PeeringSection,
     #[serde(default)]
     events: EventsSection,
+    #[serde(default)]
+    limits: LimitsSection,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -73,6 +81,12 @@ struct PeeringSection {
 #[derive(Debug, Deserialize, Default)]
 struct EventsSection {
     max_events: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct LimitsSection {
+    max_peers: Option<usize>,
+    max_concurrent_announces: Option<usize>,
 }
 
 /// Load tuning from `~/.syfrah/config.toml`. Returns defaults if file
@@ -126,5 +140,10 @@ pub fn load_tuning() -> Result<Tuning, String> {
             .map(Duration::from_secs)
             .unwrap_or(defaults.exchange_timeout),
         max_events: config.events.max_events.unwrap_or(defaults.max_events),
+        max_peers: config.limits.max_peers.unwrap_or(defaults.max_peers),
+        max_concurrent_announces: config
+            .limits
+            .max_concurrent_announces
+            .unwrap_or(defaults.max_concurrent_announces),
     })
 }
