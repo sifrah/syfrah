@@ -55,8 +55,14 @@ install -m 755 "${TMPDIR}/${BIN}" "${INSTALL_DIR}/${BIN}"
 
 # --- Verify ---
 echo "Verifying installation..."
+EXPECTED_VERSION="${VERSION#v}"
 if command -v "$BIN" > /dev/null 2>&1; then
-  "$BIN" --version
+  ACTUAL_VERSION=$("$BIN" --version | awk '{print $2}')
+  if [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
+    echo "ERROR: version mismatch — expected ${EXPECTED_VERSION}, got ${ACTUAL_VERSION}" >&2
+    exit 1
+  fi
+  echo "${BIN} ${ACTUAL_VERSION}"
   echo "Installation complete."
 else
   echo "Warning: ${BIN} was installed to ${INSTALL_DIR} but is not on PATH." >&2
