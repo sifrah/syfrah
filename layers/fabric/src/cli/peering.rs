@@ -6,7 +6,10 @@ use anyhow::Result;
 use std::collections::HashSet;
 
 /// Interactive peering mode: watch for requests and prompt accept/reject.
-pub async fn watch(pin: Option<String>) -> Result<()> {
+///
+/// In default mode (`continuous=false`), exits after the first accept/reject.
+/// With `--watch` (`continuous=true`), loops indefinitely for batch use.
+pub async fn watch(pin: Option<String>, continuous: bool) -> Result<()> {
     // Auto-init if no mesh exists
     if !store::exists() {
         let node_name = hostname::get()
@@ -68,12 +71,18 @@ pub async fn watch(pin: Option<String>) -> Result<()> {
         _ => {}
     }
 
-    ui::peering_banner(51821, pin.as_deref());
+    ui::peering_banner(51821, pin.as_deref(), continuous);
 
-    // Poll for new requests
+    // Poll for new requests; handle Ctrl+C gracefully
     let mut seen: HashSet<String> = HashSet::new();
     loop {
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                println!("\nPeering watch stopped. Daemon still running.");
+                return Ok(());
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+        }
 
         let resp = match send_request(ControlRequest::PeeringList).await {
             Ok(r) => r,
@@ -140,6 +149,11 @@ pub async fn watch(pin: Option<String>) -> Result<()> {
                                 println!();
                             }
                         }
+                    }
+
+                    // In default (non-watch) mode, exit after handling the first request
+                    if !continuous {
+                        return Ok(());
                     }
                 }
             }

@@ -126,6 +126,9 @@ enum FabricCommand {
         /// PIN for auto-accept mode
         #[arg(long)]
         pin: Option<String>,
+        /// Stay open to accept multiple join requests
+        #[arg(long)]
+        watch: bool,
         #[command(subcommand)]
         action: Option<PeeringAction>,
     },
@@ -473,10 +476,10 @@ async fn run() -> Result<()> {
                     ServiceAction::Status => cli::service::status().await,
                 }
             }
-            FabricCommand::Peering { pin, action } => {
+            FabricCommand::Peering { pin, watch, action } => {
                 setup_logging(false);
                 match action {
-                    None => cli::peering::watch(pin).await,
+                    None => cli::peering::watch(pin, watch).await,
                     Some(PeeringAction::Start {
                         port,
                         pin: start_pin,
