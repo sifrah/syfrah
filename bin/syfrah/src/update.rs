@@ -210,8 +210,7 @@ pub fn run() -> Result<()> {
             break;
         }
     }
-    let binary_data =
-        extracted_binary.context("archive does not contain a 'syfrah' binary")?;
+    let binary_data = extracted_binary.context("archive does not contain a 'syfrah' binary")?;
 
     // Write to a temp file next to the current binary
     let parent = current_exe
