@@ -473,9 +473,27 @@ pub async fn run_leave() -> anyhow::Result<bool> {
         #[cfg(unix)]
         {
             if store::is_syfrah_process(pid) {
+                let sp = ui::spinner("Stopping daemon...");
                 unsafe { libc::kill(pid as i32, libc::SIGTERM) };
-                // Give the daemon a moment to shut down gracefully
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                // Wait for the daemon process to actually exit (up to 10s).
+                // Just sleeping a fixed 2s was not enough — the daemon may
+                // still hold file locks when we try to remove the state dir.
+                let deadline =
+                    tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+                loop {
+                    let alive = unsafe { libc::kill(pid as i32, 0) } == 0;
+                    if !alive {
+                        break;
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        // Force-kill if it didn't exit gracefully.
+                        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                ui::step_ok(&sp, "Daemon stopped");
             }
         }
     }
@@ -497,7 +515,13 @@ pub async fn run_leave() -> anyhow::Result<bool> {
     let sp = ui::spinner("Cleaning up state...");
     // Clear all state atomically: redb, JSON, PID file, control socket, and
     // any other files in ~/.syfrah. store::clear() removes the entire directory.
-    store::clear()?;
+    // Retry once after a short delay if the first attempt fails (e.g. a file
+    // lock was not yet released by the dying daemon process).
+    if let Err(e) = store::clear() {
+        debug!(error = %e, "first clear attempt failed, retrying");
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        store::clear()?;
+    }
     ui::step_ok(&sp, "Left the mesh. State cleared.");
     Ok(true)
 }
@@ -951,6 +975,19 @@ pub async fn run_daemon(
         }
     };
 
+    // Listen for both SIGINT (Ctrl+C) and SIGTERM so the daemon shuts down
+    // gracefully in either case. Without SIGTERM handling, `run_leave` sends
+    // SIGTERM but the daemon dies immediately without cleanup.
+    #[cfg(unix)]
+    let terminate = async {
+        let mut sig =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("failed to register SIGTERM handler");
+        sig.recv().await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
     tokio::select! {
         _ = control_task => {}
         _ = peering_task => {}
@@ -958,7 +995,10 @@ pub async fn run_daemon(
         _ = health_check => {}
         _ = reconcile => {}
         _ = tokio::signal::ctrl_c() => {
-            println!("\nShutting down...");
+            info!("received SIGINT, shutting down");
+        }
+        _ = terminate => {
+            info!("received SIGTERM, shutting down");
         }
     }
 
