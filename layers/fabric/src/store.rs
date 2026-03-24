@@ -2,6 +2,9 @@ use std::fs;
 use std::net::Ipv6Addr;
 use std::path::PathBuf;
 
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -378,7 +381,80 @@ fn pid_file() -> PathBuf {
     state_dir().join("daemon.pid")
 }
 
-/// Write the current process PID to the PID file.
+/// Write the current process PID to the PID file with exclusive flock.
+///
+/// Uses flock(LOCK_EX | LOCK_NB) to prevent two daemons from running
+/// simultaneously. The PID is written atomically via a temp file + rename.
+/// The lock file is returned and must be kept alive for the daemon's lifetime.
+#[cfg(unix)]
+pub fn write_pid() -> Result<fs::File, StoreError> {
+    use std::io::Write;
+
+    let dir = state_dir();
+    fs::create_dir_all(&dir)?;
+
+    let path = pid_file();
+
+    // Open (or create) the PID file and acquire an exclusive lock.
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)?;
+
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc != 0 {
+        let existing = fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok());
+        let msg = match existing {
+            Some(pid) => format!("another daemon is already running (pid {pid})"),
+            None => "another daemon is already running (pid unknown)".to_string(),
+        };
+        return Err(StoreError::Io(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            msg,
+        )));
+    }
+
+    // Write PID atomically: write to temp file, then rename over the lock file.
+    // After rename the fd still holds the flock on the same inode.
+    let tmp = dir.join("daemon.pid.tmp");
+    fs::write(&tmp, std::process::id().to_string())?;
+    fs::rename(&tmp, &path)?;
+
+    // Re-acquire lock on the new inode after rename (rename replaces the file).
+    // The original fd still points to the old inode, so re-open + re-lock.
+    let file = fs::OpenOptions::new()
+        .create(false)
+        .read(true)
+        .write(true)
+        .open(&path)?;
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc != 0 {
+        return Err(StoreError::Io(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "failed to re-acquire PID file lock after atomic write",
+        )));
+    }
+
+    // Restrict permissions
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+    }
+
+    // Ensure PID content is correct on the locked fd
+    file.set_len(0)?;
+    let mut f = &file;
+    write!(f, "{}", std::process::id())?;
+
+    Ok(file)
+}
+
+/// Non-unix fallback (no flock).
+#[cfg(not(unix))]
 pub fn write_pid() -> Result<(), StoreError> {
     let dir = state_dir();
     fs::create_dir_all(&dir)?;
@@ -399,16 +475,20 @@ pub fn remove_pid() {
 }
 
 /// Check if a daemon is currently running (PID file exists and process alive, not zombie).
+/// Also cleans up stale PID files when the process is dead.
 pub fn daemon_running() -> Option<u32> {
     let pid = read_pid()?;
     #[cfg(unix)]
     {
         let alive = unsafe { libc::kill(pid as i32, 0) } == 0;
         if !alive {
+            // Stale PID file — process is dead. Clean up automatically.
+            remove_pid();
             return None;
         }
         // Check for zombie: kill(pid,0) succeeds for zombies too
         if is_zombie(pid) {
+            remove_pid();
             return None;
         }
         Some(pid)
@@ -417,6 +497,31 @@ pub fn daemon_running() -> Option<u32> {
     {
         Some(pid)
     }
+}
+
+/// Check if a PID belongs to a syfrah process.
+/// Returns true if the process cmdline/name contains "syfrah".
+#[cfg(target_os = "linux")]
+pub fn is_syfrah_process(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/cmdline"))
+        .map(|c| c.contains("syfrah"))
+        .unwrap_or(false)
+}
+
+/// On macOS, use `ps` to check the process name.
+#[cfg(target_os = "macos")]
+pub fn is_syfrah_process(pid: u32) -> bool {
+    std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "comm="])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("syfrah"))
+        .unwrap_or(false)
+}
+
+/// Non-unix fallback — cannot verify process name.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn is_syfrah_process(_pid: u32) -> bool {
+    true
 }
 
 /// Check if a process is a zombie by reading /proc/PID/status on Linux.
