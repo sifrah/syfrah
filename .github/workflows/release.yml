@@ -148,6 +148,17 @@ jobs:
           cd release
           sha256sum *.tar.gz > SHA256SUMS.txt
 
+      - name: Bump Cargo.toml version
+        env:
+          VERSION: ${{ needs.version.outputs.next }}
+        run: |
+          sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml
+          git commit -m "release: v${VERSION} [skip ci]"
+          git push origin main
+
       - name: Create git tag
         env:
           VERSION: ${{ needs.version.outputs.next }}
