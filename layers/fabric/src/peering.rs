@@ -620,16 +620,20 @@ fn now() -> u64 {
 }
 
 /// Generate a short random request ID (8 hex chars).
+///
+/// RNG policy: uses OsRng for direct OS entropy (security-sensitive identifier).
 pub fn generate_request_id() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 4];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Generate a random 4-digit PIN.
+///
+/// RNG policy: uses OsRng for direct OS entropy (authentication material).
 pub fn generate_pin() -> String {
     use rand::Rng;
-    let n: u16 = rand::thread_rng().gen_range(1000..10000);
+    let n: u16 = rand::rngs::OsRng.gen_range(1000..10000);
     n.to_string()
 }

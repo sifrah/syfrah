@@ -3,9 +3,11 @@ use std::net::Ipv6Addr;
 use sha2::{Digest, Sha256};
 
 /// Generate a random ULA /48 mesh prefix: fd{40 random bits}::/48
+///
+/// RNG policy: uses OsRng for direct OS entropy (cryptographic addressing material).
 pub fn generate_mesh_prefix() -> Ipv6Addr {
     let mut rng_bytes = [0u8; 5];
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut rng_bytes);
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut rng_bytes);
 
     // fd{5 bytes}::
     let segments: [u16; 8] = [
