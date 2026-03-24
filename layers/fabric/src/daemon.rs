@@ -253,10 +253,7 @@ async fn finalize_join(
     let mesh_secret: MeshSecret = mesh_secret_str
         .parse()
         .map_err(|e| anyhow::anyhow!("invalid mesh secret: {e}"))?;
-    let mesh_name = response
-        .mesh_name
-        .as_deref()
-        .unwrap_or("mesh");
+    let mesh_name = response.mesh_name.as_deref().unwrap_or("mesh");
     let mesh_prefix = response
         .mesh_prefix
         .ok_or_else(|| anyhow::anyhow!("accepted but no mesh prefix"))?;
@@ -358,9 +355,7 @@ fn rollback_join_state() {
 /// Map peering errors during join to user-friendly messages.
 fn map_join_error(err: peering::PeeringError, target: SocketAddr) -> anyhow::Error {
     match &err {
-        peering::PeeringError::Io(io_err)
-            if io_err.kind() == std::io::ErrorKind::UnexpectedEof =>
-        {
+        peering::PeeringError::Io(io_err) if io_err.kind() == std::io::ErrorKind::UnexpectedEof => {
             anyhow::anyhow!(
                 "Connection closed by {target}. The target node may not have peering active.\n  \
                  Ask the operator to run: syfrah fabric peering start"
@@ -1489,8 +1484,7 @@ mod tests {
 
     #[test]
     fn map_join_error_other_passes_through() {
-        let peering_err =
-            crate::peering::PeeringError::Protocol("something weird".into());
+        let peering_err = crate::peering::PeeringError::Protocol("something weird".into());
         let target: SocketAddr = "203.0.113.1:51821".parse().unwrap();
         let mapped = map_join_error(peering_err, target);
         let msg = mapped.to_string();
