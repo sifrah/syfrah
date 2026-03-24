@@ -387,11 +387,12 @@ fn pin_rate_limiter_locks_out_after_max_attempts() {
 
 use std::net::IpAddr;
 
-#[tokio::test]
-#[ignore = "flaky: requires store and WG state; tracked separately"]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "flaky: broken on main since endpoint validation was added (port 0 rejection + handler task starvation)"]
 async fn rate_limited_ip_gets_rejection() {
     // ── Setup ──
-
+    // Requires multi_thread runtime: the listener and client tasks must
+    // make progress concurrently (PIN_FAIL_DELAY sleeps block the handler).
     let mesh_secret = MeshSecret::generate();
     let encryption_key = mesh_secret.encryption_key();
     let correct_pin = generate_pin();
@@ -440,20 +441,19 @@ async fn rate_limited_ip_gets_rejection() {
             .ok();
     });
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
 
     // ── Send 5 wrong PINs to exhaust the rate limit ──
     // Fire each attempt concurrently so they don't block on each other.
     // The server records the failure before the PIN_FAIL_DELAY, and the
     // requests then fall through to the pending queue (never approved).
-    let mut handles = vec![];
     for i in 0..5 {
         let joiner_keypair = syfrah_fabric::wg::generate_keypair();
         let join_request = JoinRequest {
             request_id: generate_request_id(),
             node_name: format!("attacker-{i}"),
             wg_public_key: joiner_keypair.public.to_base64(),
-            endpoint: "127.0.0.1:0".parse().unwrap(),
+            endpoint: "127.0.0.1:51820".parse().unwrap(),
             wg_listen_port: 51820,
             pin: Some(format!("WRONG{i}")),
             region: None,
@@ -461,20 +461,13 @@ async fn rate_limited_ip_gets_rejection() {
         };
 
         let target: SocketAddr = format!("127.0.0.1:{peering_port}").parse().unwrap();
-        handles.push(tokio::spawn(async move {
-            let _ = tokio::time::timeout(
-                Duration::from_secs(10),
-                send_join_request(target, join_request),
-            )
-            .await;
-        }));
+        // These will go to pending after the 2s delay; just fire and let them timeout
+        let _ = tokio::time::timeout(
+            Duration::from_secs(5),
+            send_join_request(target, join_request),
+        )
+        .await;
     }
-    // Wait for all 5 to at least connect and record the failure
-    for h in handles {
-        let _ = h.await;
-    }
-    // Give the server time to process all failures and update the rate limiter
-    tokio::time::sleep(Duration::from_secs(1)).await;
 
     // ── 6th attempt should get an immediate rejection (rate limited) ──
     let joiner_keypair = syfrah_fabric::wg::generate_keypair();
@@ -482,7 +475,7 @@ async fn rate_limited_ip_gets_rejection() {
         request_id: generate_request_id(),
         node_name: "attacker-final".to_string(),
         wg_public_key: joiner_keypair.public.to_base64(),
-        endpoint: "127.0.0.1:0".parse().unwrap(),
+        endpoint: "127.0.0.1:51820".parse().unwrap(),
         wg_listen_port: 51820,
         pin: Some("WRONGX".to_string()),
         region: None,
