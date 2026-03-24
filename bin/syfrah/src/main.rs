@@ -7,6 +7,8 @@ use syfrah_fabric::cli;
 use syfrah_fabric::daemon::{self, DaemonConfig};
 use syfrah_state::cli::StateCommand;
 
+mod update;
+
 #[derive(Parser)]
 #[command(
     name = "syfrah",
@@ -29,6 +31,12 @@ enum Commands {
     State {
         #[command(subcommand)]
         command: StateCommand,
+    },
+    /// Update syfrah to the latest release
+    Update {
+        /// Only check if an update is available, don't install
+        #[arg(long)]
+        check: bool,
     },
 }
 
@@ -473,5 +481,13 @@ async fn run() -> Result<()> {
             }
         },
         Commands::State { command } => syfrah_state::cli::run(command).await,
+        Commands::Update { check } => {
+            if check {
+                update::check()?;
+                Ok(())
+            } else {
+                update::run()
+            }
+        }
     }
 }
