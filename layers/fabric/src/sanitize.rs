@@ -1,4 +1,5 @@
-//! Sanitization helpers for untrusted strings (node names, endpoints, regions, zones).
+//! Sanitization helpers for untrusted strings (node names, endpoints,
+//! regions, zones).
 //!
 //! Prevents log injection and terminal manipulation by stripping control
 //! characters (including ANSI escape codes) and bounding string length.
