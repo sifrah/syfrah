@@ -1,12 +1,12 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::{Mutex, oneshot, RwLock};
 use tracing::{debug, info, warn};
 
 use syfrah_core::mesh::{
@@ -18,6 +18,51 @@ use crate::events::{self, EventType};
 const JOIN_TIMEOUT: Duration = Duration::from_secs(300);
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_MSG_SIZE: u32 = 65536;
+
+/// Maximum failed PIN attempts per IP before lockout.
+const MAX_PIN_ATTEMPTS: usize = 5;
+/// Duration of the lockout window (failed attempts expire after this).
+const PIN_LOCKOUT_WINDOW: Duration = Duration::from_secs(600); // 10 minutes
+/// Delay before responding to a failed PIN attempt (slows enumeration).
+const PIN_FAIL_DELAY: Duration = Duration::from_secs(2);
+
+/// Per-IP rate limiter for PIN attempts.
+pub struct PinRateLimiter {
+    attempts: HashMap<IpAddr, Vec<Instant>>,
+}
+
+impl Default for PinRateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PinRateLimiter {
+    pub fn new() -> Self {
+        Self {
+            attempts: HashMap::new(),
+        }
+    }
+
+    /// Record a failed attempt and return whether the IP is now locked out.
+    /// Returns `true` if the IP is locked out (too many attempts).
+    pub fn record_failure(&mut self, ip: IpAddr) -> bool {
+        let now = Instant::now();
+        let entries = self.attempts.entry(ip).or_default();
+        // Evict expired entries
+        entries.retain(|t| now.duration_since(*t) < PIN_LOCKOUT_WINDOW);
+        entries.push(now);
+        entries.len() > MAX_PIN_ATTEMPTS
+    }
+
+    /// Check whether an IP is currently locked out (without recording).
+    pub fn is_locked_out(&mut self, ip: IpAddr) -> bool {
+        let now = Instant::now();
+        let entries = self.attempts.entry(ip).or_default();
+        entries.retain(|t| now.duration_since(*t) < PIN_LOCKOUT_WINDOW);
+        entries.len() >= MAX_PIN_ATTEMPTS
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum PeeringError {
@@ -77,6 +122,7 @@ pub struct PeeringState {
     pending: Arc<RwLock<HashMap<String, PendingJoin>>>,
     listener_active: Arc<RwLock<bool>>,
     auto_accept: Arc<RwLock<Option<AutoAcceptConfig>>>,
+    pin_rate_limiter: Arc<Mutex<PinRateLimiter>>,
 }
 
 impl Default for PeeringState {
@@ -91,6 +137,7 @@ impl PeeringState {
             pending: Arc::new(RwLock::new(HashMap::new())),
             listener_active: Arc::new(RwLock::new(false)),
             auto_accept: Arc::new(RwLock::new(None)),
+            pin_rate_limiter: Arc::new(Mutex::new(PinRateLimiter::new())),
         }
     }
 
@@ -176,6 +223,7 @@ impl PeeringState {
             let on_announce = on_announce.clone();
             let auto_accept = self.auto_accept.clone();
             let on_accepted = on_accepted.clone();
+            let rate_limiter = self.pin_rate_limiter.clone();
 
             tokio::spawn(async move {
                 if let Err(e) = handle_incoming(
@@ -186,6 +234,7 @@ impl PeeringState {
                     on_announce,
                     auto_accept,
                     on_accepted,
+                    rate_limiter,
                 )
                 .await
                 {
@@ -199,6 +248,7 @@ impl PeeringState {
 }
 
 /// Handle an incoming TCP connection.
+#[allow(clippy::too_many_arguments)]
 async fn handle_incoming(
     mut stream: TcpStream,
     peer_addr: SocketAddr,
@@ -207,6 +257,7 @@ async fn handle_incoming(
     on_announce: Arc<dyn Fn(PeerRecord) + Send + Sync>,
     auto_accept: Arc<RwLock<Option<AutoAcceptConfig>>>,
     on_accepted: OnAccepted,
+    rate_limiter: Arc<Mutex<PinRateLimiter>>,
 ) -> Result<(), PeeringError> {
     let msg = read_message(&mut stream).await?;
 
@@ -252,7 +303,42 @@ async fn handle_incoming(
             if let Some(ref req_pin) = req.pin {
                 let auto = auto_accept.read().await;
                 if let Some(ref config) = *auto {
-                    if config.pin == *req_pin {
+                    // Check rate limit before evaluating PIN
+                    let peer_ip = peer_addr.ip();
+                    {
+                        let mut rl = rate_limiter.lock().await;
+                        if rl.is_locked_out(peer_ip) {
+                            warn!(
+                                ip = %peer_ip,
+                                node = %req.node_name,
+                                "PIN attempt rate-limited — too many failed attempts from this IP"
+                            );
+                            tokio::time::sleep(PIN_FAIL_DELAY).await;
+                            let rejection = JoinResponse {
+                                accepted: false,
+                                mesh_name: None,
+                                mesh_secret: None,
+                                mesh_prefix: None,
+                                peers: vec![],
+                                reason: Some("too many failed PIN attempts, try again later".into()),
+                                approved_by: None,
+                            };
+                            write_message(&mut stream, &PeeringMessage::JoinResponse(rejection)).await?;
+                            return Ok(());
+                        }
+                    }
+
+                    // Warn if old-style 4-digit PIN is used
+                    if req_pin.len() == 4 && req_pin.chars().all(|c| c.is_ascii_digit()) {
+                        warn!(
+                            ip = %peer_ip,
+                            node = %req.node_name,
+                            "deprecated 4-digit PIN format received"
+                        );
+                    }
+
+                    // Case-insensitive comparison for alphanumeric PINs
+                    if config.pin.eq_ignore_ascii_case(req_pin) {
                         info!(node = %req.node_name, request_id = %req.request_id, "PIN matched, auto-accepting");
                         events::emit(
                             EventType::JoinAutoAccepted,
@@ -266,6 +352,27 @@ async fn handle_incoming(
                         on_accepted(new_record);
                         return Ok(());
                     }
+
+                    // PIN mismatch — record failure
+                    warn!(
+                        ip = %peer_ip,
+                        node = %req.node_name,
+                        request_id = %req.request_id,
+                        "failed PIN attempt"
+                    );
+                    {
+                        let mut rl = rate_limiter.lock().await;
+                        let locked_out = rl.record_failure(peer_ip);
+                        if locked_out {
+                            warn!(
+                                ip = %peer_ip,
+                                "IP locked out after {} failed PIN attempts",
+                                MAX_PIN_ATTEMPTS
+                            );
+                        }
+                    }
+                    // Delay before responding to slow down brute-force
+                    tokio::time::sleep(PIN_FAIL_DELAY).await;
                 }
             }
 
@@ -552,9 +659,15 @@ pub fn generate_request_id() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Generate a random 4-digit PIN.
+/// Generate a random 6-character alphanumeric PIN.
+///
+/// Uses a charset that excludes ambiguous characters (0/O, 1/I/L) for
+/// readability. Yields ~2.1 billion possible values (32^6).
 pub fn generate_pin() -> String {
     use rand::Rng;
-    let n: u16 = rand::thread_rng().gen_range(1000..10000);
-    n.to_string()
+    const CHARSET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+    let mut rng = rand::thread_rng();
+    (0..6)
+        .map(|_| CHARSET[rng.gen_range(0..CHARSET.len())] as char)
+        .collect()
 }
