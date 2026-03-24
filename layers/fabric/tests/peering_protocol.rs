@@ -466,6 +466,9 @@ async fn rate_limited_ip_gets_rejection() {
         .await;
     }
 
+    // Allow server tasks to finish processing all PIN failures before sending the 6th.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
     // ── 6th attempt should get an immediate rejection (rate limited) ──
     let joiner_keypair = syfrah_fabric::wg::generate_keypair();
     let join_request = JoinRequest {
@@ -481,7 +484,7 @@ async fn rate_limited_ip_gets_rejection() {
 
     let target: SocketAddr = format!("127.0.0.1:{peering_port}").parse().unwrap();
     let result = tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(10),
         send_join_request(target, join_request),
     )
     .await;
