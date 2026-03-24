@@ -444,8 +444,8 @@ mod tests {
     #[test]
     fn validate_wg_key_invalid_base64() {
         // 44 chars but not valid base64
-        let err = validate_wg_public_key("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-            .unwrap_err();
+        let err =
+            validate_wg_public_key("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!").unwrap_err();
         assert!(err.to_string().contains("not valid base64"));
     }
 
