@@ -135,6 +135,21 @@ enum FabricCommand {
         #[arg(long)]
         since: Option<u64>,
     },
+    /// Show the security audit log
+    Audit {
+        /// Only show events after this Unix timestamp
+        #[arg(long)]
+        since: Option<u64>,
+        /// Filter by event type (e.g. peer.join.accepted, secret.rotated)
+        #[arg(long, name = "type")]
+        event_type: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Maximum number of entries to display (most recent first, default 20)
+        #[arg(long)]
+        limit: Option<usize>,
+    },
     /// List all peers
     Peers {
         /// Output as JSON
@@ -527,6 +542,15 @@ async fn run() -> Result<()> {
             FabricCommand::Events { json, limit, since } => {
                 setup_logging(false);
                 cli::events::run(json, limit, since).await
+            }
+            FabricCommand::Audit {
+                since,
+                event_type,
+                json,
+                limit,
+            } => {
+                setup_logging(false);
+                cli::audit::run(json, limit, since, event_type).await
             }
             FabricCommand::Peers { json } => {
                 setup_logging(false);

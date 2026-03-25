@@ -11,6 +11,7 @@ use syfrah_core::addressing;
 use syfrah_core::mesh::{PeerRecord, PeerStatus};
 use syfrah_core::secret::MeshSecret;
 
+use crate::audit::{self as audit_log, AuditEventType};
 use crate::config::{self, Tuning};
 use crate::control::{self, ControlHandler, ControlRequest, ControlResponse};
 use crate::events::{self, EventType};
@@ -631,6 +632,7 @@ pub async fn run_daemon(
         None,
         Some(tuning.max_events),
     );
+    audit_log::emit(AuditEventType::DaemonStarted, None, None, None);
 
     let wg_pubkey = wg_keypair.public.clone();
     let peering_state = Arc::new(PeeringState::with_limits(
@@ -1153,6 +1155,7 @@ pub async fn run_daemon(
         None,
         Some(tuning.max_events),
     );
+    audit_log::emit(AuditEventType::DaemonStopped, None, None, None);
     info!("daemon stopped");
     Ok(())
 }
@@ -1198,11 +1201,13 @@ impl ControlHandler for DaemonControlHandler {
                         .await;
                 }
                 self.peering_state.set_active(true).await;
+                audit_log::emit(AuditEventType::PeeringStarted, None, None, None);
                 ControlResponse::Ok
             }
             ControlRequest::PeeringStop => {
                 self.peering_state.set_active(false).await;
                 self.peering_state.set_auto_accept(None).await;
+                audit_log::emit(AuditEventType::PeeringStopped, None, None, None);
                 ControlResponse::Ok
             }
             ControlRequest::PeeringList => {
@@ -1271,6 +1276,12 @@ impl ControlHandler for DaemonControlHandler {
                             None,
                             Some(self.max_events),
                         );
+                        audit_log::emit(
+                            AuditEventType::PeerJoinAccepted,
+                            Some(&sanitize(&info.node_name)),
+                            Some(&info.endpoint.to_string()),
+                            Some("approved_by=manual"),
+                        );
                         (self.on_accepted)(new_record);
                         ControlResponse::PeeringAccepted {
                             peer_name: info.node_name,
@@ -1290,6 +1301,12 @@ impl ControlHandler for DaemonControlHandler {
                             None,
                             reason.as_deref(),
                             Some(self.max_events),
+                        );
+                        audit_log::emit(
+                            AuditEventType::PeerJoinRejected,
+                            None,
+                            None,
+                            reason.as_deref(),
                         );
                         ControlResponse::Ok
                     }
