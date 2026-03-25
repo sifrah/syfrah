@@ -240,7 +240,7 @@ pub async fn setup_join(
     }
     let req_zone = config.zone.clone();
 
-    let request = syfrah_core::mesh::JoinRequest {
+    let mut request = syfrah_core::mesh::JoinRequest {
         request_id: peering::generate_request_id(),
         node_name: config.node_name.clone(),
         wg_public_key: wg_keypair.public.to_base64(),
@@ -249,7 +249,17 @@ pub async fn setup_join(
         pin,
         region: req_region,
         zone: req_zone,
+        timestamp: 0,
+        signature: String::new(),
     };
+    // Sign the request with the WireGuard private key to prove possession.
+    let wg_private_bytes: [u8; 32] = {
+        let raw = wg_keypair.private.as_bytes();
+        let mut buf = [0u8; 32];
+        buf.copy_from_slice(raw);
+        buf
+    };
+    syfrah_core::mesh::sign_join_request(&mut request, &wg_private_bytes);
     ui::step_ok(&sp, &format!("Connected to {target}"));
 
     let sp = ui::spinner("Waiting for approval...");
