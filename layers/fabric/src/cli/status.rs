@@ -117,7 +117,14 @@ pub async fn run(opts: StatusOpts) -> Result<()> {
 
     ui::box_top("Network");
     ui::box_row(&format!("WireGuard:  port {}", state.wg_listen_port));
-    ui::box_row(&format!("Peering:    port {}", state.peering_port));
+    if daemon_running.is_some() {
+        ui::box_row(&format!("Peering:    active (port {})", state.peering_port));
+    } else {
+        ui::box_row(&format!(
+            "Peering:    inactive (port {} configured)",
+            state.peering_port
+        ));
+    }
     ui::box_row(&format!("Mesh IPv6:  {}", state.mesh_ipv6));
     ui::box_row(&format!("Secret:     {secret_display}"));
 
