@@ -18,7 +18,7 @@ docker exec -d "e2e-zdisp-1" \
     --node-name node-1 \
     --endpoint 172.20.0.10:51820 \
     --region eu-west \
-    --zone eu-west-zone-1
+    --zone ew-zone-1
 
 wait_daemon "e2e-zdisp-1"
 start_peering "e2e-zdisp-1"
@@ -78,8 +78,8 @@ else
     echo "$output2"
 fi
 
-if echo "$output2" | grep "node-1" | grep -q "eu-west-zone-1"; then
-    pass "joiner sees leader's zone (eu-west-zone-1)"
+if echo "$output2" | grep "node-1" | grep -q "ew-zone-1"; then
+    pass "joiner sees leader's zone (ew-zone-1)"
 else
     fail "joiner does not see leader's zone"
     echo "$output2"

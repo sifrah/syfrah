@@ -23,16 +23,22 @@ docker exec -d "e2e-consist-3" syfrah fabric join 172.20.0.10:51821 \
 wait_daemon "e2e-consist-2" 30
 wait_daemon "e2e-consist-3" 30
 wait_for_convergence "e2e-consist-" 3 2 30 || true
-# Extra wait for JSON export to flush (debounced)
-sleep 5
-
-# Compare redb peer count vs JSON peer count on leader
-redb_count=$(docker exec "e2e-consist-1" syfrah state get fabric peers 2>&1 | grep -c "wg_public_key" || echo "0")
-json_count=$(docker exec "e2e-consist-1" cat /root/.syfrah/state.json 2>/dev/null | jq '.peers | length' 2>/dev/null || echo "0")
+# Wait for JSON export to flush (debounced at 5s, retry to handle timing)
+consistent=false
+for attempt in $(seq 1 6); do
+    sleep 5
+    redb_count=$(docker exec "e2e-consist-1" syfrah state get fabric peers 2>&1 | grep -c "wg_public_key" || echo "0")
+    json_count=$(docker exec "e2e-consist-1" cat /root/.syfrah/state.json 2>/dev/null | jq '.peers | length' 2>/dev/null || echo "0")
+    debug "attempt $attempt: redb=$redb_count json=$json_count"
+    if [ "$redb_count" = "$json_count" ]; then
+        consistent=true
+        break
+    fi
+done
 
 info "redb peers: $redb_count, JSON peers: $json_count"
 
-if [ "$redb_count" = "$json_count" ]; then
+if [ "$consistent" = true ]; then
     pass "redb ($redb_count) and JSON ($json_count) peer counts match"
 else
     fail "redb ($redb_count) and JSON ($json_count) peer counts diverge"
