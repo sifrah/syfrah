@@ -136,14 +136,8 @@ enum FabricCommand {
     },
     /// Manage peering — accept/reject join requests
     Peering {
-        /// PIN for auto-accept mode
-        #[arg(long)]
-        pin: Option<String>,
-        /// Stay open to accept multiple join requests
-        #[arg(long)]
-        watch: bool,
         #[command(subcommand)]
-        action: Option<PeeringAction>,
+        action: PeeringAction,
     },
 }
 
@@ -160,6 +154,15 @@ enum PeeringAction {
     Stop,
     /// List pending join requests
     List,
+    /// Watch for join requests interactively
+    Watch {
+        /// PIN for auto-accept mode
+        #[arg(long)]
+        pin: Option<String>,
+        /// Stay open to accept multiple join requests
+        #[arg(long, name = "continuous")]
+        continuous: bool,
+    },
     /// Accept a join request
     Accept { request_id: String },
     /// Reject a join request
@@ -520,23 +523,20 @@ async fn run() -> Result<()> {
                     ServiceAction::Status => cli::service::status().await,
                 }
             }
-            FabricCommand::Peering { pin, watch, action } => {
+            FabricCommand::Peering { action } => {
                 setup_logging(false);
                 match action {
-                    None => cli::peering::watch(pin, watch).await,
-                    Some(PeeringAction::Start {
-                        port,
-                        pin: start_pin,
-                    }) => {
+                    PeeringAction::Start { port, pin } => {
                         let port = port.unwrap_or(51821);
-                        cli::peering::start(port, pin.or(start_pin)).await
+                        cli::peering::start(port, pin).await
                     }
-                    Some(PeeringAction::Stop) => cli::peering::stop().await,
-                    Some(PeeringAction::List) => cli::peering::list().await,
-                    Some(PeeringAction::Accept { request_id }) => {
-                        cli::peering::accept(&request_id).await
+                    PeeringAction::Stop => cli::peering::stop().await,
+                    PeeringAction::List => cli::peering::list().await,
+                    PeeringAction::Watch { pin, continuous } => {
+                        cli::peering::watch(pin, continuous).await
                     }
-                    Some(PeeringAction::Reject { request_id, reason }) => {
+                    PeeringAction::Accept { request_id } => cli::peering::accept(&request_id).await,
+                    PeeringAction::Reject { request_id, reason } => {
                         cli::peering::reject(&request_id, reason).await
                     }
                 }
