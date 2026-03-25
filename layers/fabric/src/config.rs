@@ -32,6 +32,8 @@ pub struct Tuning {
     pub max_concurrent_announces: usize,
     /// WireGuard interface name (default "syfrah0").
     pub interface_name: String,
+    /// Maximum log file size in megabytes before rotation (default 10).
+    pub log_max_size_mb: u64,
 }
 
 impl Default for Tuning {
@@ -50,6 +52,7 @@ impl Default for Tuning {
             max_peers: 1000,
             max_concurrent_announces: 50,
             interface_name: crate::wg::DEFAULT_INTERFACE_NAME.to_string(),
+            log_max_size_mb: 10,
         }
     }
 }
@@ -74,6 +77,7 @@ struct DaemonSection {
     reconcile_interval: Option<u64>,
     persist_interval: Option<u64>,
     unreachable_timeout: Option<u64>,
+    log_max_size_mb: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -169,5 +173,9 @@ pub fn load_tuning() -> Result<Tuning, String> {
             .wireguard
             .interface_name
             .unwrap_or(defaults.interface_name),
+        log_max_size_mb: config
+            .daemon
+            .log_max_size_mb
+            .unwrap_or(defaults.log_max_size_mb),
     })
 }

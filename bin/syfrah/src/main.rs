@@ -220,6 +220,9 @@ fn setup_logging(daemon_mode: bool) {
         .unwrap_or(false);
 
     if daemon_mode {
+        let tuning = syfrah_fabric::config::load_tuning().unwrap_or_default();
+        let log_max_bytes = tuning.log_max_size_mb * 1024 * 1024;
+
         let log_path = dirs::home_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
             .join(".syfrah")
@@ -233,7 +236,7 @@ fn setup_logging(daemon_mode: bool) {
             }
         }
         if let Ok(meta) = std::fs::metadata(&log_path) {
-            if meta.len() > 10 * 1024 * 1024 {
+            if meta.len() > log_max_bytes {
                 let old = log_path.with_extension("log.old");
                 let _ = std::fs::rename(&log_path, &old);
                 #[cfg(unix)]
