@@ -305,7 +305,12 @@ async fn finalize_join(
             count = response.peers.len(),
             "applying peers from join response"
         );
-        if let Err(e) = wg::apply_peers(&wg_keypair.public, &response.peers) {
+        let tuning = config::load_tuning().unwrap_or_default();
+        if let Err(e) = wg::apply_peers(
+            &wg_keypair.public,
+            &response.peers,
+            tuning.keepalive_interval,
+        ) {
             warn!(flow = "join", error = %e, "failed to apply peers");
         }
         ui::step_ok(&sp, &format!("{} peers configured", response.peers.len()));
@@ -451,7 +456,9 @@ pub fn setup_start() -> anyhow::Result<DaemonReady> {
             count = state.peers.len(),
             "applying peers from saved state"
         );
-        if let Err(e) = wg::apply_peers(&wg_keypair.public, &state.peers) {
+        let tuning = config::load_tuning().unwrap_or_default();
+        if let Err(e) = wg::apply_peers(&wg_keypair.public, &state.peers, tuning.keepalive_interval)
+        {
             warn!(flow = "start", error = %e, "failed to apply saved peers");
         }
         ui::step_ok(
@@ -583,6 +590,7 @@ pub async fn run_daemon(
 
     let announce_semaphore = Arc::new(Semaphore::new(tuning.max_concurrent_announces));
     let max_peers = tuning.max_peers;
+    let keepalive_interval = tuning.keepalive_interval;
 
     // Acquire exclusive PID file lock. The returned file handle must be kept
     // alive for the entire daemon lifetime — dropping it releases the flock.
@@ -620,6 +628,7 @@ pub async fn run_daemon(
     let accepted_peering_port = peering_port;
     let accepted_max_events = tuning.max_events;
     let accepted_max_peers = max_peers;
+    let accepted_keepalive = keepalive_interval;
     let accepted_peer_limit_counter = metrics_peer_limit_reached.clone();
     let accepted_store_failures = metrics_store_failures.clone();
     let on_accepted: peering::OnAccepted = Arc::new(move |new_record| {
@@ -631,6 +640,7 @@ pub async fn run_daemon(
         let pp = accepted_peering_port;
         let max_ev = accepted_max_events;
         let mp = accepted_max_peers;
+        let ka = accepted_keepalive;
         let plr = accepted_peer_limit_counter.clone();
         let sf = accepted_store_failures.clone();
         tokio::spawn(async move {
@@ -659,7 +669,7 @@ pub async fn run_daemon(
             }
 
             // Add to WG (bounded)
-            match wg::upsert_peer_bounded(&pubkey, &record, mp, current_count, exists) {
+            match wg::upsert_peer_bounded(&pubkey, &record, mp, current_count, exists, ka) {
                 Err(e) => {
                     if matches!(e, wg::WgError::PeerLimitExceeded(_, _)) {
                         plr.fetch_add(1, Ordering::Relaxed);
@@ -755,6 +765,7 @@ pub async fn run_daemon(
     let announce_dropped = metrics_announces_dropped.clone();
     let announce_peer_limit = metrics_peer_limit_reached.clone();
     let announce_max_peers = max_peers;
+    let announce_keepalive = keepalive_interval;
     let announce_store_failures = metrics_store_failures.clone();
     let on_announce: Arc<dyn Fn(PeerRecord) + Send + Sync> = Arc::new(move |record| {
         announce_recv.fetch_add(1, Ordering::Relaxed);
@@ -788,6 +799,7 @@ pub async fn run_daemon(
         let recon = announce_recon.clone();
         let record = record.clone();
         let mp = announce_max_peers;
+        let ka = announce_keepalive;
         let plr = announce_peer_limit.clone();
         let sf = announce_store_failures.clone();
         let max_ev = announce_max_events;
@@ -816,7 +828,7 @@ pub async fn run_daemon(
             }
 
             // Add to WG (bounded)
-            match wg::upsert_peer_bounded(&pubkey, &record, mp, current_count, exists) {
+            match wg::upsert_peer_bounded(&pubkey, &record, mp, current_count, exists, ka) {
                 Err(e) => {
                     if matches!(e, wg::WgError::PeerLimitExceeded(_, _)) {
                         plr.fetch_add(1, Ordering::Relaxed);
@@ -1029,6 +1041,7 @@ pub async fn run_daemon(
     let reconcile_wg_pubkey = wg_pubkey.clone();
     let reconcile_recon = health_recon;
     let reconcile_max_events = tuning.max_events;
+    let reconcile_keepalive = keepalive_interval;
     let reconcile_failures = metrics_reconcile_failures.clone();
     let reconcile = async {
         let mut interval = tokio::time::interval(tuning.reconcile_interval);
@@ -1046,7 +1059,7 @@ pub async fn run_daemon(
             // Diff-based reconciliation: only touch peers that actually changed.
             // This avoids tearing down existing WireGuard sessions.
             // sync_peers handles diff, add/update, removal + route cleanup.
-            match wg::sync_peers(&reconcile_wg_pubkey, &stored_peers) {
+            match wg::sync_peers(&reconcile_wg_pubkey, &stored_peers, reconcile_keepalive) {
                 Ok(0) => {
                     debug!("reconciliation: no diff, skipping");
                 }

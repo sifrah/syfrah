@@ -311,7 +311,16 @@ syfrah state list nonexistent     # error: no database for this layer
 ```bash
 syfrah state get fabric peers     # get all values from the "peers" table
 syfrah state get fabric config    # get all values from the "config" table
+syfrah state get fabric peers my-key  # get a specific entry by key
 ```
+
+| Argument | Required | Description |
+|---|---|---|
+| `layer` | yes | Layer name (e.g., `fabric`) |
+| `table` | yes | Table name (e.g., `peers`, `config`, `metrics`) |
+| `key` | no | Specific key to look up. If omitted, all entries are printed. |
+
+The `metrics` table is special-cased: values are plain integers, not JSON.
 
 ### `syfrah state drop`
 
@@ -319,7 +328,11 @@ syfrah state get fabric config    # get all values from the "config" table
 syfrah state drop fabric --force  # delete the fabric state database
 ```
 
-**Warning:** `syfrah state drop` permanently deletes a layer's state database. Use `--force` to confirm.
+| Flag | Default | Description |
+|---|---|---|
+| `--force` | false | Skip the interactive confirmation prompt |
+
+**Warning:** `syfrah state drop` permanently deletes a layer's state database. Without `--force`, an interactive `[y/N]` prompt is shown.
 
 ## `forge` — per-node debug and ops (planned)
 

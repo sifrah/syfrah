@@ -9,7 +9,6 @@ use wireguard_control::{
 use syfrah_core::mesh::PeerRecord;
 
 pub const INTERFACE_NAME: &str = "syfrah0";
-const KEEPALIVE_INTERVAL: u16 = 25;
 
 #[derive(Debug, Error)]
 pub enum WgError {
@@ -81,7 +80,11 @@ pub fn get_device() -> Result<Device, WgError> {
 /// sessions and forces new handshakes. Use `sync_peers()` instead for non-disruptive
 /// reconciliation. This function is kept only for initial setup (join/start) where
 /// no active sessions exist yet.
-pub fn apply_peers(self_pubkey: &Key, peers: &[PeerRecord]) -> Result<(), WgError> {
+pub fn apply_peers(
+    self_pubkey: &Key,
+    peers: &[PeerRecord],
+    keepalive_interval: u16,
+) -> Result<(), WgError> {
     let iface = iface_name()?;
 
     let mut update = DeviceUpdate::new().replace_peers();
@@ -104,7 +107,7 @@ pub fn apply_peers(self_pubkey: &Key, peers: &[PeerRecord]) -> Result<(), WgErro
             .set_endpoint(peer.endpoint)
             .replace_allowed_ips()
             .add_allowed_ip(IpAddr::V6(peer.mesh_ipv6), 128)
-            .set_persistent_keepalive_interval(KEEPALIVE_INTERVAL);
+            .set_persistent_keepalive_interval(keepalive_interval);
 
         update = update.add_peer(peer_config);
     }
@@ -193,7 +196,7 @@ pub fn diff_peers(
 /// preserves existing WireGuard sessions and in-flight traffic.
 ///
 /// Returns the number of peers that were added, updated, or removed.
-pub fn sync_peers(self_pubkey: &Key, desired: &[PeerRecord]) -> Result<usize, WgError> {
+pub fn sync_peers(self_pubkey: &Key, desired: &[PeerRecord], keepalive_interval: u16) -> Result<usize, WgError> {
     let summary = interface_summary()?;
     let (to_add_or_update, to_remove) = diff_peers(self_pubkey, desired, &summary.peers)?;
 
@@ -234,7 +237,7 @@ pub fn sync_peers(self_pubkey: &Key, desired: &[PeerRecord]) -> Result<usize, Wg
 
     // Add or update peers that are new or changed
     for peer in &to_add_or_update {
-        upsert_peer(self_pubkey, peer)?;
+        upsert_peer(self_pubkey, peer, keepalive_interval)?;
     }
 
     Ok(changes)
@@ -259,6 +262,7 @@ pub fn upsert_peer_bounded(
     max_peers: usize,
     peer_count: usize,
     peer_exists: bool,
+    keepalive_interval: u16,
 ) -> Result<(), WgError> {
     let peer_key = Key::from_base64(&peer.wg_public_key)
         .map_err(|_| WgError::InvalidKey(peer.wg_public_key.clone()))?;
@@ -275,12 +279,16 @@ pub fn upsert_peer_bounded(
         return Err(WgError::PeerLimitExceeded(peer_count, max_peers));
     }
 
-    upsert_peer(self_pubkey, peer)
+    upsert_peer(self_pubkey, peer, keepalive_interval)
 }
 
 /// Incrementally add or update a single peer. Does NOT replace all peers.
 /// Use this for gossip events (one peer changed at a time).
-pub fn upsert_peer(self_pubkey: &Key, peer: &PeerRecord) -> Result<(), WgError> {
+pub fn upsert_peer(
+    self_pubkey: &Key,
+    peer: &PeerRecord,
+    keepalive_interval: u16,
+) -> Result<(), WgError> {
     let peer_key = Key::from_base64(&peer.wg_public_key)
         .map_err(|_| WgError::InvalidKey(peer.wg_public_key.clone()))?;
 
@@ -302,7 +310,7 @@ pub fn upsert_peer(self_pubkey: &Key, peer: &PeerRecord) -> Result<(), WgError> 
             .set_endpoint(peer.endpoint)
             .replace_allowed_ips()
             .add_allowed_ip(IpAddr::V6(peer.mesh_ipv6), 128)
-            .set_persistent_keepalive_interval(KEEPALIVE_INTERVAL);
+            .set_persistent_keepalive_interval(keepalive_interval);
 
         DeviceUpdate::new()
             .add_peer(peer_config)
@@ -554,7 +562,7 @@ mod tests {
             syfrah_core::mesh::PeerStatus::Active,
         );
 
-        let result = upsert_peer_bounded(&self_kp.public, &peer, 10, 10, false);
+        let result = upsert_peer_bounded(&self_kp.public, &peer, 10, 10, false, 25);
         assert!(matches!(result, Err(WgError::PeerLimitExceeded(10, 10))));
     }
 
@@ -567,7 +575,7 @@ mod tests {
             syfrah_core::mesh::PeerStatus::Active,
         );
 
-        let result = upsert_peer_bounded(&self_kp.public, &peer, 5, 7, false);
+        let result = upsert_peer_bounded(&self_kp.public, &peer, 5, 7, false, 25);
         assert!(matches!(result, Err(WgError::PeerLimitExceeded(7, 5))));
     }
 
@@ -580,7 +588,7 @@ mod tests {
         );
 
         // Should succeed (no-op) even at limit, because it's self
-        let result = upsert_peer_bounded(&self_kp.public, &peer, 0, 0, false);
+        let result = upsert_peer_bounded(&self_kp.public, &peer, 0, 0, false, 25);
         assert!(result.is_ok());
     }
 
@@ -593,7 +601,7 @@ mod tests {
             syfrah_core::mesh::PeerStatus::Active,
         );
 
-        let result = upsert_peer_bounded(&self_kp.public, &peer, 0, 0, false);
+        let result = upsert_peer_bounded(&self_kp.public, &peer, 0, 0, false, 25);
         assert!(matches!(result, Err(WgError::PeerLimitExceeded(0, 0))));
     }
 
@@ -607,7 +615,7 @@ mod tests {
         );
 
         // Existing peer (peer_exists=true) should pass even when at limit
-        let result = upsert_peer_bounded(&self_kp.public, &peer, 10, 10, true);
+        let result = upsert_peer_bounded(&self_kp.public, &peer, 10, 10, true, 25);
         // This calls upsert_peer which requires a real WG interface, so it will
         // fail with a WG error — but it should NOT fail with PeerLimitExceeded.
         assert!(!matches!(result, Err(WgError::PeerLimitExceeded(_, _))));
@@ -623,7 +631,7 @@ mod tests {
         );
 
         // Removed peer should pass even when at limit and not previously known
-        let result = upsert_peer_bounded(&self_kp.public, &peer, 10, 10, false);
+        let result = upsert_peer_bounded(&self_kp.public, &peer, 10, 10, false, 25);
         assert!(!matches!(result, Err(WgError::PeerLimitExceeded(_, _))));
     }
 
@@ -637,7 +645,7 @@ mod tests {
         );
 
         // New peer under limit should pass the limit check
-        let result = upsert_peer_bounded(&self_kp.public, &peer, 10, 5, false);
+        let result = upsert_peer_bounded(&self_kp.public, &peer, 10, 5, false, 25);
         assert!(!matches!(result, Err(WgError::PeerLimitExceeded(_, _))));
     }
 
@@ -646,7 +654,7 @@ mod tests {
         let self_kp = generate_keypair();
         let peer = make_peer("not-valid-base64", syfrah_core::mesh::PeerStatus::Active);
 
-        let result = upsert_peer_bounded(&self_kp.public, &peer, 10, 0, false);
+        let result = upsert_peer_bounded(&self_kp.public, &peer, 10, 0, false, 25);
         assert!(matches!(result, Err(WgError::InvalidKey(_))));
     }
 
@@ -846,7 +854,7 @@ mod tests {
             zone: None,
         };
 
-        apply_peers(&kp.public, &[peer]).unwrap();
+        apply_peers(&kp.public, &[peer], 25).unwrap();
 
         let device = get_device().unwrap();
         assert_eq!(device.peers.len(), 1);
