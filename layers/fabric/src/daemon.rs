@@ -1632,4 +1632,162 @@ mod tests {
         // rollback should not panic even when there's nothing to clean up
         rollback_join_state();
     }
+
+    // ── reconciliation edge cases ──
+
+    #[test]
+    fn reconciliation_empty_stored_peers() {
+        let peers: Vec<PeerRecord> = vec![];
+        let wg_keys = vec!["key-node-1".to_string()];
+        let needing = peers_needing_reconciliation(&peers, &wg_keys);
+        assert!(needing.is_empty());
+    }
+
+    #[test]
+    fn reconciliation_empty_wg_keys_returns_all_active() {
+        let peers = vec![
+            sample_peer("node-1", PeerStatus::Active, 1000),
+            sample_peer("node-2", PeerStatus::Active, 1000),
+        ];
+        let wg_keys: Vec<String> = vec![];
+        let needing = peers_needing_reconciliation(&peers, &wg_keys);
+        assert_eq!(needing.len(), 2);
+    }
+
+    #[test]
+    fn reconciliation_unreachable_peer_still_reconciled() {
+        // Unreachable peers should be re-added to WG (only Removed are skipped)
+        let peers = vec![sample_peer("node-1", PeerStatus::Unreachable, 1000)];
+        let wg_keys: Vec<String> = vec![];
+        let needing = peers_needing_reconciliation(&peers, &wg_keys);
+        assert_eq!(needing.len(), 1);
+        assert_eq!(needing[0].name, "node-1");
+    }
+
+    #[test]
+    fn reconciliation_mixed_statuses() {
+        let peers = vec![
+            sample_peer("active-1", PeerStatus::Active, 1000),
+            sample_peer("unreach-1", PeerStatus::Unreachable, 1000),
+            sample_peer("removed-1", PeerStatus::Removed, 1000),
+        ];
+        // None are in WG
+        let wg_keys: Vec<String> = vec![];
+        let needing = peers_needing_reconciliation(&peers, &wg_keys);
+        // Only active and unreachable should be reconciled, not removed
+        assert_eq!(needing.len(), 2);
+        let names: Vec<&str> = needing.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"active-1"));
+        assert!(names.contains(&"unreach-1"));
+        assert!(!names.contains(&"removed-1"));
+    }
+
+    // ── health check lifecycle ──
+
+    #[test]
+    fn health_full_lifecycle_active_unreachable_active() {
+        let mut peer = sample_peer("node-2", PeerStatus::Active, 1000);
+
+        // Step 1: active, still within timeout — no change
+        let changed = evaluate_peer_health(&mut peer, None, 1100, 300);
+        assert!(!changed);
+        assert_eq!(peer.status, PeerStatus::Active);
+
+        // Step 2: active → unreachable (timeout exceeded)
+        let changed = evaluate_peer_health(&mut peer, None, 1301, 300);
+        assert!(changed);
+        assert_eq!(peer.status, PeerStatus::Unreachable);
+
+        // Step 3: unreachable → active (fresh handshake arrives)
+        let changed = evaluate_peer_health(&mut peer, Some(1350), 1360, 300);
+        assert!(changed);
+        assert_eq!(peer.status, PeerStatus::Active);
+        assert_eq!(peer.last_seen, 1350);
+    }
+
+    #[test]
+    fn health_multiple_peers_independent() {
+        let mut peer_a = sample_peer("node-a", PeerStatus::Active, 1000);
+        let mut peer_b = sample_peer("node-b", PeerStatus::Active, 1200);
+
+        // At time 1301: peer_a times out (1301-1000=301>300), peer_b is fine (1301-1200=101<300)
+        let a_changed = evaluate_peer_health(&mut peer_a, None, 1301, 300);
+        let b_changed = evaluate_peer_health(&mut peer_b, None, 1301, 300);
+
+        assert!(a_changed);
+        assert_eq!(peer_a.status, PeerStatus::Unreachable);
+        assert!(!b_changed);
+        assert_eq!(peer_b.status, PeerStatus::Active);
+    }
+
+    #[test]
+    fn health_handshake_at_exact_last_seen_no_update() {
+        let mut peer = sample_peer("node-2", PeerStatus::Active, 1000);
+        // Handshake at exactly last_seen — not newer, so no update
+        let changed = evaluate_peer_health(&mut peer, Some(1000), 1100, 300);
+        assert!(!changed);
+        assert_eq!(peer.last_seen, 1000);
+    }
+
+    #[test]
+    fn health_zero_timestamps() {
+        let mut peer = sample_peer("node-2", PeerStatus::Active, 0);
+        // With last_seen=0, current=0, timeout=300: 0-0=0 which is not > 300
+        let changed = evaluate_peer_health(&mut peer, None, 0, 300);
+        assert!(!changed);
+        assert_eq!(peer.status, PeerStatus::Active);
+    }
+
+    #[test]
+    fn health_handshake_updates_then_prevents_unreachable() {
+        let mut peer = sample_peer("node-2", PeerStatus::Active, 1000);
+        // Without handshake at time 1301, peer would go unreachable.
+        // But a handshake at 1100 updates last_seen, keeping gap at 201 < 300.
+        let changed = evaluate_peer_health(&mut peer, Some(1100), 1301, 300);
+        assert!(changed); // last_seen updated
+        assert_eq!(peer.last_seen, 1100);
+        assert_eq!(peer.status, PeerStatus::Active);
+    }
+
+    // ── build_record edge cases ──
+
+    #[test]
+    fn build_record_no_region_no_zone() {
+        let keypair = KeyPair::generate();
+        let endpoint: SocketAddr = "10.0.0.1:51820".parse().unwrap();
+        let ipv6 = Ipv6Addr::new(0xfd12, 0, 0, 0, 0, 0, 0, 1);
+
+        let record = build_record("node-1", &keypair, endpoint, ipv6, None, None);
+
+        assert!(record.region.is_none());
+        assert!(record.zone.is_none());
+    }
+
+    // ── derive_prefix edge cases ──
+
+    #[test]
+    fn derive_prefix_always_ula_range() {
+        // Every secret should produce an fd00::/8 prefix
+        for i in 0..10u8 {
+            let secret = MeshSecret::from_bytes([i; 32]);
+            let prefix = derive_prefix_from_secret(&secret);
+            let first_byte = (prefix.segments()[0] >> 8) as u8;
+            assert_eq!(first_byte, 0xfd, "secret [{i};32] gave non-ULA prefix");
+        }
+    }
+
+    #[test]
+    fn derive_prefix_host_segments_always_zero() {
+        // The prefix is /48, so segments 3..7 must always be zero
+        for i in 0..5u8 {
+            let secret = MeshSecret::from_bytes([i * 50; 32]);
+            let prefix = derive_prefix_from_secret(&secret);
+            let segs = prefix.segments();
+            assert_eq!(segs[3], 0, "segment 3 non-zero for secret [{};32]", i * 50);
+            assert_eq!(segs[4], 0, "segment 4 non-zero for secret [{};32]", i * 50);
+            assert_eq!(segs[5], 0, "segment 5 non-zero for secret [{};32]", i * 50);
+            assert_eq!(segs[6], 0, "segment 6 non-zero for secret [{};32]", i * 50);
+            assert_eq!(segs[7], 0, "segment 7 non-zero for secret [{};32]", i * 50);
+        }
+    }
 }
