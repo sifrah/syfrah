@@ -54,7 +54,7 @@ enum FabricCommand {
         endpoint: Option<SocketAddr>,
         #[arg(long)]
         peering_port: Option<u16>,
-        /// Region label for this node
+        /// Region label for this node [default: "default"]
         #[arg(long)]
         region: Option<String>,
         /// Zone label for this node (auto-incremented if not set)
@@ -80,7 +80,7 @@ enum FabricCommand {
         /// PIN for auto-accept (skip manual approval)
         #[arg(long)]
         pin: Option<String>,
-        /// Region label for this node
+        /// Region label for this node [default: "default"]
         #[arg(long)]
         region: Option<String>,
         /// Zone label for this node (auto-incremented if not set)
