@@ -88,7 +88,7 @@ async fn join_with_pin_auto_accept() {
     let listener_state = peering_state.clone();
     let listener_handle = tokio::spawn(async move {
         listener_state
-            .run_listener(peering_port, Some(encryption_key), on_announce, on_accepted)
+            .run_listener(peering_port, Some(encryption_key), on_announce, on_accepted, None)
             .await
             .ok();
     });
@@ -112,7 +112,7 @@ async fn join_with_pin_auto_accept() {
     };
 
     let target: SocketAddr = format!("127.0.0.1:{peering_port}").parse().unwrap();
-    let response = send_join_request(target, join_request).await.unwrap();
+    let response = send_join_request(target, join_request, None).await.unwrap();
 
     // ── Verify: join was accepted ──
 
@@ -202,7 +202,7 @@ async fn join_with_wrong_pin_falls_to_pending() {
     let listener_state = peering_state.clone();
     let listener_handle = tokio::spawn(async move {
         listener_state
-            .run_listener(peering_port, Some(encryption_key), on_announce, on_accepted)
+            .run_listener(peering_port, Some(encryption_key), on_announce, on_accepted, None)
             .await
             .ok();
     });
@@ -233,7 +233,7 @@ async fn join_with_wrong_pin_falls_to_pending() {
     // to let the internal timeout fire and produce an Err.
     let result = tokio::time::timeout(
         Duration::from_secs(10),
-        send_join_request(target, join_request),
+        send_join_request(target, join_request, None),
     )
     .await;
 
@@ -302,7 +302,7 @@ async fn join_without_pin_goes_to_pending() {
     let listener_state = peering_state.clone();
     let listener_handle = tokio::spawn(async move {
         listener_state
-            .run_listener(peering_port, Some(encryption_key), on_announce, on_accepted)
+            .run_listener(peering_port, Some(encryption_key), on_announce, on_accepted, None)
             .await
             .ok();
     });
@@ -329,7 +329,7 @@ async fn join_without_pin_goes_to_pending() {
     // Should timeout (goes to pending, no auto-accept without PIN)
     let result = tokio::time::timeout(
         Duration::from_secs(2),
-        send_join_request(target, join_request),
+        send_join_request(target, join_request, None),
     )
     .await;
 
@@ -443,7 +443,7 @@ async fn rate_limited_ip_gets_rejection() {
     let listener_state = peering_state.clone();
     let listener_handle = tokio::spawn(async move {
         listener_state
-            .run_listener(peering_port, Some(encryption_key), on_announce, on_accepted)
+            .run_listener(peering_port, Some(encryption_key), on_announce, on_accepted, None)
             .await
             .ok();
     });
@@ -471,7 +471,7 @@ async fn rate_limited_ip_gets_rejection() {
         // These will go to pending after the 2s delay; just fire and let them timeout
         let _ = tokio::time::timeout(
             Duration::from_secs(5),
-            send_join_request(target, join_request),
+            send_join_request(target, join_request, None),
         )
         .await;
     }
@@ -495,7 +495,7 @@ async fn rate_limited_ip_gets_rejection() {
     let target: SocketAddr = format!("127.0.0.1:{peering_port}").parse().unwrap();
     let result = tokio::time::timeout(
         Duration::from_secs(10),
-        send_join_request(target, join_request),
+        send_join_request(target, join_request, None),
     )
     .await;
 
