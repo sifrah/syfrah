@@ -36,7 +36,7 @@ sleep 5
 # Collect all zones
 zones=()
 for i in $(seq 1 5); do
-    z=$(docker exec "e2e-z5-$i" syfrah fabric status 2>&1 | grep "Zone:" | awk '{print $2}')
+    z=$(docker exec "e2e-z5-$i" syfrah fabric status 2>&1 | grep -o "zone: [^ ]*" | awk '{print $2}')
     zones+=("$z")
     info "node-$i zone: $z"
 done
