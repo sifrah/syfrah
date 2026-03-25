@@ -978,45 +978,31 @@ pub async fn run_daemon(
 
                     if old_status == PeerStatus::Unreachable && peer.status == PeerStatus::Active {
                         info!(peer = %sanitize(&peer.name), last_seen = peer.last_seen, "peer recovered, marking active");
+                        events::emit(
+                            EventType::PeerRecovered,
+                            Some(&sanitize(&peer.name)),
+                            Some(&peer.endpoint.to_string()),
+                            Some("handshake resumed"),
+                            Some(health_max_events),
+                        );
                     }
                     if old_status == PeerStatus::Active && peer.status == PeerStatus::Unreachable {
                         info!(peer = %sanitize(&peer.name), last_seen = peer.last_seen, timeout_secs = unreachable_timeout_secs, "marking peer as unreachable");
                         health_counter.fetch_add(1, Ordering::Relaxed);
+                        events::emit(
+                            EventType::PeerUnreachable,
+                            Some(&sanitize(&peer.name)),
+                            Some(&peer.endpoint.to_string()),
+                            Some(&format!("no handshake for {unreachable_timeout_secs}s")),
+                            Some(health_max_events),
+                        );
                     }
                 }
 
-                // Recovery: unreachable → active if recent handshake
-                if peer.status == PeerStatus::Unreachable
-                    && current.saturating_sub(peer.last_seen) < unreachable_timeout_secs
-                {
-                    info!(peer = %sanitize(&peer.name), last_seen = peer.last_seen, "peer recovered, marking active");
-                    peer.status = PeerStatus::Active;
-                    changed = true;
-                    events::emit(
-                        EventType::PeerRecovered,
-                        Some(&sanitize(&peer.name)),
-                        Some(&peer.endpoint.to_string()),
-                        Some("handshake resumed"),
-                        Some(health_max_events),
-                    );
-                }
-
-                // Detection: active → unreachable if no handshake for too long
-                if peer.status == PeerStatus::Active
-                    && current.saturating_sub(peer.last_seen) > unreachable_timeout_secs
-                {
-                    info!(peer = %sanitize(&peer.name), last_seen = peer.last_seen, timeout_secs = unreachable_timeout_secs, "marking peer as unreachable");
-                    peer.status = PeerStatus::Unreachable;
-                    health_counter.fetch_add(1, Ordering::Relaxed);
-                    changed = true;
-                    events::emit(
-                        EventType::PeerUnreachable,
-                        Some(&sanitize(&peer.name)),
-                        Some(&peer.endpoint.to_string()),
-                        Some(&format!("no handshake for {unreachable_timeout_secs}s")),
-                        Some(health_max_events),
-                    );
-                }
+                // Never remove a peer from WireGuard that has a recent handshake.
+                // The health check only transitions between Active/Unreachable;
+                // it never sets Removed or calls wg remove. Peer removal is only
+                // done through explicit leave/remove operations.
             }
 
             // Persist changes atomically
@@ -1066,19 +1052,46 @@ pub async fn run_daemon(
                 }
             };
 
-            // For each stored peer, ensure it's in WireGuard
-            let wg_keys: Vec<String> = wg_summary
-                .peers
-                .iter()
-                .map(|p| p.public_key.clone())
-                .collect();
-            let missing = peers_needing_reconciliation(&stored_peers, &wg_keys);
-            for peer in missing {
-                info!(peer = %sanitize(&peer.name), endpoint = %peer.endpoint, "reconciling: adding missing peer to WireGuard");
-                if let Err(e) = wg::upsert_peer(&reconcile_wg_pubkey, peer) {
-                    warn!(peer = %sanitize(&peer.name), error = %e, "reconciliation failed");
-                } else {
-                    reconcile_recon.fetch_add(1, Ordering::Relaxed);
+            // Diff-based reconciliation: only touch peers that actually changed.
+            // This avoids tearing down existing WireGuard sessions.
+            let (to_add_or_update, to_remove) =
+                match wg::diff_peers(&reconcile_wg_pubkey, &stored_peers, &wg_summary.peers) {
+                    Ok(diff) => diff,
+                    Err(e) => {
+                        warn!(error = %e, "reconciliation: failed to compute peer diff");
+                        reconcile_failures.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                };
+
+            // Skip entirely if nothing changed — no syscalls, no disruption
+            if to_add_or_update.is_empty() && to_remove.is_empty() {
+                debug!("reconciliation: no diff, skipping");
+            } else {
+                for peer in &to_add_or_update {
+                    info!(peer = %sanitize(&peer.name), endpoint = %peer.endpoint, "reconciling: adding/updating peer in WireGuard");
+                    if let Err(e) = wg::upsert_peer(&reconcile_wg_pubkey, peer) {
+                        warn!(peer = %sanitize(&peer.name), error = %e, "reconciliation failed");
+                    } else {
+                        reconcile_recon.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                for pubkey in &to_remove {
+                    info!(peer = %sanitize(pubkey), "reconciling: removing stale peer from WireGuard");
+                    let key = match wireguard_control::Key::from_base64(pubkey) {
+                        Ok(k) => k,
+                        Err(_) => continue,
+                    };
+                    if let Err(e) = wireguard_control::DeviceUpdate::new()
+                        .remove_peer_by_key(&key)
+                        .apply(
+                            &std::str::FromStr::from_str(wg::INTERFACE_NAME)
+                                .expect("valid iface name"),
+                            wireguard_control::Backend::default(),
+                        )
+                    {
+                        warn!(peer = %sanitize(pubkey), error = %e, "reconciliation: failed to remove stale peer");
+                    }
                 }
             }
 
@@ -1824,6 +1837,37 @@ mod tests {
         assert!(names.contains(&"active-1"));
         assert!(names.contains(&"unreach-1"));
         assert!(!names.contains(&"removed-1"));
+    }
+
+    // ── health check: never remove peers with recent handshake ──
+
+    #[test]
+    fn health_check_never_marks_removed_if_recent_handshake() {
+        // A peer with a recent handshake should never transition to Removed,
+        // even if it was previously Unreachable.
+        let mut peer = sample_peer("node-1", PeerStatus::Unreachable, 1000);
+        // Fresh handshake at 1250, current time 1260, timeout 300
+        let changed = evaluate_peer_health(&mut peer, Some(1250), 1260, 300);
+        assert!(changed);
+        assert_eq!(
+            peer.status,
+            PeerStatus::Active,
+            "peer with recent handshake must recover to Active, not be removed"
+        );
+        assert_eq!(peer.last_seen, 1250);
+    }
+
+    #[test]
+    fn health_check_active_peer_with_handshake_stays_active() {
+        // An active peer that has a recent handshake should stay active
+        let mut peer = sample_peer("node-1", PeerStatus::Active, 900);
+        // Handshake at 1100, current time 1200, timeout 300
+        // Without handshake: 1200-900=300 which is NOT > 300 (stays active)
+        // With handshake: last_seen updated to 1100, 1200-1100=100 < 300
+        let changed = evaluate_peer_health(&mut peer, Some(1100), 1200, 300);
+        assert!(changed); // last_seen updated
+        assert_eq!(peer.status, PeerStatus::Active);
+        assert_eq!(peer.last_seen, 1100);
     }
 
     // ── health check lifecycle ──

@@ -76,6 +76,11 @@ pub fn get_device() -> Result<Device, WgError> {
 
 /// Full reconciliation: replace all peers on the interface with the given peer records.
 /// Skips peers whose WG public key matches `self_pubkey` (the local node).
+///
+/// WARNING: This uses `replace_peers()` which tears down all existing WireGuard
+/// sessions and forces new handshakes. Use `sync_peers()` instead for non-disruptive
+/// reconciliation. This function is kept only for initial setup (join/start) where
+/// no active sessions exist yet.
 pub fn apply_peers(self_pubkey: &Key, peers: &[PeerRecord]) -> Result<(), WgError> {
     let iface = iface_name()?;
 
@@ -120,6 +125,100 @@ pub fn apply_peers(self_pubkey: &Key, peers: &[PeerRecord]) -> Result<(), WgErro
     }
 
     Ok(())
+}
+
+/// Compute the diff between desired peer state and current WireGuard device peers.
+///
+/// Returns `(to_add_or_update, to_remove)`:
+/// - `to_add_or_update`: peers in `desired` that are missing from WG or have a changed endpoint.
+/// - `to_remove`: public keys present in WG but not in the desired set.
+///
+/// This is a pure function suitable for unit testing.
+pub fn diff_peers(
+    self_pubkey: &Key,
+    desired: &[PeerRecord],
+    wg_peers: &[PeerSummary],
+) -> Result<(Vec<PeerRecord>, Vec<String>), WgError> {
+    use std::collections::HashMap;
+
+    // Build a map of current WG peers: pubkey -> endpoint
+    let wg_map: HashMap<&str, Option<SocketAddr>> = wg_peers
+        .iter()
+        .map(|p| (p.public_key.as_str(), p.endpoint))
+        .collect();
+
+    let self_b64 = self_pubkey.to_base64();
+
+    // Determine desired set (non-removed, non-self)
+    let mut desired_keys = std::collections::HashSet::new();
+    let mut to_add_or_update = Vec::new();
+
+    for peer in desired {
+        if peer.wg_public_key == self_b64 {
+            continue;
+        }
+        if peer.status == syfrah_core::mesh::PeerStatus::Removed {
+            continue;
+        }
+        desired_keys.insert(peer.wg_public_key.as_str());
+
+        match wg_map.get(peer.wg_public_key.as_str()) {
+            Some(Some(existing_endpoint)) if *existing_endpoint == peer.endpoint => {
+                // Peer exists with same endpoint — no change needed
+            }
+            Some(_) => {
+                // Peer exists but endpoint changed (or endpoint unknown) — update
+                to_add_or_update.push(peer.clone());
+            }
+            None => {
+                // Peer missing from WG — add
+                to_add_or_update.push(peer.clone());
+            }
+        }
+    }
+
+    // Peers in WG but not in desired set should be removed
+    let to_remove: Vec<String> = wg_peers
+        .iter()
+        .filter(|p| !desired_keys.contains(p.public_key.as_str()))
+        .map(|p| p.public_key.clone())
+        .collect();
+
+    Ok((to_add_or_update, to_remove))
+}
+
+/// Non-disruptive peer sync: only add/remove/update peers that actually changed.
+///
+/// Unlike `apply_peers`, this does NOT use `replace_peers()` and therefore
+/// preserves existing WireGuard sessions and in-flight traffic.
+///
+/// Returns the number of peers that were added, updated, or removed.
+pub fn sync_peers(self_pubkey: &Key, desired: &[PeerRecord]) -> Result<usize, WgError> {
+    let summary = interface_summary()?;
+    let (to_add_or_update, to_remove) = diff_peers(self_pubkey, desired, &summary.peers)?;
+
+    let changes = to_add_or_update.len() + to_remove.len();
+    if changes == 0 {
+        return Ok(0);
+    }
+
+    let iface = iface_name()?;
+
+    // Remove peers that are no longer desired
+    for pubkey_b64 in &to_remove {
+        let key =
+            Key::from_base64(pubkey_b64).map_err(|_| WgError::InvalidKey(pubkey_b64.clone()))?;
+        DeviceUpdate::new()
+            .remove_peer_by_key(&key)
+            .apply(&iface, backend())?;
+    }
+
+    // Add or update peers that are new or changed
+    for peer in &to_add_or_update {
+        upsert_peer(self_pubkey, peer)?;
+    }
+
+    Ok(changes)
 }
 
 /// Incrementally add or update a single peer, enforcing a maximum peer count.
@@ -530,6 +629,136 @@ mod tests {
 
         let result = upsert_peer_bounded(&self_kp.public, &peer, 10, 0, false);
         assert!(matches!(result, Err(WgError::InvalidKey(_))));
+    }
+
+    // ── diff_peers tests ──
+
+    fn make_wg_summary(pubkey: &str, endpoint: &str) -> PeerSummary {
+        PeerSummary {
+            public_key: pubkey.to_string(),
+            endpoint: Some(endpoint.parse().unwrap()),
+            allowed_ips: vec![],
+            last_handshake: None,
+            rx_bytes: 0,
+            tx_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn diff_peers_no_change() {
+        let self_kp = generate_keypair();
+        let peer_kp = generate_keypair();
+        let peer_b64 = peer_kp.public.to_base64();
+
+        let desired = vec![make_peer(&peer_b64, syfrah_core::mesh::PeerStatus::Active)];
+        let wg_peers = vec![make_wg_summary(&peer_b64, "203.0.113.1:51820")];
+
+        let (add, remove) = diff_peers(&self_kp.public, &desired, &wg_peers).unwrap();
+        assert!(add.is_empty(), "expected no peers to add/update");
+        assert!(remove.is_empty(), "expected no peers to remove");
+    }
+
+    #[test]
+    fn diff_peers_missing_peer() {
+        let self_kp = generate_keypair();
+        let peer_kp = generate_keypair();
+        let peer_b64 = peer_kp.public.to_base64();
+
+        let desired = vec![make_peer(&peer_b64, syfrah_core::mesh::PeerStatus::Active)];
+        let wg_peers: Vec<PeerSummary> = vec![];
+
+        let (add, remove) = diff_peers(&self_kp.public, &desired, &wg_peers).unwrap();
+        assert_eq!(add.len(), 1);
+        assert_eq!(add[0].wg_public_key, peer_b64);
+        assert!(remove.is_empty());
+    }
+
+    #[test]
+    fn diff_peers_stale_peer_removed() {
+        let self_kp = generate_keypair();
+        let stale_kp = generate_keypair();
+        let stale_b64 = stale_kp.public.to_base64();
+
+        let desired: Vec<PeerRecord> = vec![];
+        let wg_peers = vec![make_wg_summary(&stale_b64, "203.0.113.1:51820")];
+
+        let (add, remove) = diff_peers(&self_kp.public, &desired, &wg_peers).unwrap();
+        assert!(add.is_empty());
+        assert_eq!(remove.len(), 1);
+        assert_eq!(remove[0], stale_b64);
+    }
+
+    #[test]
+    fn diff_peers_endpoint_changed() {
+        let self_kp = generate_keypair();
+        let peer_kp = generate_keypair();
+        let peer_b64 = peer_kp.public.to_base64();
+
+        // Desired endpoint differs from WG endpoint
+        let mut desired_peer = make_peer(&peer_b64, syfrah_core::mesh::PeerStatus::Active);
+        desired_peer.endpoint = "198.51.100.5:51820".parse().unwrap();
+        let desired = vec![desired_peer];
+        let wg_peers = vec![make_wg_summary(&peer_b64, "203.0.113.1:51820")];
+
+        let (add, remove) = diff_peers(&self_kp.public, &desired, &wg_peers).unwrap();
+        assert_eq!(add.len(), 1, "endpoint change should trigger update");
+        assert!(remove.is_empty());
+    }
+
+    #[test]
+    fn diff_peers_skips_self() {
+        let self_kp = generate_keypair();
+        let self_b64 = self_kp.public.to_base64();
+
+        let desired = vec![make_peer(&self_b64, syfrah_core::mesh::PeerStatus::Active)];
+        let wg_peers: Vec<PeerSummary> = vec![];
+
+        let (add, remove) = diff_peers(&self_kp.public, &desired, &wg_peers).unwrap();
+        assert!(add.is_empty(), "self should be skipped");
+        assert!(remove.is_empty());
+    }
+
+    #[test]
+    fn diff_peers_skips_removed() {
+        let self_kp = generate_keypair();
+        let peer_kp = generate_keypair();
+        let peer_b64 = peer_kp.public.to_base64();
+
+        let desired = vec![make_peer(&peer_b64, syfrah_core::mesh::PeerStatus::Removed)];
+        let wg_peers: Vec<PeerSummary> = vec![];
+
+        let (add, remove) = diff_peers(&self_kp.public, &desired, &wg_peers).unwrap();
+        assert!(add.is_empty(), "removed peers should be skipped");
+        assert!(remove.is_empty());
+    }
+
+    #[test]
+    fn diff_peers_mixed_scenario() {
+        let self_kp = generate_keypair();
+        let peer_a = generate_keypair();
+        let peer_b = generate_keypair();
+        let peer_c = generate_keypair();
+        let a_b64 = peer_a.public.to_base64();
+        let b_b64 = peer_b.public.to_base64();
+        let c_b64 = peer_c.public.to_base64();
+
+        // peer_a: exists in WG with same endpoint (no change)
+        // peer_b: missing from WG (needs add)
+        // peer_c: in WG but not in desired (needs remove)
+        let desired = vec![
+            make_peer(&a_b64, syfrah_core::mesh::PeerStatus::Active),
+            make_peer(&b_b64, syfrah_core::mesh::PeerStatus::Active),
+        ];
+        let wg_peers = vec![
+            make_wg_summary(&a_b64, "203.0.113.1:51820"),
+            make_wg_summary(&c_b64, "203.0.113.1:51820"),
+        ];
+
+        let (add, remove) = diff_peers(&self_kp.public, &desired, &wg_peers).unwrap();
+        assert_eq!(add.len(), 1);
+        assert_eq!(add[0].wg_public_key, b_b64);
+        assert_eq!(remove.len(), 1);
+        assert_eq!(remove[0], c_b64);
     }
 
     // Integration tests (require root) are skipped in normal CI.
