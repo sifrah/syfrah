@@ -314,10 +314,9 @@ pub fn upsert_peer_bounded(peer: &PeerRecord, max_peers: usize) -> Result<bool, 
     let db = open_db()?;
 
     // Check if this peer already exists (updates are always allowed)
-    let existing: Option<PeerRecord> = db.get("peers", &peer.wg_public_key)?;
-    if existing.is_none() {
-        let entries: Vec<(String, PeerRecord)> = db.list("peers")?;
-        if entries.len() >= max_peers {
+    if !db.exists("peers", &peer.wg_public_key)? {
+        let count = db.count("peers")? as usize;
+        if count >= max_peers {
             return Ok(false);
         }
     }
@@ -345,6 +344,17 @@ pub fn peer_count() -> Result<usize, StoreError> {
     }
     let db = open_db()?;
     Ok(db.count("peers")? as usize)
+}
+
+/// Return the peer count and whether a specific peer exists, using a single DB open.
+pub fn peer_count_and_exists(wg_public_key: &str) -> Result<(usize, bool), StoreError> {
+    if !LayerDb::layer_exists(LAYER_NAME) {
+        return Ok((0, false));
+    }
+    let db = open_db()?;
+    let count = db.count("peers")? as usize;
+    let exists = db.exists("peers", wg_public_key)?;
+    Ok((count, exists))
 }
 
 /// Get all peers from redb.
@@ -566,6 +576,60 @@ fn is_zombie(_pid: u32) -> bool {
 mod tests {
     use super::*;
     use std::net::Ipv6Addr;
+    use syfrah_core::mesh::PeerStatus;
+
+    fn make_peer(key: &str) -> PeerRecord {
+        PeerRecord {
+            name: "test".into(),
+            wg_public_key: key.into(),
+            endpoint: "127.0.0.1:51820".parse().unwrap(),
+            mesh_ipv6: Ipv6Addr::new(0xfd12, 0, 0, 0, 0, 0, 0, 1),
+            last_seen: 0,
+            status: PeerStatus::Active,
+            region: None,
+            zone: None,
+        }
+    }
+
+    fn temp_db() -> (tempfile::TempDir, LayerDb) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.redb");
+        let db = LayerDb::open_at(&path).unwrap();
+        (dir, db)
+    }
+
+    #[test]
+    fn peer_exists_returns_false_for_missing_key() {
+        let (_dir, db) = temp_db();
+        assert!(!db.exists("peers", "no-such-key").unwrap());
+    }
+
+    #[test]
+    fn peer_exists_returns_true_after_insert() {
+        let (_dir, db) = temp_db();
+        let peer = make_peer("key-1");
+        db.set("peers", &peer.wg_public_key, &peer).unwrap();
+        assert!(db.exists("peers", &peer.wg_public_key).unwrap());
+    }
+
+    #[test]
+    fn peer_count_empty_db() {
+        let (_dir, db) = temp_db();
+        assert_eq!(db.count("peers").unwrap(), 0);
+    }
+
+    #[test]
+    fn peer_count_matches_list_len() {
+        let (_dir, db) = temp_db();
+        for i in 0..5 {
+            let peer = make_peer(&format!("key-{i}"));
+            db.set("peers", &peer.wg_public_key, &peer).unwrap();
+        }
+        let count = db.count("peers").unwrap() as usize;
+        let list: Vec<(String, PeerRecord)> = db.list("peers").unwrap();
+        assert_eq!(count, list.len());
+        assert_eq!(count, 5);
+    }
 
     #[test]
     fn save_and_load_roundtrip() {
