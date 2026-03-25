@@ -209,6 +209,22 @@ impl LayerDb {
         table.len().map_err(StateError::Storage)
     }
 
+    /// Count keys and check existence in a single read transaction.
+    pub fn count_and_exists(&self, table_name: &str, key: &str) -> Result<(u64, bool)> {
+        let table_def: TableDefinition<&str, &[u8]> = TableDefinition::new(table_name);
+        let read_txn = self.db.begin_read()?;
+
+        let table = match read_txn.open_table(table_def) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok((0, false)),
+            Err(e) => return Err(StateError::Table(e)),
+        };
+
+        let count = table.len().map_err(StateError::Storage)?;
+        let exists = table.get(key).map_err(StateError::Storage)?.is_some();
+        Ok((count, exists))
+    }
+
     /// Check if a key exists in a table.
     pub fn exists(&self, table_name: &str, key: &str) -> Result<bool> {
         let table_def: TableDefinition<&str, &[u8]> = TableDefinition::new(table_name);
@@ -433,6 +449,26 @@ mod tests {
         assert!(!db.exists("peers", "key1").unwrap());
         db.set("peers", "key1", &"val").unwrap();
         assert!(db.exists("peers", "key1").unwrap());
+    }
+
+    #[test]
+    fn count_and_exists_single_txn() {
+        let (_dir, db) = temp_db();
+        // Empty table
+        let (count, exists) = db.count_and_exists("peers", "key1").unwrap();
+        assert_eq!(count, 0);
+        assert!(!exists);
+
+        db.set("peers", "key1", &"val").unwrap();
+        db.set("peers", "key2", &"val").unwrap();
+
+        let (count, exists) = db.count_and_exists("peers", "key1").unwrap();
+        assert_eq!(count, 2);
+        assert!(exists);
+
+        let (count, exists) = db.count_and_exists("peers", "key3").unwrap();
+        assert_eq!(count, 2);
+        assert!(!exists);
     }
 
     #[test]

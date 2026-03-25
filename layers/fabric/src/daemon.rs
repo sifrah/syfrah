@@ -594,7 +594,7 @@ pub async fn run_daemon(
         let mp = accepted_max_peers;
         let plr = accepted_peer_limit_counter.clone();
         tokio::spawn(async move {
-            // Check store peer count + existence in a single DB open (fail closed: skip on error).
+            // Check store peer count + existence in a single read transaction (fail closed: skip on error).
             // The store is the source of truth for the peer limit — not the WG kernel
             // interface — because the store is always reachable (no root required for reads)
             // and its count survives daemon restarts. The TOCTOU window is accepted as a
@@ -744,7 +744,7 @@ pub async fn run_daemon(
         tokio::spawn(async move {
             let _permit = permit; // held until task completes
 
-            // Check store peer count + existence in a single DB open (fail closed: skip on error).
+            // Check store peer count + existence in a single read transaction (fail closed: skip on error).
             // See on_accepted handler for rationale on store as source of truth.
             let (current_count, exists) = match store::peer_count_and_exists(&record.wg_public_key)
             {

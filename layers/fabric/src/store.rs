@@ -328,15 +328,6 @@ pub fn upsert_peer_bounded(peer: &PeerRecord, max_peers: usize) -> Result<bool, 
     Ok(true)
 }
 
-/// Check whether a peer with the given WG public key exists in the store.
-pub fn peer_exists(wg_public_key: &str) -> Result<bool, StoreError> {
-    if !LayerDb::layer_exists(LAYER_NAME) {
-        return Ok(false);
-    }
-    let db = open_db()?;
-    Ok(db.exists("peers", wg_public_key)?)
-}
-
 /// Return the number of stored peers.
 pub fn peer_count() -> Result<usize, StoreError> {
     if !LayerDb::layer_exists(LAYER_NAME) {
@@ -346,15 +337,14 @@ pub fn peer_count() -> Result<usize, StoreError> {
     Ok(db.count("peers")? as usize)
 }
 
-/// Return the peer count and whether a specific peer exists, using a single DB open.
+/// Return the peer count and whether a specific peer exists in a single read transaction.
 pub fn peer_count_and_exists(wg_public_key: &str) -> Result<(usize, bool), StoreError> {
     if !LayerDb::layer_exists(LAYER_NAME) {
         return Ok((0, false));
     }
     let db = open_db()?;
-    let count = db.count("peers")? as usize;
-    let exists = db.exists("peers", wg_public_key)?;
-    Ok((count, exists))
+    let (count, exists) = db.count_and_exists("peers", wg_public_key)?;
+    Ok((count as usize, exists))
 }
 
 /// Get all peers from redb.
@@ -599,17 +589,26 @@ mod tests {
     }
 
     #[test]
-    fn peer_exists_returns_false_for_missing_key() {
+    fn count_and_exists_empty_db() {
         let (_dir, db) = temp_db();
-        assert!(!db.exists("peers", "no-such-key").unwrap());
+        let (count, exists) = db.count_and_exists("peers", "no-such-key").unwrap();
+        assert_eq!(count, 0);
+        assert!(!exists);
     }
 
     #[test]
-    fn peer_exists_returns_true_after_insert() {
+    fn count_and_exists_after_inserts() {
         let (_dir, db) = temp_db();
         let peer = make_peer("key-1");
         db.set("peers", &peer.wg_public_key, &peer).unwrap();
-        assert!(db.exists("peers", &peer.wg_public_key).unwrap());
+
+        let (count, exists) = db.count_and_exists("peers", "key-1").unwrap();
+        assert_eq!(count, 1);
+        assert!(exists);
+
+        let (count, exists) = db.count_and_exists("peers", "key-2").unwrap();
+        assert_eq!(count, 1);
+        assert!(!exists);
     }
 
     #[test]
