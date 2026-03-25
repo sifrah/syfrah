@@ -694,8 +694,8 @@ mod tests {
             public_endpoint: None,
             peering_port: 51821,
             peers: vec![],
-            region: Some("region-1".into()),
-            zone: Some("region-1-zone-1".into()),
+            region: Some("us-east".into()),
+            zone: Some("zone-1".into()),
             metrics: Default::default(),
         };
 
