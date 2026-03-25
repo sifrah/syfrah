@@ -8,3 +8,10 @@ pub mod sanitize;
 pub mod store;
 pub mod ui;
 pub mod wg;
+
+/// Canonical error returned when a command requires an existing mesh but none
+/// is configured.  Every call-site should use this instead of hard-coding the
+/// message so that the wording stays consistent across the entire CLI.
+pub fn no_mesh_error() -> anyhow::Error {
+    anyhow::anyhow!("No mesh configured. Run 'syfrah fabric init' or 'syfrah fabric join' first.")
+}

@@ -1,7 +1,7 @@
 use crate::control::{send_control_request, ControlRequest, ControlResponse};
 use crate::sanitize::sanitize;
-use crate::store;
 use crate::ui;
+use crate::{no_mesh_error, store};
 use anyhow::Result;
 use std::collections::HashSet;
 
@@ -12,7 +12,7 @@ use std::collections::HashSet;
 pub async fn watch(pin: Option<String>, continuous: bool) -> Result<()> {
     // Require an existing mesh — never auto-init.
     if !store::exists() {
-        anyhow::bail!("No mesh configured. Run 'syfrah fabric init' first.");
+        return Err(no_mesh_error());
     }
 
     // Start peering with optional PIN
@@ -248,13 +248,7 @@ async fn send_request(req: ControlRequest) -> Result<ControlResponse> {
     Ok(resp)
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max - 3])
-    }
-}
+use super::ui::truncate;
 
 #[cfg(test)]
 mod tests {
@@ -270,8 +264,9 @@ mod tests {
 
         let err = watch(None, false).await.unwrap_err();
         assert!(
-            err.to_string()
-                .contains("No mesh configured. Run 'syfrah fabric init' first."),
+            err.to_string().contains(
+                "No mesh configured. Run 'syfrah fabric init' or 'syfrah fabric join' first."
+            ),
             "unexpected error: {err}"
         );
     }
