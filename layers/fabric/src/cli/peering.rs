@@ -10,12 +10,9 @@ use std::collections::HashSet;
 /// In default mode (`continuous=false`), exits after the first accept/reject.
 /// With `--watch` (`continuous=true`), loops indefinitely for batch use.
 pub async fn watch(pin: Option<String>, continuous: bool) -> Result<()> {
-    // Require an existing mesh — never auto-init.
-    if !store::exists() {
-        anyhow::bail!("No mesh configured. Run 'syfrah fabric init' first.");
-    }
-
-    let state = store::load()?;
+    // Load mesh state (fails fast with a friendly message if no mesh exists).
+    let state = store::load()
+        .map_err(|_| anyhow::anyhow!("No mesh configured. Run 'syfrah fabric init' first."))?;
     let port = state.peering_port;
 
     // Start peering with optional PIN
