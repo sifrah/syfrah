@@ -1138,6 +1138,8 @@ pub async fn run_daemon(
         }
     }
 
+    // Flush any debounced JSON state so the on-disk export is up-to-date.
+    let _ = store::flush_json();
     let _ = std::fs::remove_file(store::control_socket_path());
     wg::teardown_interface()?;
     store::remove_pid();
