@@ -188,13 +188,7 @@ fn format_short(bytes: u64) -> String {
     }
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max - 3])
-    }
-}
+use super::ui::truncate;
 
 #[cfg(test)]
 mod tests {
@@ -291,15 +285,5 @@ mod tests {
     #[test]
     fn format_traffic_nonzero() {
         assert_eq!(format_traffic(1200, 3400), "1K↓ 3K↑");
-    }
-
-    #[test]
-    fn truncate_short_string() {
-        assert_eq!(truncate("hello", 10), "hello");
-    }
-
-    #[test]
-    fn truncate_long_string() {
-        assert_eq!(truncate("hello world!", 8), "hello...");
     }
 }

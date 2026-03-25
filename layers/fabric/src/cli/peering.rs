@@ -248,13 +248,7 @@ async fn send_request(req: ControlRequest) -> Result<ControlResponse> {
     Ok(resp)
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max - 3])
-    }
-}
+use super::ui::truncate;
 
 #[cfg(test)]
 mod tests {
