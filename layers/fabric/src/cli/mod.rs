@@ -5,6 +5,7 @@ pub mod join;
 pub mod leave;
 pub mod peering;
 pub mod peers;
+pub mod peers_remove;
 pub mod rotate;
 pub mod service;
 pub mod start;

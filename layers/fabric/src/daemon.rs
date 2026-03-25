@@ -1298,6 +1298,78 @@ impl ControlHandler for DaemonControlHandler {
                     },
                 }
             }
+            ControlRequest::RemovePeer { name_or_key } => {
+                let state = match store::load() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return ControlResponse::Error {
+                            message: format!("{e}"),
+                        }
+                    }
+                };
+
+                // Prevent removing self
+                if name_or_key == state.node_name || name_or_key == state.wg_public_key {
+                    return ControlResponse::Error {
+                        message: "Cannot remove self. Use 'syfrah fabric leave' instead.".into(),
+                    };
+                }
+
+                // Mark peer as Removed in the store
+                match store::remove_peer(&name_or_key) {
+                    Ok(Some(removed_peer)) => {
+                        // Remove from WireGuard and clean up route
+                        if let Ok(self_key) = Key::from_base64(&state.wg_public_key) {
+                            let tuning = config::load_tuning().unwrap_or_default();
+                            let _ = wg::sync_peers(
+                                &self_key,
+                                &store::get_peers().unwrap_or_default(),
+                                tuning.keepalive_interval,
+                            );
+                        }
+
+                        let peer_name = sanitize(&removed_peer.name);
+
+                        events::emit(
+                            EventType::PeerRemoved,
+                            Some(&peer_name),
+                            Some(&removed_peer.endpoint.to_string()),
+                            None,
+                            Some(self.max_events),
+                        );
+
+                        // Announce removal to other peers
+                        let peers = store::get_peers().unwrap_or_default();
+                        let active_peers: Vec<_> = peers
+                            .iter()
+                            .filter(|p| p.status != PeerStatus::Removed)
+                            .cloned()
+                            .collect();
+                        let encryption_key = self.mesh_secret.encryption_key();
+                        let (announced, _failed) = peering::announce_peer_to_mesh(
+                            &removed_peer,
+                            &active_peers,
+                            &encryption_key,
+                            self.peering_port,
+                        )
+                        .await;
+
+                        ControlResponse::PeerRemoved {
+                            peer_name: removed_peer.name.clone(),
+                            announced_to: announced,
+                        }
+                    }
+                    Ok(None) => ControlResponse::Error {
+                        message: format!(
+                            "No peer named '{}'. Run 'syfrah fabric peers' to list peers.",
+                            name_or_key
+                        ),
+                    },
+                    Err(e) => ControlResponse::Error {
+                        message: format!("Failed to remove peer: {e}"),
+                    },
+                }
+            }
         }
     }
 }
