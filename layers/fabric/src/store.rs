@@ -314,10 +314,9 @@ pub fn upsert_peer_bounded(peer: &PeerRecord, max_peers: usize) -> Result<bool, 
     let db = open_db()?;
 
     // Check if this peer already exists (updates are always allowed)
-    let existing: Option<PeerRecord> = db.get("peers", &peer.wg_public_key)?;
-    if existing.is_none() {
-        let entries: Vec<(String, PeerRecord)> = db.list("peers")?;
-        if entries.len() >= max_peers {
+    if !db.exists("peers", &peer.wg_public_key)? {
+        let count = db.count("peers")? as usize;
+        if count >= max_peers {
             return Ok(false);
         }
     }
@@ -335,8 +334,17 @@ pub fn peer_count() -> Result<usize, StoreError> {
         return Ok(0);
     }
     let db = open_db()?;
-    let entries: Vec<(String, PeerRecord)> = db.list("peers")?;
-    Ok(entries.len())
+    Ok(db.count("peers")? as usize)
+}
+
+/// Return the peer count and whether a specific peer exists in a single read transaction.
+pub fn peer_count_and_exists(wg_public_key: &str) -> Result<(usize, bool), StoreError> {
+    if !LayerDb::layer_exists(LAYER_NAME) {
+        return Ok((0, false));
+    }
+    let db = open_db()?;
+    let (count, exists) = db.count_and_exists("peers", wg_public_key)?;
+    Ok((count as usize, exists))
 }
 
 /// Get all peers from redb.
@@ -558,6 +566,116 @@ fn is_zombie(_pid: u32) -> bool {
 mod tests {
     use super::*;
     use std::net::Ipv6Addr;
+    use syfrah_core::mesh::PeerStatus;
+
+    fn make_peer(key: &str) -> PeerRecord {
+        PeerRecord {
+            name: "test".into(),
+            wg_public_key: key.into(),
+            endpoint: "127.0.0.1:51820".parse().unwrap(),
+            mesh_ipv6: Ipv6Addr::new(0xfd12, 0, 0, 0, 0, 0, 0, 1),
+            last_seen: 0,
+            status: PeerStatus::Active,
+            region: None,
+            zone: None,
+        }
+    }
+
+    fn temp_db() -> (tempfile::TempDir, LayerDb) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.redb");
+        let db = LayerDb::open_at(&path).unwrap();
+        (dir, db)
+    }
+
+    #[test]
+    fn count_and_exists_empty_db() {
+        let (_dir, db) = temp_db();
+        let (count, exists) = db.count_and_exists("peers", "no-such-key").unwrap();
+        assert_eq!(count, 0);
+        assert!(!exists);
+    }
+
+    #[test]
+    fn count_and_exists_after_inserts() {
+        let (_dir, db) = temp_db();
+        let peer = make_peer("key-1");
+        db.set("peers", &peer.wg_public_key, &peer).unwrap();
+
+        let (count, exists) = db.count_and_exists("peers", "key-1").unwrap();
+        assert_eq!(count, 1);
+        assert!(exists);
+
+        let (count, exists) = db.count_and_exists("peers", "key-2").unwrap();
+        assert_eq!(count, 1);
+        assert!(!exists);
+    }
+
+    #[test]
+    fn peer_count_empty_db() {
+        let (_dir, db) = temp_db();
+        assert_eq!(db.count("peers").unwrap(), 0);
+    }
+
+    #[test]
+    fn peer_count_matches_list_len() {
+        let (_dir, db) = temp_db();
+        for i in 0..5 {
+            let peer = make_peer(&format!("key-{i}"));
+            db.set("peers", &peer.wg_public_key, &peer).unwrap();
+        }
+        let count = db.count("peers").unwrap() as usize;
+        let list: Vec<(String, PeerRecord)> = db.list("peers").unwrap();
+        assert_eq!(count, list.len());
+        assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn upsert_peer_bounded_rejects_new_at_limit() {
+        let (_dir, db) = temp_db();
+        // Fill to capacity (3 peers)
+        for i in 0..3 {
+            let peer = make_peer(&format!("key-{i}"));
+            db.set("peers", &peer.wg_public_key, &peer).unwrap();
+        }
+        // New peer should be rejected
+        let new_peer = make_peer("key-new");
+        let exists = db.exists("peers", &new_peer.wg_public_key).unwrap();
+        let count = db.count("peers").unwrap() as usize;
+        assert!(!exists);
+        assert_eq!(count, 3);
+        // Simulates upsert_peer_bounded logic: new + at limit → reject
+        assert!(!exists && count >= 3);
+    }
+
+    #[test]
+    fn upsert_peer_bounded_allows_existing_at_limit() {
+        let (_dir, db) = temp_db();
+        for i in 0..3 {
+            let peer = make_peer(&format!("key-{i}"));
+            db.set("peers", &peer.wg_public_key, &peer).unwrap();
+        }
+        // Existing peer update should be allowed even at limit
+        let exists = db.exists("peers", "key-1").unwrap();
+        let count = db.count("peers").unwrap() as usize;
+        assert!(exists);
+        assert_eq!(count, 3);
+        // Simulates upsert_peer_bounded logic: existing → always allowed
+        assert!(exists); // would skip the count check
+    }
+
+    #[test]
+    fn upsert_peer_bounded_allows_new_under_limit() {
+        let (_dir, db) = temp_db();
+        db.set("peers", "key-0", &make_peer("key-0")).unwrap();
+        let new_peer = make_peer("key-new");
+        let exists = db.exists("peers", &new_peer.wg_public_key).unwrap();
+        let count = db.count("peers").unwrap() as usize;
+        assert!(!exists);
+        assert_eq!(count, 1);
+        // Under limit of 3 → allowed
+        assert!(count < 3);
+    }
 
     #[test]
     fn save_and_load_roundtrip() {

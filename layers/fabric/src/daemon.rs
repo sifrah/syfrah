@@ -622,11 +622,16 @@ pub async fn run_daemon(
         let plr = accepted_peer_limit_counter.clone();
         let sf = accepted_store_failures.clone();
         tokio::spawn(async move {
-            // Check store peer limit before adding
-            let current_count = match store::peer_count() {
-                Ok(c) => c,
+            // Check store peer count + existence in a single read transaction (fail closed: skip on error).
+            // The store is the source of truth for the peer limit — not the WG kernel
+            // interface — because the store is always reachable (no root required for reads)
+            // and its count survives daemon restarts. The TOCTOU window is accepted as a
+            // soft limit (see wg::upsert_peer_bounded doc).
+            let (current_count, exists) = match store::peer_count_and_exists(&record.wg_public_key)
+            {
+                Ok(v) => v,
                 Err(e) => {
-                    error!(error = %e, "on_accepted: failed to read peer count from store, aborting");
+                    warn!(error = %e, "on_accepted: failed to read peer count, skipping upsert");
                     sf.fetch_add(1, Ordering::Relaxed);
                     return;
                 }
@@ -642,7 +647,7 @@ pub async fn run_daemon(
             }
 
             // Add to WG (bounded)
-            match wg::upsert_peer_bounded(&pubkey, &record, mp) {
+            match wg::upsert_peer_bounded(&pubkey, &record, mp, current_count, exists) {
                 Err(e) => {
                     if matches!(e, wg::WgError::PeerLimitExceeded(_, _)) {
                         plr.fetch_add(1, Ordering::Relaxed);
@@ -777,11 +782,13 @@ pub async fn run_daemon(
         tokio::spawn(async move {
             let _permit = permit; // held until task completes
 
-            // Check store peer count before processing
-            let current_count = match store::peer_count() {
-                Ok(c) => c,
+            // Check store peer count + existence in a single read transaction (fail closed: skip on error).
+            // See on_accepted handler for rationale on store as source of truth.
+            let (current_count, exists) = match store::peer_count_and_exists(&record.wg_public_key)
+            {
+                Ok(v) => v,
                 Err(e) => {
-                    error!(error = %e, "on_announce: failed to read peer count from store, aborting");
+                    warn!(error = %e, "on_announce: failed to read peer count, skipping upsert");
                     sf.fetch_add(1, Ordering::Relaxed);
                     return;
                 }
@@ -797,7 +804,7 @@ pub async fn run_daemon(
             }
 
             // Add to WG (bounded)
-            match wg::upsert_peer_bounded(&pubkey, &record, mp) {
+            match wg::upsert_peer_bounded(&pubkey, &record, mp, current_count, exists) {
                 Err(e) => {
                     if matches!(e, wg::WgError::PeerLimitExceeded(_, _)) {
                         plr.fetch_add(1, Ordering::Relaxed);
