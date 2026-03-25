@@ -97,11 +97,13 @@ pub fn success(msg: &str) {
 
 /// Prompt the user for y/n confirmation. Returns `true` if they accept.
 ///
-/// In non-TTY mode always returns `true` (non-interactive defaults to yes).
+/// In non-TTY mode always returns `false` (non-interactive defaults to no).
+/// Callers that need unattended confirmation should use an explicit flag
+/// (e.g. `--force`) instead of relying on the prompt.
 pub fn confirm(prompt: &str) -> bool {
     use std::io::Write;
     if !is_tty() {
-        return true;
+        return false;
     }
     let yellow = Style::new().yellow();
     eprint!("{} [y/N] ", yellow.apply_to(prompt));

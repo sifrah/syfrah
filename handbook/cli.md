@@ -15,6 +15,8 @@ The CLI communicates with the local daemon via a Unix domain socket (`~/.syfrah/
 ```
 syfrah
 │
+├── update                        Update syfrah binary
+│
 ├── fabric                        Fabric mesh management
 │   ├── init                      Create a new mesh
 │   ├── join                      Join an existing mesh
@@ -124,6 +126,30 @@ Each CLI namespace maps to an architectural layer, a source of truth, and a dire
 | `volume` | Storage | Raft (desired) | `commands/volume/` |
 | `user`, `iam`, `apikey` | IAM | Raft (desired) | `commands/user/`, `commands/iam/`, `commands/apikey/` |
 | `login`, `logout` | IAM | Local session | `commands/login.rs`, `commands/logout.rs` |
+
+## `update` — self-update
+
+Downloads and installs the latest `syfrah` binary. By default, the daemon is automatically restarted after the update completes.
+
+### `syfrah update`
+
+```bash
+syfrah update              # download and install latest, auto-restart daemon
+syfrah update --check      # only check if an update is available
+syfrah update --no-restart # update binary but skip daemon restart
+syfrah update --force      # skip the active-peers confirmation prompt
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--check` | false | Only check for update, don't install |
+| `--no-restart` | false | Skip automatic daemon restart (prints manual instructions) |
+| `--force` | false | Skip confirmation prompt when peers are connected |
+
+When peers are connected, the update command prompts for confirmation before
+restarting the daemon (peers will briefly lose connectivity). Pass `--force` to
+skip this prompt — required for unattended use (cron, CI) since non-interactive
+sessions reject the prompt by default.
 
 ## `fabric` — mesh management
 
