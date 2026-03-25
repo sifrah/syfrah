@@ -1698,7 +1698,7 @@ mod tests {
 
     #[test]
     fn map_join_error_generic_io_includes_context() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "network down");
+        let io_err = std::io::Error::other("network down");
         let peering_err = crate::peering::PeeringError::Io(io_err);
         let target: SocketAddr = "203.0.113.1:51821".parse().unwrap();
         let mapped = map_join_error(peering_err, target);
