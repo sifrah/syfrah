@@ -1,5 +1,6 @@
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::str::FromStr;
+use std::sync::OnceLock;
 
 use thiserror::Error;
 use wireguard_control::{
@@ -8,7 +9,24 @@ use wireguard_control::{
 
 use syfrah_core::mesh::PeerRecord;
 
-pub const INTERFACE_NAME: &str = "syfrah0";
+pub const DEFAULT_INTERFACE_NAME: &str = "syfrah0";
+
+/// Global interface name, set once at daemon startup via [`set_interface_name`].
+static INTERFACE_NAME: OnceLock<String> = OnceLock::new();
+
+/// Set the WireGuard interface name for this process.
+/// Must be called before any WireGuard operations. Subsequent calls are no-ops.
+pub fn set_interface_name(name: &str) {
+    let _ = INTERFACE_NAME.set(name.to_string());
+}
+
+/// Return the configured interface name (or the default).
+pub fn interface_name() -> &'static str {
+    INTERFACE_NAME
+        .get()
+        .map(|s| s.as_str())
+        .unwrap_or(DEFAULT_INTERFACE_NAME)
+}
 
 #[derive(Debug, Error)]
 pub enum WgError {
@@ -31,7 +49,7 @@ fn backend() -> Backend {
 }
 
 fn iface_name() -> Result<InterfaceName, WgError> {
-    InterfaceName::from_str(INTERFACE_NAME).map_err(|e| WgError::InvalidName(e.to_string()))
+    InterfaceName::from_str(interface_name()).map_err(|e| WgError::InvalidName(e.to_string()))
 }
 
 /// Generate a new WireGuard keypair.
@@ -332,7 +350,7 @@ fn remove_route_v6(addr: std::net::Ipv6Addr) -> Result<(), WgError> {
     #[cfg(target_os = "linux")]
     {
         let _ = std::process::Command::new("ip")
-            .args(["-6", "route", "del", &cidr, "dev", INTERFACE_NAME])
+            .args(["-6", "route", "del", &cidr, "dev", interface_name()])
             .output();
     }
 
@@ -354,7 +372,7 @@ pub fn assign_ipv6(addr: Ipv6Addr) -> Result<(), WgError> {
     #[cfg(target_os = "linux")]
     {
         let output = std::process::Command::new("ip")
-            .args(["-6", "addr", "add", &cidr, "dev", INTERFACE_NAME])
+            .args(["-6", "addr", "add", &cidr, "dev", interface_name()])
             .output()
             .map_err(|e| WgError::AddressAssign(e.to_string()))?;
 
@@ -372,7 +390,7 @@ pub fn assign_ipv6(addr: Ipv6Addr) -> Result<(), WgError> {
     #[cfg(target_os = "macos")]
     {
         let output = std::process::Command::new("ifconfig")
-            .args([INTERFACE_NAME, "inet6", &cidr])
+            .args([interface_name(), "inet6", &cidr])
             .output()
             .map_err(|e| WgError::AddressAssign(e.to_string()))?;
 
@@ -399,7 +417,7 @@ fn add_route_v6(addr: std::net::Ipv6Addr) -> Result<(), WgError> {
     #[cfg(target_os = "linux")]
     {
         let output = std::process::Command::new("ip")
-            .args(["-6", "route", "replace", &cidr, "dev", INTERFACE_NAME])
+            .args(["-6", "route", "replace", &cidr, "dev", interface_name()])
             .output()
             .map_err(|e| WgError::AddressAssign(e.to_string()))?;
 
@@ -412,7 +430,7 @@ fn add_route_v6(addr: std::net::Ipv6Addr) -> Result<(), WgError> {
     #[cfg(target_os = "macos")]
     {
         let output = std::process::Command::new("route")
-            .args(["-n", "add", "-inet6", &cidr, "-interface", INTERFACE_NAME])
+            .args(["-n", "add", "-inet6", &cidr, "-interface", interface_name()])
             .output()
             .map_err(|e| WgError::AddressAssign(e.to_string()))?;
 
@@ -433,7 +451,7 @@ pub fn bring_interface_up() -> Result<(), WgError> {
     #[cfg(target_os = "linux")]
     {
         let output = std::process::Command::new("ip")
-            .args(["link", "set", INTERFACE_NAME, "up"])
+            .args(["link", "set", interface_name(), "up"])
             .output()
             .map_err(|e| WgError::AddressAssign(e.to_string()))?;
 
@@ -475,7 +493,7 @@ pub fn teardown_interface() -> Result<(), WgError> {
 pub fn interface_summary() -> Result<InterfaceSummary, WgError> {
     let device = get_device()?;
     Ok(InterfaceSummary {
-        name: INTERFACE_NAME.to_string(),
+        name: interface_name().to_string(),
         public_key: device.public_key.map(|k| k.to_base64()),
         listen_port: device.listen_port,
         peer_count: device.peers.len(),
@@ -541,7 +559,7 @@ mod tests {
     #[test]
     fn iface_name_valid() {
         let name = iface_name().unwrap();
-        assert_eq!(name.as_str_lossy(), INTERFACE_NAME);
+        assert_eq!(name.as_str_lossy(), interface_name());
     }
 
     fn make_peer(pubkey: &str, status: syfrah_core::mesh::PeerStatus) -> PeerRecord {

@@ -1,8 +1,11 @@
-use crate::{store, ui, wg};
+use crate::{config, store, ui, wg};
 use anyhow::Result;
 use syfrah_state::LayerDb;
 
 pub async fn run() -> Result<()> {
+    let tuning = config::load_tuning().unwrap_or_default();
+    wg::set_interface_name(&tuning.interface_name);
+
     ui::heading("Syfrah Fabric Diagnostics");
     println!();
 
@@ -94,7 +97,11 @@ pub async fn run() -> Result<()> {
     ui::heading("WireGuard");
     match wg::interface_summary() {
         Ok(summary) => {
-            check("Interface syfrah0 is up", true, "");
+            check(
+                &format!("Interface {} is up", wg::interface_name()),
+                true,
+                "",
+            );
             check(
                 &format!(
                     "{} WG peers configured, {} with handshake",
@@ -122,7 +129,11 @@ pub async fn run() -> Result<()> {
             }
         }
         Err(e) => {
-            check("Interface syfrah0", false, &format!("not found: {e}"));
+            check(
+                &format!("Interface {}", wg::interface_name()),
+                false,
+                &format!("not found: {e}"),
+            );
         }
     }
     println!();
