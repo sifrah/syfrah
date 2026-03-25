@@ -177,10 +177,10 @@ pub fn diff_peers(
         }
     }
 
-    // Peers in WG but not in desired set should be removed
+    // Peers in WG but not in desired set should be removed (never remove self)
     let to_remove: Vec<String> = wg_peers
         .iter()
-        .filter(|p| !desired_keys.contains(p.public_key.as_str()))
+        .filter(|p| !desired_keys.contains(p.public_key.as_str()) && p.public_key != self_b64)
         .map(|p| p.public_key.clone())
         .collect();
 
@@ -204,13 +204,32 @@ pub fn sync_peers(self_pubkey: &Key, desired: &[PeerRecord]) -> Result<usize, Wg
 
     let iface = iface_name()?;
 
-    // Remove peers that are no longer desired
+    // Build a lookup so we can clean up routes for removed peers
+    let peer_allowed: std::collections::HashMap<&str, &[String]> = summary
+        .peers
+        .iter()
+        .map(|p| (p.public_key.as_str(), p.allowed_ips.as_slice()))
+        .collect();
+
+    // Remove peers that are no longer desired, including route cleanup
     for pubkey_b64 in &to_remove {
         let key =
             Key::from_base64(pubkey_b64).map_err(|_| WgError::InvalidKey(pubkey_b64.clone()))?;
         DeviceUpdate::new()
             .remove_peer_by_key(&key)
             .apply(&iface, backend())?;
+
+        // Clean up /128 routes for the removed peer
+        if let Some(allowed_ips) = peer_allowed.get(pubkey_b64.as_str()) {
+            for aip in *allowed_ips {
+                // allowed_ips entries look like "fd00::1/128"
+                if let Some(addr_str) = aip.strip_suffix("/128") {
+                    if let Ok(v6) = addr_str.parse::<std::net::Ipv6Addr>() {
+                        let _ = remove_route_v6(v6);
+                    }
+                }
+            }
+        }
     }
 
     // Add or update peers that are new or changed
@@ -759,6 +778,38 @@ mod tests {
         assert_eq!(add[0].wg_public_key, b_b64);
         assert_eq!(remove.len(), 1);
         assert_eq!(remove[0], c_b64);
+    }
+
+    #[test]
+    fn diff_peers_does_not_remove_self_key() {
+        let self_kp = generate_keypair();
+        let self_b64 = self_kp.public.to_base64();
+
+        // Self key appears in WG peers but not in desired — should NOT be removed
+        let desired: Vec<PeerRecord> = vec![];
+        let wg_peers = vec![make_wg_summary(&self_b64, "203.0.113.1:51820")];
+
+        let (_add, remove) = diff_peers(&self_kp.public, &desired, &wg_peers).unwrap();
+        assert!(remove.is_empty(), "self key must never appear in to_remove");
+    }
+
+    #[test]
+    fn diff_peers_removes_removed_peer_still_in_wg() {
+        let self_kp = generate_keypair();
+        let peer_kp = generate_keypair();
+        let peer_b64 = peer_kp.public.to_base64();
+
+        // Peer is Removed in desired set AND still present in WireGuard — should be removed
+        let desired = vec![make_peer(&peer_b64, syfrah_core::mesh::PeerStatus::Removed)];
+        let wg_peers = vec![make_wg_summary(&peer_b64, "203.0.113.1:51820")];
+
+        let (add, remove) = diff_peers(&self_kp.public, &desired, &wg_peers).unwrap();
+        assert!(add.is_empty(), "removed peer should not be added");
+        assert_eq!(remove.len(), 1);
+        assert_eq!(
+            remove[0], peer_b64,
+            "removed peer still in WG should be in to_remove"
+        );
     }
 
     // Integration tests (require root) are skipped in normal CI.

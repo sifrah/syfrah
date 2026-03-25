@@ -1043,55 +1043,20 @@ pub async fn run_daemon(
                     continue;
                 }
             };
-            let wg_summary = match wg::interface_summary() {
-                Ok(s) => s,
-                Err(e) => {
-                    warn!(error = %e, "reconciliation: WireGuard interface unavailable");
-                    reconcile_failures.fetch_add(1, Ordering::Relaxed);
-                    continue;
-                }
-            };
-
             // Diff-based reconciliation: only touch peers that actually changed.
             // This avoids tearing down existing WireGuard sessions.
-            let (to_add_or_update, to_remove) =
-                match wg::diff_peers(&reconcile_wg_pubkey, &stored_peers, &wg_summary.peers) {
-                    Ok(diff) => diff,
-                    Err(e) => {
-                        warn!(error = %e, "reconciliation: failed to compute peer diff");
-                        reconcile_failures.fetch_add(1, Ordering::Relaxed);
-                        continue;
-                    }
-                };
-
-            // Skip entirely if nothing changed — no syscalls, no disruption
-            if to_add_or_update.is_empty() && to_remove.is_empty() {
-                debug!("reconciliation: no diff, skipping");
-            } else {
-                for peer in &to_add_or_update {
-                    info!(peer = %sanitize(&peer.name), endpoint = %peer.endpoint, "reconciling: adding/updating peer in WireGuard");
-                    if let Err(e) = wg::upsert_peer(&reconcile_wg_pubkey, peer) {
-                        warn!(peer = %sanitize(&peer.name), error = %e, "reconciliation failed");
-                    } else {
-                        reconcile_recon.fetch_add(1, Ordering::Relaxed);
-                    }
+            // sync_peers handles diff, add/update, removal + route cleanup.
+            match wg::sync_peers(&reconcile_wg_pubkey, &stored_peers) {
+                Ok(0) => {
+                    debug!("reconciliation: no diff, skipping");
                 }
-                for pubkey in &to_remove {
-                    info!(peer = %sanitize(pubkey), "reconciling: removing stale peer from WireGuard");
-                    let key = match wireguard_control::Key::from_base64(pubkey) {
-                        Ok(k) => k,
-                        Err(_) => continue,
-                    };
-                    if let Err(e) = wireguard_control::DeviceUpdate::new()
-                        .remove_peer_by_key(&key)
-                        .apply(
-                            &std::str::FromStr::from_str(wg::INTERFACE_NAME)
-                                .expect("valid iface name"),
-                            wireguard_control::Backend::default(),
-                        )
-                    {
-                        warn!(peer = %sanitize(pubkey), error = %e, "reconciliation: failed to remove stale peer");
-                    }
+                Ok(n) => {
+                    reconcile_recon.fetch_add(n as u64, Ordering::Relaxed);
+                }
+                Err(e) => {
+                    warn!(error = %e, "reconciliation: sync_peers failed");
+                    reconcile_failures.fetch_add(1, Ordering::Relaxed);
+                    continue;
                 }
             }
 
