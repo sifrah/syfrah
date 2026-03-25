@@ -502,7 +502,7 @@ assert_command_suggests() {
 assert_consistent_region() {
     local container="$1"
     local status_region peers_region
-    status_region=$(docker exec "$container" syfrah fabric status 2>&1 | grep -i region | awk '{print $NF}')
+    status_region=$(docker exec "$container" syfrah fabric status 2>&1 | grep -i region | awk '{print $2}')
     peers_region=$(docker exec "$container" syfrah fabric peers 2>&1 | tail -n +3 | head -1 | awk '{print $2}')
     if [ "$status_region" = "$peers_region" ]; then
         pass "$container: region consistent (status=peers=$status_region)"

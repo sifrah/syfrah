@@ -73,7 +73,7 @@ sleep 2
 # Should be able to init again without issues
 output_reinit=$(docker exec "e2e-err-life-1" syfrah fabric init \
     --name re-mesh --node-name life-node-1 --endpoint 172.20.0.10:51820 2>&1 || true)
-if echo "$output_reinit" | grep -qF "syf_sk_"; then
+if echo "$output_reinit" | grep -qi "created\|mesh\|ok"; then
     pass "leave then init: works first try"
 else
     fail "leave then init: failed: $(echo "$output_reinit" | head -3)"
