@@ -459,7 +459,7 @@ async fn run() -> Result<()> {
                     // Validate state can be loaded before spawning background daemon
                     syfrah_fabric::store::load().map_err(|_| {
                         anyhow::anyhow!(
-                            "no mesh state found. Run 'syfrah init' or 'syfrah join' first."
+                            "no mesh state found. Run 'syfrah fabric init' or 'syfrah fabric join' first."
                         )
                     })?;
                     background_daemon()
