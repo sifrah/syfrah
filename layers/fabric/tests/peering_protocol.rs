@@ -107,8 +107,8 @@ async fn join_with_pin_auto_accept() {
         endpoint: "0.0.0.0:51820".parse().unwrap(),
         wg_listen_port: 51820,
         pin: Some(pin.clone()),
-        region: Some("region-1".to_string()),
-        zone: Some("region-1-zone-1".to_string()),
+        region: Some("us-east".to_string()),
+        zone: Some("zone-1".to_string()),
     };
 
     let target: SocketAddr = format!("127.0.0.1:{peering_port}").parse().unwrap();
@@ -141,12 +141,12 @@ async fn join_with_pin_auto_accept() {
     assert_eq!(accepted[0].name, "joiner");
     assert_eq!(
         accepted[0].region.as_deref(),
-        Some("region-1"),
+        Some("us-east"),
         "accepted peer should have the joiner's region"
     );
     assert_eq!(
         accepted[0].zone.as_deref(),
-        Some("region-1-zone-1"),
+        Some("zone-1"),
         "accepted peer should have the joiner's zone"
     );
 
@@ -220,8 +220,8 @@ async fn join_with_wrong_pin_falls_to_pending() {
         endpoint: "0.0.0.0:51820".parse().unwrap(),
         wg_listen_port: 51820,
         pin: Some(wrong_pin),
-        region: Some("region-1".to_string()),
-        zone: Some("region-1-zone-1".to_string()),
+        region: Some("us-east".to_string()),
+        zone: Some("zone-1".to_string()),
     };
 
     let target: SocketAddr = format!("127.0.0.1:{peering_port}").parse().unwrap();
@@ -313,8 +313,8 @@ async fn join_without_pin_goes_to_pending() {
         endpoint: "0.0.0.0:51820".parse().unwrap(),
         wg_listen_port: 51820,
         pin: None, // No PIN
-        region: Some("region-1".to_string()),
-        zone: Some("region-1-zone-1".to_string()),
+        region: Some("us-east".to_string()),
+        zone: Some("zone-1".to_string()),
     };
 
     let target: SocketAddr = format!("127.0.0.1:{peering_port}").parse().unwrap();

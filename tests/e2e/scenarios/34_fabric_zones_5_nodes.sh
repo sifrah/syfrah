@@ -49,13 +49,13 @@ else
     fail "only $unique_count unique zones out of 5"
 fi
 
-# Check all share region-1
+# Check all share default region
 for i in $(seq 1 5); do
     r=$(docker exec "e2e-z5-$i" syfrah fabric status 2>&1 | grep "Region:" | awk '{print $2}')
-    if [ "$r" = "region-1" ]; then
-        pass "node-$i region: region-1"
+    if [ "$r" = "default" ]; then
+        pass "node-$i region: default"
     else
-        fail "node-$i region: $r (expected region-1)"
+        fail "node-$i region: $r (expected default)"
     fi
 done
 

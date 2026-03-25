@@ -28,9 +28,9 @@ else
     echo "$output"
 fi
 
-# Region should be region-1 (default)
-if echo "$output" | grep -q "region-1"; then
-    pass "default region is region-1"
+# Region should be default
+if echo "$output" | grep -q "Region:.*default"; then
+    pass "default region is default"
 else
     fail "unexpected default region"
 fi
