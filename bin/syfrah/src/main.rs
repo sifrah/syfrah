@@ -1,7 +1,8 @@
 use std::net::SocketAddr;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::{generate, Shell};
 
 use syfrah_fabric::cli;
 use syfrah_fabric::daemon::{self, DaemonConfig};
@@ -31,6 +32,11 @@ enum Commands {
     State {
         #[command(subcommand)]
         command: StateCommand,
+    },
+    /// Generate shell completions for bash, zsh, or fish
+    Completions {
+        /// The shell to generate completions for
+        shell: Shell,
     },
     /// Update syfrah to the latest release
     Update {
@@ -539,6 +545,11 @@ async fn run() -> Result<()> {
                 }
             }
         },
+        Commands::Completions { shell } => {
+            let mut cmd = Cli::command();
+            generate(shell, &mut cmd, "syfrah", &mut std::io::stdout());
+            Ok(())
+        }
         Commands::State { command } => syfrah_state::cli::run(command).await,
         Commands::Update {
             check,
