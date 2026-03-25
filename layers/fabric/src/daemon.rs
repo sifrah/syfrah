@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::Semaphore;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use wireguard_control::{Key, KeyPair};
 
 use syfrah_core::addressing;
@@ -19,6 +19,30 @@ use crate::sanitize::sanitize;
 use crate::store::{self, NodeState};
 use crate::ui;
 use crate::wg;
+
+/// Default region used when the operator does not specify `--region`.
+pub const DEFAULT_REGION: &str = "default";
+
+/// Resolve region and zone from optional user-provided values.
+///
+/// - If `region` is `None`, falls back to [`DEFAULT_REGION`].
+/// - If `zone` is `None`, auto-generates one via [`store::generate_zone`].
+///
+/// This is the single source of truth used by `setup_init`, `setup_join`,
+/// `auto_init`, and the join-accept handler.
+pub fn resolve_region_zone(
+    region: Option<&str>,
+    zone: Option<&str>,
+    existing_peers: &[syfrah_core::mesh::PeerRecord],
+) -> (String, String) {
+    let region = region
+        .map(|r| r.to_string())
+        .unwrap_or_else(|| DEFAULT_REGION.to_string());
+    let zone = zone
+        .map(|z| z.to_string())
+        .unwrap_or_else(|| store::generate_zone(&region, existing_peers));
+    (region, zone)
+}
 
 pub struct DaemonConfig {
     pub mesh_name: String,
@@ -59,14 +83,10 @@ pub fn setup_init(config: &DaemonConfig) -> anyhow::Result<DaemonReady> {
     info!(flow = "init", mesh = %config.mesh_name, node = %config.node_name, "wireguard interface up");
 
     // Region/zone: use provided or defaults
-    let region = config
-        .region
-        .clone()
-        .unwrap_or_else(|| "region-1".to_string());
-    let zone = config
-        .zone
-        .clone()
-        .unwrap_or_else(|| store::generate_zone(&region, &[]));
+    let (region, zone) = resolve_region_zone(config.region.as_deref(), config.zone.as_deref(), &[]);
+    if config.region.is_none() {
+        ui::warn("No --region specified; using 'default'. Set --region to label this node.");
+    }
 
     let state = NodeState {
         mesh_name: config.mesh_name.clone(),
@@ -143,6 +163,8 @@ pub fn auto_init(
     wg::setup_interface(&wg_keypair, wg_port, mesh_ipv6)?;
     ui::step_ok(&sp, &format!("Interface syfrah0 up ({mesh_ipv6})"));
 
+    let (region, zone) = resolve_region_zone(None, None, &[]);
+
     let state = NodeState {
         mesh_name: node_name.to_string(),
         mesh_secret: mesh_secret.to_string(),
@@ -155,8 +177,8 @@ pub fn auto_init(
         public_endpoint: None,
         peering_port,
         peers: vec![],
-        region: Some("region-1".to_string()),
-        zone: Some("region-1-zone-1".to_string()),
+        region: Some(region),
+        zone: Some(zone),
         metrics: Default::default(),
     };
     store::save(&state)?;
@@ -194,9 +216,13 @@ pub async fn setup_join(
     let req_region = Some(
         config
             .region
-            .clone()
-            .unwrap_or_else(|| "region-1".to_string()),
+            .as_deref()
+            .unwrap_or(DEFAULT_REGION)
+            .to_string(),
     );
+    if config.region.is_none() {
+        ui::warn("No --region specified; using 'default'. Set --region to label this node.");
+    }
     let req_zone = config.zone.clone();
 
     let request = syfrah_core::mesh::JoinRequest {
@@ -261,14 +287,11 @@ async fn finalize_join(
     let mesh_ipv6 = addressing::derive_node_address(&mesh_prefix, wg_keypair.public.as_bytes());
 
     // Region/zone: use provided or auto-generate from existing peers
-    let region = config
-        .region
-        .clone()
-        .unwrap_or_else(|| "region-1".to_string());
-    let zone = config
-        .zone
-        .clone()
-        .unwrap_or_else(|| store::generate_zone(&region, &response.peers));
+    let (region, zone) = resolve_region_zone(
+        config.region.as_deref(),
+        config.zone.as_deref(),
+        &response.peers,
+    );
 
     let sp = ui::spinner("Setting up WireGuard interface...");
     wg::setup_interface(wg_keypair, config.wg_listen_port, mesh_ipv6)?;
@@ -572,6 +595,9 @@ pub async fn run_daemon(
     let metrics_unreachable = Arc::new(AtomicU64::new(0));
     let metrics_announces_dropped = Arc::new(AtomicU64::new(0));
     let metrics_peer_limit_reached = Arc::new(AtomicU64::new(0));
+    let metrics_health_check_failures = Arc::new(AtomicU64::new(0));
+    let metrics_reconcile_failures = Arc::new(AtomicU64::new(0));
+    let metrics_store_failures = Arc::new(AtomicU64::new(0));
     let daemon_started = now();
 
     // on_accepted callback: when a peer is accepted (manual or PIN), add to WG + store + announce
@@ -583,6 +609,7 @@ pub async fn run_daemon(
     let accepted_max_events = tuning.max_events;
     let accepted_max_peers = max_peers;
     let accepted_peer_limit_counter = metrics_peer_limit_reached.clone();
+    let accepted_store_failures = metrics_store_failures.clone();
     let on_accepted: peering::OnAccepted = Arc::new(move |new_record| {
         accepted_recv.fetch_add(1, Ordering::Relaxed);
         let pubkey = accepted_wg_pubkey.clone();
@@ -593,9 +620,17 @@ pub async fn run_daemon(
         let max_ev = accepted_max_events;
         let mp = accepted_max_peers;
         let plr = accepted_peer_limit_counter.clone();
+        let sf = accepted_store_failures.clone();
         tokio::spawn(async move {
             // Check store peer limit before adding
-            let current_count = store::peer_count().unwrap_or(0);
+            let current_count = match store::peer_count() {
+                Ok(c) => c,
+                Err(e) => {
+                    error!(error = %e, "on_accepted: failed to read peer count from store, aborting");
+                    sf.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+            };
             let threshold = mp * 4 / 5; // 80%
             if current_count >= threshold && current_count < mp {
                 warn!(
@@ -654,7 +689,14 @@ pub async fn run_daemon(
                 Ok(true) => {}
             }
             // Announce to existing peers
-            let known = store::get_peers().unwrap_or_default();
+            let known = match store::get_peers() {
+                Ok(peers) => peers,
+                Err(e) => {
+                    error!(error = %e, "on_accepted: failed to load peers for announce, skipping");
+                    sf.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+            };
             let (_ok, failed) = peering::announce_peer_to_mesh(&record, &known, &enc, pp).await;
             if failed > 0 {
                 let _ = store::inc_metric("announcements_failed", failed as u64);
@@ -696,6 +738,7 @@ pub async fn run_daemon(
     let announce_dropped = metrics_announces_dropped.clone();
     let announce_peer_limit = metrics_peer_limit_reached.clone();
     let announce_max_peers = max_peers;
+    let announce_store_failures = metrics_store_failures.clone();
     let on_announce: Arc<dyn Fn(PeerRecord) + Send + Sync> = Arc::new(move |record| {
         announce_recv.fetch_add(1, Ordering::Relaxed);
         events::emit(
@@ -729,12 +772,20 @@ pub async fn run_daemon(
         let record = record.clone();
         let mp = announce_max_peers;
         let plr = announce_peer_limit.clone();
+        let sf = announce_store_failures.clone();
         let max_ev = announce_max_events;
         tokio::spawn(async move {
             let _permit = permit; // held until task completes
 
             // Check store peer count before processing
-            let current_count = store::peer_count().unwrap_or(0);
+            let current_count = match store::peer_count() {
+                Ok(c) => c,
+                Err(e) => {
+                    error!(error = %e, "on_announce: failed to read peer count from store, aborting");
+                    sf.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+            };
             let threshold = mp * 4 / 5; // 80%
             if current_count >= threshold && current_count < mp {
                 warn!(
@@ -805,6 +856,9 @@ pub async fn run_daemon(
     let persist_unreach = metrics_unreachable.clone();
     let persist_dropped = metrics_announces_dropped.clone();
     let persist_peer_limit = metrics_peer_limit_reached.clone();
+    let persist_health_failures = metrics_health_check_failures.clone();
+    let persist_reconcile_failures = metrics_reconcile_failures.clone();
+    let persist_store_failures = metrics_store_failures.clone();
     let persist_peering_state = peering_state.clone();
     let persist = async {
         let mut interval = tokio::time::interval(tuning.persist_interval);
@@ -830,6 +884,24 @@ pub async fn run_daemon(
                 "peer_limit_reached",
                 persist_peer_limit.load(Ordering::Relaxed),
             );
+            if let Err(e) = store::set_metric(
+                "health_check_failures",
+                persist_health_failures.load(Ordering::Relaxed),
+            ) {
+                debug!(error = %e, "failed to persist health_check_failures metric");
+            }
+            if let Err(e) = store::set_metric(
+                "reconcile_failures",
+                persist_reconcile_failures.load(Ordering::Relaxed),
+            ) {
+                debug!(error = %e, "failed to persist reconcile_failures metric");
+            }
+            if let Err(e) = store::set_metric(
+                "store_failures",
+                persist_store_failures.load(Ordering::Relaxed),
+            ) {
+                debug!(error = %e, "failed to persist store_failures metric");
+            }
         }
     };
 
@@ -838,15 +910,30 @@ pub async fn run_daemon(
     let health_counter = metrics_unreachable.clone();
     let health_recon = metrics_reconciliations.clone();
     let health_max_events = tuning.max_events;
+    let health_failures = metrics_health_check_failures.clone();
     let health_check = async {
         let mut interval = tokio::time::interval(tuning.health_check_interval);
         loop {
             interval.tick().await;
 
             // Get WireGuard handshake data for all peers
-            let wg_peers = wg::interface_summary().map(|s| s.peers).unwrap_or_default();
+            let wg_peers = match wg::interface_summary() {
+                Ok(s) => s.peers,
+                Err(e) => {
+                    warn!(error = %e, "health check: WireGuard interface unavailable");
+                    health_failures.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+            };
 
-            let mut peers = store::get_peers().unwrap_or_default();
+            let mut peers = match store::get_peers() {
+                Ok(p) => p,
+                Err(e) => {
+                    error!(error = %e, "health check: failed to load peers from store");
+                    health_failures.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+            };
             let current = now();
             let mut changed = false;
 
@@ -916,7 +1003,10 @@ pub async fn run_daemon(
             // Persist changes atomically
             if changed {
                 for peer in &peers {
-                    let _ = store::upsert_peer(peer);
+                    if let Err(e) = store::upsert_peer(peer) {
+                        warn!(peer = %sanitize(&peer.name), error = %e, "health check: failed to persist peer state");
+                        health_failures.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
 
@@ -934,16 +1024,25 @@ pub async fn run_daemon(
     let reconcile_wg_pubkey = wg_pubkey.clone();
     let reconcile_recon = health_recon;
     let reconcile_max_events = tuning.max_events;
+    let reconcile_failures = metrics_reconcile_failures.clone();
     let reconcile = async {
         let mut interval = tokio::time::interval(tuning.reconcile_interval);
         loop {
             interval.tick().await;
 
-            let stored_peers = store::get_peers().unwrap_or_default();
+            let stored_peers = match store::get_peers() {
+                Ok(p) => p,
+                Err(e) => {
+                    error!(error = %e, "reconciliation: failed to load peers from store");
+                    reconcile_failures.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+            };
             let wg_summary = match wg::interface_summary() {
                 Ok(s) => s,
                 Err(e) => {
-                    warn!("reconciliation: WireGuard interface unavailable: {e}");
+                    warn!(error = %e, "reconciliation: WireGuard interface unavailable");
+                    reconcile_failures.fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
             };
@@ -1106,10 +1205,11 @@ impl ControlHandler for DaemonControlHandler {
                         // Use the joiner's region/zone from the request.
                         // If zone was not provided, auto-generate one
                         // using the current peer list.
-                        let region = info.region.unwrap_or_else(|| "region-1".to_string());
-                        let zone = info
-                            .zone
-                            .unwrap_or_else(|| store::generate_zone(&region, &state.peers));
+                        let (region, zone) = resolve_region_zone(
+                            info.region.as_deref(),
+                            info.zone.as_deref(),
+                            &state.peers,
+                        );
                         let new_record = PeerRecord {
                             name: info.node_name.clone(),
                             wg_public_key: info.wg_public_key,
@@ -1555,5 +1655,213 @@ mod tests {
     fn rollback_join_state_is_safe_when_no_state() {
         // rollback should not panic even when there's nothing to clean up
         rollback_join_state();
+    }
+
+    // ── resolve_region_zone tests (exercises the real production function) ──
+
+    #[test]
+    fn resolve_region_zone_defaults_when_none() {
+        let (region, zone) = super::resolve_region_zone(None, None, &[]);
+        assert_eq!(
+            region, "default",
+            "region should fall back to DEFAULT_REGION"
+        );
+        assert_eq!(
+            zone, "zone-1",
+            "zone should be auto-generated as zone-1 with no peers"
+        );
+    }
+
+    #[test]
+    fn resolve_region_zone_explicit_region_overrides_default() {
+        let (region, zone) = super::resolve_region_zone(Some("us-east"), None, &[]);
+        assert_eq!(region, "us-east");
+        assert_eq!(zone, "zone-1", "zone should still be auto-generated");
+    }
+
+    #[test]
+    fn resolve_region_zone_explicit_zone_overrides_generation() {
+        let (region, zone) = super::resolve_region_zone(Some("eu-west"), Some("eu-west-a"), &[]);
+        assert_eq!(region, "eu-west");
+        assert_eq!(zone, "eu-west-a", "explicit zone should be used as-is");
+    }
+
+    #[test]
+    fn resolve_region_zone_increments_with_existing_peers() {
+        use syfrah_core::mesh::{PeerRecord, PeerStatus};
+        let peers = vec![PeerRecord {
+            name: "node-1".into(),
+            wg_public_key: "key".into(),
+            endpoint: "127.0.0.1:51820".parse().unwrap(),
+            mesh_ipv6: "fd00::1".parse().unwrap(),
+            last_seen: 0,
+            status: PeerStatus::Active,
+            region: Some("default".into()),
+            zone: Some("zone-1".into()),
+        }];
+        let (region, zone) = super::resolve_region_zone(None, None, &peers);
+        assert_eq!(region, "default");
+        assert_eq!(
+            zone, "zone-2",
+            "zone index should increment past existing peers"
+        );
+    }
+
+    // ── reconciliation edge cases ──
+
+    #[test]
+    fn reconciliation_empty_stored_peers() {
+        let peers: Vec<PeerRecord> = vec![];
+        let wg_keys = vec!["key-node-1".to_string()];
+        let needing = peers_needing_reconciliation(&peers, &wg_keys);
+        assert!(needing.is_empty());
+    }
+
+    #[test]
+    fn reconciliation_empty_wg_keys_returns_all_active() {
+        let peers = vec![
+            sample_peer("node-1", PeerStatus::Active, 1000),
+            sample_peer("node-2", PeerStatus::Active, 1000),
+        ];
+        let wg_keys: Vec<String> = vec![];
+        let needing = peers_needing_reconciliation(&peers, &wg_keys);
+        assert_eq!(needing.len(), 2);
+    }
+
+    #[test]
+    fn reconciliation_unreachable_peer_still_reconciled() {
+        // Unreachable peers should be re-added to WG (only Removed are skipped)
+        let peers = vec![sample_peer("node-1", PeerStatus::Unreachable, 1000)];
+        let wg_keys: Vec<String> = vec![];
+        let needing = peers_needing_reconciliation(&peers, &wg_keys);
+        assert_eq!(needing.len(), 1);
+        assert_eq!(needing[0].name, "node-1");
+    }
+
+    #[test]
+    fn reconciliation_mixed_statuses() {
+        let peers = vec![
+            sample_peer("active-1", PeerStatus::Active, 1000),
+            sample_peer("unreach-1", PeerStatus::Unreachable, 1000),
+            sample_peer("removed-1", PeerStatus::Removed, 1000),
+        ];
+        // None are in WG
+        let wg_keys: Vec<String> = vec![];
+        let needing = peers_needing_reconciliation(&peers, &wg_keys);
+        // Only active and unreachable should be reconciled, not removed
+        assert_eq!(needing.len(), 2);
+        let names: Vec<&str> = needing.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"active-1"));
+        assert!(names.contains(&"unreach-1"));
+        assert!(!names.contains(&"removed-1"));
+    }
+
+    // ── health check lifecycle ──
+
+    #[test]
+    fn health_full_lifecycle_active_unreachable_active() {
+        let mut peer = sample_peer("node-2", PeerStatus::Active, 1000);
+
+        // Step 1: active, still within timeout — no change
+        let changed = evaluate_peer_health(&mut peer, None, 1100, 300);
+        assert!(!changed);
+        assert_eq!(peer.status, PeerStatus::Active);
+
+        // Step 2: active → unreachable (timeout exceeded)
+        let changed = evaluate_peer_health(&mut peer, None, 1301, 300);
+        assert!(changed);
+        assert_eq!(peer.status, PeerStatus::Unreachable);
+
+        // Step 3: unreachable → active (fresh handshake arrives)
+        let changed = evaluate_peer_health(&mut peer, Some(1350), 1360, 300);
+        assert!(changed);
+        assert_eq!(peer.status, PeerStatus::Active);
+        assert_eq!(peer.last_seen, 1350);
+    }
+
+    #[test]
+    fn health_multiple_peers_independent() {
+        let mut peer_a = sample_peer("node-a", PeerStatus::Active, 1000);
+        let mut peer_b = sample_peer("node-b", PeerStatus::Active, 1200);
+
+        // At time 1301: peer_a times out (1301-1000=301>300), peer_b is fine (1301-1200=101<300)
+        let a_changed = evaluate_peer_health(&mut peer_a, None, 1301, 300);
+        let b_changed = evaluate_peer_health(&mut peer_b, None, 1301, 300);
+
+        assert!(a_changed);
+        assert_eq!(peer_a.status, PeerStatus::Unreachable);
+        assert!(!b_changed);
+        assert_eq!(peer_b.status, PeerStatus::Active);
+    }
+
+    #[test]
+    fn health_handshake_at_exact_last_seen_no_update() {
+        let mut peer = sample_peer("node-2", PeerStatus::Active, 1000);
+        // Handshake at exactly last_seen — not newer, so no update
+        let changed = evaluate_peer_health(&mut peer, Some(1000), 1100, 300);
+        assert!(!changed);
+        assert_eq!(peer.last_seen, 1000);
+    }
+
+    #[test]
+    fn health_zero_timestamps() {
+        let mut peer = sample_peer("node-2", PeerStatus::Active, 0);
+        // With last_seen=0, current=0, timeout=300: 0-0=0 which is not > 300
+        let changed = evaluate_peer_health(&mut peer, None, 0, 300);
+        assert!(!changed);
+        assert_eq!(peer.status, PeerStatus::Active);
+    }
+
+    #[test]
+    fn health_handshake_updates_then_prevents_unreachable() {
+        let mut peer = sample_peer("node-2", PeerStatus::Active, 1000);
+        // Without handshake at time 1301, peer would go unreachable.
+        // But a handshake at 1100 updates last_seen, keeping gap at 201 < 300.
+        let changed = evaluate_peer_health(&mut peer, Some(1100), 1301, 300);
+        assert!(changed); // last_seen updated
+        assert_eq!(peer.last_seen, 1100);
+        assert_eq!(peer.status, PeerStatus::Active);
+    }
+
+    // ── build_record edge cases ──
+
+    #[test]
+    fn build_record_no_region_no_zone() {
+        let keypair = KeyPair::generate();
+        let endpoint: SocketAddr = "10.0.0.1:51820".parse().unwrap();
+        let ipv6 = Ipv6Addr::new(0xfd12, 0, 0, 0, 0, 0, 0, 1);
+
+        let record = build_record("node-1", &keypair, endpoint, ipv6, None, None);
+
+        assert!(record.region.is_none());
+        assert!(record.zone.is_none());
+    }
+
+    // ── derive_prefix edge cases ──
+
+    #[test]
+    fn derive_prefix_always_ula_range() {
+        // Every secret should produce an fd00::/8 prefix
+        for i in 0..10u8 {
+            let secret = MeshSecret::from_bytes([i; 32]);
+            let prefix = derive_prefix_from_secret(&secret);
+            let first_byte = (prefix.segments()[0] >> 8) as u8;
+            assert_eq!(first_byte, 0xfd, "secret [{i};32] gave non-ULA prefix");
+        }
+    }
+
+    #[test]
+    fn derive_prefix_host_segments_always_zero() {
+        // The prefix is /48, so segments 3..7 must always be zero
+        for i in 0..5u8 {
+            let secret = MeshSecret::from_bytes([i * 50; 32]);
+            let prefix = derive_prefix_from_secret(&secret);
+            let segs = prefix.segments();
+            assert_eq!(segs[3], 0, "segment 3 non-zero for secret [{};32]", i * 50);
+            assert_eq!(segs[4], 0, "segment 4 non-zero for secret [{};32]", i * 50);
+            assert_eq!(segs[5], 0, "segment 5 non-zero for secret [{};32]", i * 50);
+            assert_eq!(segs[6], 0, "segment 6 non-zero for secret [{};32]", i * 50);
+            assert_eq!(segs[7], 0, "segment 7 non-zero for secret [{};32]", i * 50);
+        }
     }
 }
