@@ -214,3 +214,4 @@ fi
 # --- Done -------------------------------------------------------------------
 
 printf "\n%s v%s installed successfully.\n" "$BIN" "$EXPECTED_VERSION"
+printf "Run 'syfrah fabric init --name my-mesh' to get started.\n"
