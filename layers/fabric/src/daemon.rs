@@ -23,6 +23,27 @@ use crate::wg;
 /// Default region used when the operator does not specify `--region`.
 pub const DEFAULT_REGION: &str = "default";
 
+/// Resolve region and zone from optional user-provided values.
+///
+/// - If `region` is `None`, falls back to [`DEFAULT_REGION`].
+/// - If `zone` is `None`, auto-generates one via [`store::generate_zone`].
+///
+/// This is the single source of truth used by `setup_init`, `setup_join`,
+/// `auto_init`, and the join-accept handler.
+pub fn resolve_region_zone(
+    region: Option<&str>,
+    zone: Option<&str>,
+    existing_peers: &[syfrah_core::mesh::PeerRecord],
+) -> (String, String) {
+    let region = region
+        .map(|r| r.to_string())
+        .unwrap_or_else(|| DEFAULT_REGION.to_string());
+    let zone = zone
+        .map(|z| z.to_string())
+        .unwrap_or_else(|| store::generate_zone(&region, existing_peers));
+    (region, zone)
+}
+
 pub struct DaemonConfig {
     pub mesh_name: String,
     pub node_name: String,
@@ -62,17 +83,10 @@ pub fn setup_init(config: &DaemonConfig) -> anyhow::Result<DaemonReady> {
     info!(flow = "init", mesh = %config.mesh_name, node = %config.node_name, "wireguard interface up");
 
     // Region/zone: use provided or defaults
-    let region = config
-        .region
-        .clone()
-        .unwrap_or_else(|| DEFAULT_REGION.to_string());
+    let (region, zone) = resolve_region_zone(config.region.as_deref(), config.zone.as_deref(), &[]);
     if config.region.is_none() {
         ui::warn("No --region specified; using 'default'. Set --region to label this node.");
     }
-    let zone = config
-        .zone
-        .clone()
-        .unwrap_or_else(|| store::generate_zone(&region, &[]));
 
     let state = NodeState {
         mesh_name: config.mesh_name.clone(),
@@ -149,6 +163,8 @@ pub fn auto_init(
     wg::setup_interface(&wg_keypair, wg_port, mesh_ipv6)?;
     ui::step_ok(&sp, &format!("Interface syfrah0 up ({mesh_ipv6})"));
 
+    let (region, zone) = resolve_region_zone(None, None, &[]);
+
     let state = NodeState {
         mesh_name: node_name.to_string(),
         mesh_secret: mesh_secret.to_string(),
@@ -161,8 +177,8 @@ pub fn auto_init(
         public_endpoint: None,
         peering_port,
         peers: vec![],
-        region: Some(DEFAULT_REGION.to_string()),
-        zone: Some("default-zone-1".to_string()),
+        region: Some(region),
+        zone: Some(zone),
         metrics: Default::default(),
     };
     store::save(&state)?;
@@ -200,8 +216,9 @@ pub async fn setup_join(
     let req_region = Some(
         config
             .region
-            .clone()
-            .unwrap_or_else(|| DEFAULT_REGION.to_string()),
+            .as_deref()
+            .unwrap_or(DEFAULT_REGION)
+            .to_string(),
     );
     if config.region.is_none() {
         ui::warn("No --region specified; using 'default'. Set --region to label this node.");
@@ -270,14 +287,11 @@ async fn finalize_join(
     let mesh_ipv6 = addressing::derive_node_address(&mesh_prefix, wg_keypair.public.as_bytes());
 
     // Region/zone: use provided or auto-generate from existing peers
-    let region = config
-        .region
-        .clone()
-        .unwrap_or_else(|| DEFAULT_REGION.to_string());
-    let zone = config
-        .zone
-        .clone()
-        .unwrap_or_else(|| store::generate_zone(&region, &response.peers));
+    let (region, zone) = resolve_region_zone(
+        config.region.as_deref(),
+        config.zone.as_deref(),
+        &response.peers,
+    );
 
     let sp = ui::spinner("Setting up WireGuard interface...");
     wg::setup_interface(wg_keypair, config.wg_listen_port, mesh_ipv6)?;
@@ -1115,10 +1129,11 @@ impl ControlHandler for DaemonControlHandler {
                         // Use the joiner's region/zone from the request.
                         // If zone was not provided, auto-generate one
                         // using the current peer list.
-                        let region = info.region.unwrap_or_else(|| DEFAULT_REGION.to_string());
-                        let zone = info
-                            .zone
-                            .unwrap_or_else(|| store::generate_zone(&region, &state.peers));
+                        let (region, zone) = resolve_region_zone(
+                            info.region.as_deref(),
+                            info.zone.as_deref(),
+                            &state.peers,
+                        );
                         let new_record = PeerRecord {
                             name: info.node_name.clone(),
                             wg_public_key: info.wg_public_key,
@@ -1566,31 +1581,53 @@ mod tests {
         rollback_join_state();
     }
 
-    // ── DEFAULT_REGION tests ──
+    // ── resolve_region_zone tests (exercises the real production function) ──
 
-    fn resolve_region(config_region: Option<String>) -> String {
-        config_region.unwrap_or_else(|| DEFAULT_REGION.to_string())
+    #[test]
+    fn resolve_region_zone_defaults_when_none() {
+        let (region, zone) = super::resolve_region_zone(None, None, &[]);
+        assert_eq!(
+            region, "default",
+            "region should fall back to DEFAULT_REGION"
+        );
+        assert_eq!(
+            zone, "zone-1",
+            "zone should be auto-generated as zone-1 with no peers"
+        );
     }
 
     #[test]
-    fn default_region_used_when_config_region_is_none() {
-        assert_eq!(resolve_region(None), "default");
+    fn resolve_region_zone_explicit_region_overrides_default() {
+        let (region, zone) = super::resolve_region_zone(Some("us-east"), None, &[]);
+        assert_eq!(region, "us-east");
+        assert_eq!(zone, "zone-1", "zone should still be auto-generated");
     }
 
     #[test]
-    fn explicit_region_overrides_default() {
-        assert_eq!(resolve_region(Some("us-east".to_string())), "us-east");
+    fn resolve_region_zone_explicit_zone_overrides_generation() {
+        let (region, zone) = super::resolve_region_zone(Some("eu-west"), Some("eu-west-a"), &[]);
+        assert_eq!(region, "eu-west");
+        assert_eq!(zone, "eu-west-a", "explicit zone should be used as-is");
     }
 
     #[test]
-    fn default_region_zone_generation() {
-        // When region is None, zone should be generated from DEFAULT_REGION
-        let region = resolve_region(None);
-        let zone = store::generate_zone(&region, &[]);
+    fn resolve_region_zone_increments_with_existing_peers() {
+        use syfrah_core::mesh::{PeerRecord, PeerStatus};
+        let peers = vec![PeerRecord {
+            name: "node-1".into(),
+            wg_public_key: "key".into(),
+            endpoint: "127.0.0.1:51820".parse().unwrap(),
+            mesh_ipv6: "fd00::1".parse().unwrap(),
+            last_seen: 0,
+            status: PeerStatus::Active,
+            region: Some("default".into()),
+            zone: Some("zone-1".into()),
+        }];
+        let (region, zone) = super::resolve_region_zone(None, None, &peers);
         assert_eq!(region, "default");
-        assert!(
-            zone.starts_with("zone-"),
-            "generated zone should start with 'zone-'"
+        assert_eq!(
+            zone, "zone-2",
+            "zone index should increment past existing peers"
         );
     }
 }
