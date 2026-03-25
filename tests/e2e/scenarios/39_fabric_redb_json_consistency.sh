@@ -23,10 +23,10 @@ docker exec -d "e2e-consist-3" syfrah fabric join 172.20.0.10:51821 \
 wait_daemon "e2e-consist-2" 30
 wait_daemon "e2e-consist-3" 30
 wait_for_convergence "e2e-consist-" 3 2 30 || true
-# Wait for JSON export to flush (debounced at 5s, retry to handle timing)
+# Wait for JSON export to flush (debounced at 2s, retry to handle timing)
 consistent=false
-for attempt in $(seq 1 6); do
-    sleep 5
+for attempt in $(seq 1 3); do
+    sleep 2
     redb_count=$(docker exec "e2e-consist-1" syfrah state get fabric peers 2>&1 | grep -c "wg_public_key" || echo "0")
     json_count=$(docker exec "e2e-consist-1" cat /root/.syfrah/state.json 2>/dev/null | jq '.peers | length' 2>/dev/null || echo "0")
     debug "attempt $attempt: redb=$redb_count json=$json_count"

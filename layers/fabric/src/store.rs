@@ -18,7 +18,7 @@ const LAYER_NAME: &str = "fabric";
 /// Minimum interval between JSON state exports. Peer updates that arrive
 /// faster than this are persisted in redb (the source of truth) but the
 /// legacy `state.json` file is only regenerated once the cooldown expires.
-const JSON_DEBOUNCE_SECS: u64 = 5;
+const JSON_DEBOUNCE_SECS: u64 = 2;
 
 /// Tracks the last time `state.json` was written so we can debounce.
 static LAST_JSON_WRITE: Mutex<Option<Instant>> = Mutex::new(None);
