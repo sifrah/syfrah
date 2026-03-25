@@ -213,4 +213,51 @@ mod tests {
         let result: Result<ControlRequest, _> = read_control(&mut server).await;
         assert!(result.is_err());
     }
+
+    #[tokio::test]
+    async fn control_truncated_body_errors() {
+        let (mut client, mut server) = duplex(4096);
+
+        // Length header claims 100 bytes, but only 5 are written
+        let len: u32 = 100;
+        tokio::io::AsyncWriteExt::write_all(&mut client, &len.to_be_bytes())
+            .await
+            .unwrap();
+        tokio::io::AsyncWriteExt::write_all(&mut client, b"hello")
+            .await
+            .unwrap();
+        drop(client); // EOF before 100 bytes
+
+        let result: Result<ControlRequest, _> = read_control(&mut server).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn control_response_roundtrip() {
+        let (mut client, mut server) = duplex(4096);
+
+        let resp = ControlResponse::PeeringList {
+            requests: vec![JoinRequestInfo {
+                request_id: "req-1".into(),
+                node_name: "node-a".into(),
+                wg_public_key: "pk-abc".into(),
+                endpoint: "192.168.1.1:7946".parse().unwrap(),
+                wg_listen_port: 51820,
+                received_at: 0,
+                region: None,
+                zone: None,
+            }],
+        };
+        write_control(&mut client, &resp).await.unwrap();
+        drop(client);
+
+        let read_resp: ControlResponse = read_control(&mut server).await.unwrap();
+        match read_resp {
+            ControlResponse::PeeringList { requests } => {
+                assert_eq!(requests.len(), 1);
+                assert_eq!(requests[0].node_name, "node-a");
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
 }
