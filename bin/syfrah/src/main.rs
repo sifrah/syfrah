@@ -58,6 +58,7 @@ enum FabricCommand {
         port: u16,
         #[arg(long)]
         endpoint: Option<SocketAddr>,
+        /// Port for the peering protocol [default: WireGuard port + 1]
         #[arg(long)]
         peering_port: Option<u16>,
         /// Region label for this node [default: "default"]
