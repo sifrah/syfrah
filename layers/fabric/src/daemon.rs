@@ -603,9 +603,9 @@ pub async fn run_daemon(
             let current_count = match store::peer_count() {
                 Ok(c) => c,
                 Err(e) => {
-                    warn!(error = %e, "on_accepted: failed to read peer count from store");
+                    error!(error = %e, "on_accepted: failed to read peer count from store, aborting");
                     sf.fetch_add(1, Ordering::Relaxed);
-                    0
+                    return;
                 }
             };
             let threshold = mp * 4 / 5; // 80%
@@ -758,9 +758,9 @@ pub async fn run_daemon(
             let current_count = match store::peer_count() {
                 Ok(c) => c,
                 Err(e) => {
-                    warn!(error = %e, "on_announce: failed to read peer count from store");
+                    error!(error = %e, "on_announce: failed to read peer count from store, aborting");
                     sf.fetch_add(1, Ordering::Relaxed);
-                    0
+                    return;
                 }
             };
             let threshold = mp * 4 / 5; // 80%
@@ -861,18 +861,24 @@ pub async fn run_daemon(
                 "peer_limit_reached",
                 persist_peer_limit.load(Ordering::Relaxed),
             );
-            let _ = store::set_metric(
+            if let Err(e) = store::set_metric(
                 "health_check_failures",
                 persist_health_failures.load(Ordering::Relaxed),
-            );
-            let _ = store::set_metric(
+            ) {
+                debug!(error = %e, "failed to persist health_check_failures metric");
+            }
+            if let Err(e) = store::set_metric(
                 "reconcile_failures",
                 persist_reconcile_failures.load(Ordering::Relaxed),
-            );
-            let _ = store::set_metric(
+            ) {
+                debug!(error = %e, "failed to persist reconcile_failures metric");
+            }
+            if let Err(e) = store::set_metric(
                 "store_failures",
                 persist_store_failures.load(Ordering::Relaxed),
-            );
+            ) {
+                debug!(error = %e, "failed to persist store_failures metric");
+            }
         }
     };
 
@@ -882,7 +888,6 @@ pub async fn run_daemon(
     let health_recon = metrics_reconciliations.clone();
     let health_max_events = tuning.max_events;
     let health_failures = metrics_health_check_failures.clone();
-    let health_store_failures = metrics_store_failures.clone();
     let health_check = async {
         let mut interval = tokio::time::interval(tuning.health_check_interval);
         loop {
@@ -903,7 +908,6 @@ pub async fn run_daemon(
                 Err(e) => {
                     error!(error = %e, "health check: failed to load peers from store");
                     health_failures.fetch_add(1, Ordering::Relaxed);
-                    health_store_failures.fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
             };
@@ -978,7 +982,7 @@ pub async fn run_daemon(
                 for peer in &peers {
                     if let Err(e) = store::upsert_peer(peer) {
                         warn!(peer = %sanitize(&peer.name), error = %e, "health check: failed to persist peer state");
-                        health_store_failures.fetch_add(1, Ordering::Relaxed);
+                        health_failures.fetch_add(1, Ordering::Relaxed);
                     }
                 }
             }
@@ -998,7 +1002,6 @@ pub async fn run_daemon(
     let reconcile_recon = health_recon;
     let reconcile_max_events = tuning.max_events;
     let reconcile_failures = metrics_reconcile_failures.clone();
-    let reconcile_store_failures = metrics_store_failures.clone();
     let reconcile = async {
         let mut interval = tokio::time::interval(tuning.reconcile_interval);
         loop {
@@ -1009,7 +1012,6 @@ pub async fn run_daemon(
                 Err(e) => {
                     error!(error = %e, "reconciliation: failed to load peers from store");
                     reconcile_failures.fetch_add(1, Ordering::Relaxed);
-                    reconcile_store_failures.fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
             };
