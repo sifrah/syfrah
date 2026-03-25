@@ -202,6 +202,103 @@ pub fn peering_banner(port: u16, pin: Option<&str>, continuous: bool) {
     }
 }
 
+// ── Box-drawing section helpers ──────────────────────────────────────
+
+const BOX_WIDTH: usize = 50;
+
+/// Print the top border of a titled box section.
+/// TTY: `╭─ Title ─────────╮`  Non-TTY: `--- Title ---`
+pub fn box_top(title: &str) {
+    if is_tty() {
+        let bold = Style::new().bold();
+        // "╭─ " = 4 display chars, " ─...╮" fills the rest
+        let inner = BOX_WIDTH - 2; // chars between ╭ and ╮
+        let prefix = format!("\u{2500} {} ", title);
+        let pad = inner.saturating_sub(prefix.len());
+        println!(
+            "\u{256d}{}{}\u{256e}",
+            bold.apply_to(&prefix),
+            "\u{2500}".repeat(pad)
+        );
+    } else {
+        println!("--- {} ---", title);
+    }
+}
+
+/// Print a line inside a box section.
+/// TTY: `│  content ...     │`  Non-TTY: `  content`
+pub fn box_line(content: &str) {
+    if is_tty() {
+        let inner = BOX_WIDTH - 2;
+        let pad = inner.saturating_sub(content.len() + 1);
+        println!("\u{2502} {}{}\u{2502}", content, " ".repeat(pad));
+    } else {
+        println!("  {content}");
+    }
+}
+
+/// Print the bottom border of a box section.
+/// TTY: `╰─────────────────╯`  Non-TTY: (nothing)
+pub fn box_bottom() {
+    if is_tty() {
+        let inner = BOX_WIDTH - 2;
+        println!("\u{2570}{}\u{256f}", "\u{2500}".repeat(inner));
+    }
+}
+
+/// Print a health status line (outside a box, prominent).
+/// `ok=true` -> green bullet, `ok=false` -> red cross.
+pub fn health_line(ok: bool, msg: &str) {
+    if is_tty() {
+        if ok {
+            let green = Style::new().green().bold();
+            println!("  {} {msg}", green.apply_to("\u{25cf}"));
+        } else {
+            let red = Style::new().red().bold();
+            println!("  {} {msg}", red.apply_to("\u{2717}"));
+        }
+    } else if ok {
+        println!("  [OK]   {msg}");
+    } else {
+        println!("  [FAIL] {msg}");
+    }
+}
+
+/// Print a colored peer count line inside a box.
+pub fn peer_line(symbol: &str, count: usize, label: &str) {
+    let text = format!("{symbol} {count} {label}");
+    if is_tty() {
+        let inner = BOX_WIDTH - 2;
+        let styled = if symbol == "\u{25cf}" {
+            let green = Style::new().green();
+            format!("{} {count} {label}", green.apply_to(symbol))
+        } else {
+            let red = Style::new().red();
+            format!("{} {count} {label}", red.apply_to(symbol))
+        };
+        // For padding, use the un-styled length
+        let pad = inner.saturating_sub(text.len() + 1);
+        println!("\u{2502} {}{}\u{2502}", styled, " ".repeat(pad));
+    } else {
+        println!("  {text}");
+    }
+}
+
+/// Mask a secret string, showing prefix and last 4 chars.
+/// `syf_sk_Gegx27CfeNjX...kvd1`
+pub fn mask_secret(secret: &str) -> String {
+    if secret.len() <= 12 {
+        return "****".to_string();
+    }
+    let prefix_end = if secret.starts_with("syf_sk_") { 7 } else { 4 };
+    let suffix_start = secret.len().saturating_sub(4);
+    format!(
+        "{}****...{}",
+        &secret[..prefix_end],
+        &secret[suffix_start..]
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,5 +330,30 @@ mod tests {
     fn check_pass_fail_do_not_panic() {
         check_pass("something works");
         check_fail("something broke", "details here");
+    }
+
+    #[test]
+    fn mask_secret_hides_middle() {
+        let masked = mask_secret("syf_sk_Gegx27CfeNjXiK3ABQZQ1YBk7NpXCunu3eytQYsTkvd1");
+        assert!(masked.starts_with("syf_sk_"));
+        assert!(masked.ends_with("kvd1"));
+        assert!(masked.contains("****"));
+        assert!(!masked.contains("Gegx27"));
+    }
+
+    #[test]
+    fn mask_secret_short_input() {
+        assert_eq!(mask_secret("short"), "****");
+    }
+
+    #[test]
+    fn box_helpers_do_not_panic() {
+        box_top("Test");
+        box_line("content here");
+        box_bottom();
+        health_line(true, "all good");
+        health_line(false, "problem");
+        peer_line("\u{25cf}", 3, "active");
+        peer_line("\u{2717}", 1, "unreachable");
     }
 }
