@@ -38,36 +38,47 @@ jobs:
           path: /tmp/syfrah-e2e-test.tar.gz
           retention-days: 1
 
-  # ── Discover which layers have E2E tests ─────────────────
+  # ── Discover scenario groups for parallel execution ──────
   discover:
-    name: Discover layers
+    name: Discover groups
     runs-on: ubuntu-latest
     outputs:
-      layers: ${{ steps.find.outputs.layers }}
+      groups: ${{ steps.find.outputs.groups }}
     steps:
       - uses: actions/checkout@v4
       - id: find
         run: |
-          # Extract unique layer names from scenario filenames
-          # e.g., 01_fabric_mesh.sh → fabric, 21_compute_vm.sh → compute
-          layers=$(ls tests/e2e/scenarios/*.sh 2>/dev/null | \
-            xargs -I{} basename {} | \
-            sed 's/^[0-9]*_\([a-z]*\)_.*/\1/' | \
-            sort -u | \
-            jq -R . | jq -sc .)
-          echo "layers=$layers" >> "$GITHUB_OUTPUT"
-          echo "Found layers: $layers"
+          # Build parallel groups from scenario filenames.
+          # Each group runs as a separate CI job for faster feedback.
+          groups='[
+            {"name": "fabric-basic",       "filter": "0[1-7]_fabric"},
+            {"name": "fabric-rotation",    "filter": "08_fabric"},
+            {"name": "fabric-recovery",    "filter": "09_fabric|10_fabric|11_fabric"},
+            {"name": "fabric-perf",        "filter": "1[23]_fabric"},
+            {"name": "fabric-scale",       "filter": "1[4-9]_fabric|20_fabric"},
+            {"name": "fabric-reconcile",   "filter": "2[5-7]_fabric"},
+            {"name": "fabric-zones",       "filter": "2[89]_fabric|3[0-7]_fabric"},
+            {"name": "fabric-misc",        "filter": "3[89]_fabric|4[0-9]_fabric|59_fabric"},
+            {"name": "state",              "filter": "2[1-4]_state"},
+            {"name": "quickstart",         "filter": "90_quickstart"},
+            {"name": "ux-output",          "filter": "9[1-7]_ux"},
+            {"name": "ux-flows",           "filter": "9[89]_ux|10[0-4]_ux"},
+            {"name": "ux-errors",          "filter": "10[5-9]_ux|110_ux"},
+            {"name": "install",            "filter": "test_install"}
+          ]'
+          echo "groups=$(echo "$groups" | jq -c .)" >> "$GITHUB_OUTPUT"
+          echo "Found $(echo "$groups" | jq '. | length') groups"
 
-  # ── Run E2E tests per layer (parallel) ───────────────────
+  # ── Run E2E tests per group (parallel) ──────────────────
   test:
-    name: E2E / ${{ matrix.layer }}
+    name: E2E / ${{ matrix.group.name }}
     needs: [build, discover]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        layer: ${{ fromJson(needs.discover.outputs.layers) }}
+        group: ${{ fromJson(needs.discover.outputs.groups) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -80,7 +91,7 @@ jobs:
       - name: Load image
         run: docker load < /tmp/syfrah-e2e-test.tar.gz
 
-      - name: Run ${{ matrix.layer }} E2E tests
+      - name: Run ${{ matrix.group.name }} E2E tests
         env:
           SKIP_BUILD: "1"
-        run: ./tests/e2e/run.sh ${{ matrix.layer }}
+        run: ./tests/e2e/run.sh "${{ matrix.group.filter }}"
