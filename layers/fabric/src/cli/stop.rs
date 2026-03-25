@@ -23,10 +23,23 @@ pub async fn run() -> Result<()> {
                 // Send SIGTERM
                 unsafe { libc::kill(pid as i32, libc::SIGTERM) };
             }
-            // Wait a moment for the daemon to clean up
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            // Wait up to 10s for graceful shutdown, then escalate to SIGKILL
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
             if store::daemon_running().is_some() {
-                ui::step_fail(&sp, &format!("Daemon still running. Try 'kill {pid}'."));
+                #[cfg(unix)]
+                {
+                    unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                if store::daemon_running().is_some() {
+                    ui::step_fail(
+                        &sp,
+                        &format!("Daemon still running after SIGKILL. Try 'kill -9 {pid}'."),
+                    );
+                } else {
+                    store::remove_pid();
+                    ui::step_ok(&sp, "Daemon killed (SIGKILL after 10s timeout).");
+                }
             } else {
                 store::remove_pid();
                 ui::step_ok(&sp, "Daemon stopped.");
