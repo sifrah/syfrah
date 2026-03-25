@@ -10,14 +10,13 @@ use std::collections::HashSet;
 /// In default mode (`continuous=false`), exits after the first accept/reject.
 /// With `--watch` (`continuous=true`), loops indefinitely for batch use.
 pub async fn watch(pin: Option<String>, continuous: bool) -> Result<()> {
-    // Require an existing mesh — never auto-init.
-    if !store::exists() {
-        return Err(no_mesh_error());
-    }
+    // Load mesh state (fails fast with a friendly message if no mesh exists).
+    let state = store::load().map_err(|_| no_mesh_error())?;
+    let port = state.peering_port;
 
     // Start peering with optional PIN
     let resp = send_request(ControlRequest::PeeringStart {
-        port: 51821,
+        port,
         pin: pin.clone(),
     })
     .await?;
@@ -27,7 +26,7 @@ pub async fn watch(pin: Option<String>, continuous: bool) -> Result<()> {
         _ => {}
     }
 
-    ui::peering_banner(51821, pin.as_deref(), continuous);
+    ui::peering_banner(port, pin.as_deref(), continuous);
 
     // Poll for new requests; handle Ctrl+C gracefully
     let mut seen: HashSet<String> = HashSet::new();
