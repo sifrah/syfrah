@@ -23,19 +23,77 @@ pub async fn run() -> Result<()> {
                 // Send SIGTERM
                 unsafe { libc::kill(pid as i32, libc::SIGTERM) };
             }
-            // Wait up to 10s for graceful shutdown, then escalate to SIGKILL
-            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-            if store::daemon_running().is_some() {
-                #[cfg(unix)]
-                {
-                    unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+            // Wait up to 10s for graceful shutdown, polling every 100ms
+            for _ in 0..100 {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                if store::daemon_running().is_none() {
+                    break;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                if store::daemon_running().is_some() {
-                    ui::step_fail(
-                        &sp,
-                        &format!("Daemon still running after SIGKILL. Try 'kill -9 {pid}'."),
-                    );
+            }
+
+            // Escalate to SIGKILL if SIGTERM didn't work, with retries
+            if store::daemon_running().is_some() {
+                let mut killed = false;
+                for attempt in 0..3u8 {
+                    #[cfg(unix)]
+                    {
+                        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+                    }
+                    for _ in 0..10 {
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        if store::daemon_running().is_none() {
+                            killed = true;
+                            break;
+                        }
+                    }
+                    if killed {
+                        break;
+                    }
+
+                    match store::process_state(pid) {
+                        Some('Z') => {
+                            store::try_reap(pid);
+                            store::remove_pid();
+                            killed = true;
+                            break;
+                        }
+                        Some('D') => {
+                            ui::warn(&format!(
+                                "Daemon (pid {pid}) is in uninterruptible I/O (D state), \
+                                 retry {}/3...",
+                                attempt + 1
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+
+                if !killed && store::daemon_running().is_some() {
+                    match store::process_state(pid) {
+                        Some('Z') => {
+                            store::try_reap(pid);
+                            store::remove_pid();
+                            ui::step_ok(&sp, "Daemon reaped (was zombie).");
+                        }
+                        Some('D') => {
+                            ui::step_fail(
+                                &sp,
+                                &format!(
+                                    "Daemon (pid {pid}) stuck in uninterruptible I/O. \
+                                     A reboot may be required."
+                                ),
+                            );
+                        }
+                        _ => {
+                            ui::step_fail(
+                                &sp,
+                                &format!(
+                                    "Daemon (pid {pid}) did not stop after 3 SIGKILL attempts. \
+                                     Try 'kill -9 {pid}'."
+                                ),
+                            );
+                        }
+                    }
                 } else {
                     store::remove_pid();
                     ui::step_ok(&sp, "Daemon killed (SIGKILL after 10s timeout).");

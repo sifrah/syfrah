@@ -130,27 +130,68 @@ fn stop_daemon() -> Result<Option<usize>> {
         }
     }
 
-    // Escalate to SIGKILL if SIGTERM didn't work
+    // Escalate to SIGKILL if SIGTERM didn't work, with retries
     if syfrah_fabric::store::daemon_running().is_some() {
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(pid_i32, libc::SIGKILL);
-        }
-        // Brief wait for SIGKILL to take effect
-        for _ in 0..20 {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            if syfrah_fabric::store::daemon_running().is_none() {
+        let mut killed = false;
+        for attempt in 0..3 {
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(pid_i32, libc::SIGKILL);
+            }
+            // Wait up to 1s for SIGKILL to take effect
+            for _ in 0..10 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                if syfrah_fabric::store::daemon_running().is_none() {
+                    killed = true;
+                    break;
+                }
+            }
+            if killed {
                 break;
             }
-        }
-    }
 
-    if syfrah_fabric::store::daemon_running().is_some() {
-        ui::step_fail(&sp, &format!("Daemon (pid {pid}) did not stop in time"));
-        bail!(
-            "daemon did not stop within 12 seconds (SIGTERM + SIGKILL). \
-             Stop it manually with 'kill -9 {pid}' and re-run the update."
-        );
+            // Check process state to diagnose why SIGKILL didn't work
+            match syfrah_fabric::store::process_state(pid) {
+                Some('Z') => {
+                    // Zombie — reap it and we're done
+                    syfrah_fabric::store::try_reap(pid);
+                    syfrah_fabric::store::remove_pid();
+                    killed = true;
+                    break;
+                }
+                Some('D') => {
+                    ui::warn(&format!(
+                        "Daemon (pid {pid}) is in uninterruptible I/O (D state), \
+                         retry {}/3...",
+                        attempt + 1
+                    ));
+                }
+                _ => {}
+            }
+        }
+
+        if !killed && syfrah_fabric::store::daemon_running().is_some() {
+            // Check one last time for zombie or D state
+            match syfrah_fabric::store::process_state(pid) {
+                Some('Z') => {
+                    syfrah_fabric::store::try_reap(pid);
+                    syfrah_fabric::store::remove_pid();
+                }
+                Some('D') => {
+                    ui::warn(&format!(
+                        "Daemon (pid {pid}) stuck in uninterruptible I/O. \
+                         A reboot may be required to fully reclaim resources."
+                    ));
+                    ui::warn("Proceeding with update anyway — the old binary will be replaced.");
+                }
+                _ => {
+                    ui::warn(&format!(
+                        "Daemon (pid {pid}) did not stop after 3 SIGKILL attempts. \
+                         Proceeding with update anyway."
+                    ));
+                }
+            }
+        }
     }
 
     // Only remove PID if no new daemon has started in the meantime (TOCTOU guard).
