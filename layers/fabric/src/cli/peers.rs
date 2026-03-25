@@ -4,13 +4,41 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::sanitize::sanitize;
 use crate::{no_mesh_error, store, ui, wg};
 use anyhow::Result;
+use serde::Serialize;
 use syfrah_core::mesh::{PeerRecord, PeerStatus};
 
-pub async fn run() -> Result<()> {
+pub async fn run(json: bool) -> Result<()> {
     let state = store::load().map_err(|_| no_mesh_error())?;
 
     if state.peers.is_empty() {
+        if json {
+            println!("[]");
+            return Ok(());
+        }
         ui::info_line("Peers", "No peers discovered yet.");
+        return Ok(());
+    }
+
+    if json {
+        let peers = dedup_peers(&state.peers);
+        let output: Vec<PeerJson> = peers
+            .iter()
+            .map(|p| PeerJson {
+                name: &p.name,
+                wg_public_key: &p.wg_public_key,
+                endpoint: p.endpoint.to_string(),
+                mesh_ipv6: p.mesh_ipv6.to_string(),
+                last_seen: p.last_seen,
+                status: match p.status {
+                    PeerStatus::Active => "active",
+                    PeerStatus::Unreachable => "unreachable",
+                    PeerStatus::Removed => "removed",
+                },
+                region: p.region.as_deref(),
+                zone: p.zone.as_deref(),
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&output)?);
         return Ok(());
     }
 
@@ -193,6 +221,18 @@ fn format_short(bytes: u64) -> String {
     } else {
         format!("{}G", bytes / (1024 * 1024 * 1024))
     }
+}
+
+#[derive(Serialize)]
+struct PeerJson<'a> {
+    name: &'a str,
+    wg_public_key: &'a str,
+    endpoint: String,
+    mesh_ipv6: String,
+    last_seen: u64,
+    status: &'a str,
+    region: Option<&'a str>,
+    zone: Option<&'a str>,
 }
 
 use super::ui::truncate;
