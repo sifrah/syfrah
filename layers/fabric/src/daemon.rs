@@ -384,6 +384,22 @@ fn map_join_error(err: peering::PeeringError, target: SocketAddr) -> anyhow::Err
                  Ask the operator to run: syfrah fabric peering start"
             )
         }
+        peering::PeeringError::Io(io_err)
+            if io_err.kind() == std::io::ErrorKind::ConnectionRefused
+                || io_err.kind() == std::io::ErrorKind::ConnectionReset =>
+        {
+            anyhow::anyhow!(
+                "Could not connect to {target}. \
+                 Is the target node running with peering enabled?\n  \
+                 Ask the operator to run: syfrah fabric peering start"
+            )
+        }
+        peering::PeeringError::Io(_) => {
+            anyhow::anyhow!(
+                "Could not connect to {target}: {err}. \
+                 Is the target node running with peering enabled?"
+            )
+        }
         peering::PeeringError::Timeout => {
             anyhow::anyhow!(
                 "Connection to {target} timed out. The target node may not be reachable or peering may not be active.\n  \
@@ -1643,6 +1659,57 @@ mod tests {
         assert!(
             msg.contains("peering"),
             "should suggest peering, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn map_join_error_connection_refused_is_friendly() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused");
+        let peering_err = crate::peering::PeeringError::Io(io_err);
+        let target: SocketAddr = "203.0.113.1:51821".parse().unwrap();
+        let mapped = map_join_error(peering_err, target);
+        let msg = mapped.to_string();
+        assert!(
+            msg.contains("Could not connect to"),
+            "expected connection context, got: {msg}"
+        );
+        assert!(
+            msg.contains("peering enabled"),
+            "should suggest peering, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn map_join_error_connection_reset_is_friendly() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset");
+        let peering_err = crate::peering::PeeringError::Io(io_err);
+        let target: SocketAddr = "203.0.113.1:51821".parse().unwrap();
+        let mapped = map_join_error(peering_err, target);
+        let msg = mapped.to_string();
+        assert!(
+            msg.contains("Could not connect to"),
+            "expected connection context, got: {msg}"
+        );
+        assert!(
+            msg.contains("peering enabled"),
+            "should suggest peering, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn map_join_error_generic_io_includes_context() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "network down");
+        let peering_err = crate::peering::PeeringError::Io(io_err);
+        let target: SocketAddr = "203.0.113.1:51821".parse().unwrap();
+        let mapped = map_join_error(peering_err, target);
+        let msg = mapped.to_string();
+        assert!(
+            msg.contains("Could not connect to"),
+            "expected connection context, got: {msg}"
+        );
+        assert!(
+            msg.contains("network down"),
+            "should include original error, got: {msg}"
         );
     }
 
