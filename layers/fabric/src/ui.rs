@@ -158,7 +158,7 @@ pub fn box_top(title: &str) {
 /// Print a line inside a box section.
 pub fn box_row(text: &str) {
     if is_tty() {
-        let pad = BOX_WIDTH.saturating_sub(console::measure_text_width(text));
+        let pad = BOX_WIDTH.saturating_sub(console::measure_text_width(text) + 1);
         println!("\u{2502} {text}{}\u{2502}", " ".repeat(pad));
     } else {
         println!("  {text}");

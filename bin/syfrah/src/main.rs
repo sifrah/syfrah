@@ -107,7 +107,7 @@ enum FabricCommand {
     /// Show mesh and daemon status
     Status {
         /// Show config and metrics sections
-        #[arg(long, short)]
+        #[arg(long)]
         verbose: bool,
         /// Show the full mesh secret (masked by default)
         #[arg(long)]
