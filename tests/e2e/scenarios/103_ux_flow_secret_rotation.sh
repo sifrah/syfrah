@@ -36,7 +36,7 @@ stop_daemon "e2e-flow-rot-1"
 sleep 2
 
 info "Step 2: Rotate secret..."
-output_rotate=$(docker exec "e2e-flow-rot-1" syfrah fabric rotate 2>&1 || true)
+output_rotate=$(docker exec "e2e-flow-rot-1" syfrah fabric rotate --yes 2>&1 || true)
 if echo "$output_rotate" | grep -qi "rotat\|new.*secret\|updated"; then
     pass "rotate: shows confirmation"
 else

@@ -28,8 +28,8 @@ if ! wait_for_convergence "e2e-config-" 2 1 30; then
     cleanup; summary
 fi
 
-# Verify config is displayed in status
-config_output=$(docker exec "e2e-config-1" syfrah fabric status 2>&1)
+# Verify config is displayed in status (requires --verbose)
+config_output=$(docker exec "e2e-config-1" syfrah fabric status --verbose 2>&1)
 if echo "$config_output" | grep -q "health_check_interval.*10"; then
     pass "status shows custom health_check_interval"
 else

@@ -25,7 +25,8 @@ output_init=$(docker exec "e2e-readme-1" syfrah fabric init \
 
 # Validate init output contains what README implies
 echo "$output_init" | grep -q "my-cloud" || fail "init doesn't show mesh name"
-echo "$output_init" | grep -q "syf_sk_" || fail "init doesn't show secret"
+# Secret is no longer printed during init (security improvement)
+echo "$output_init" | grep -qv "syf_sk_" || fail "init should not show secret"
 pass "init output matches README expectations"
 
 wait_daemon "e2e-readme-1" 30

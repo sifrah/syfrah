@@ -4,6 +4,11 @@
 
 set -euo pipefail
 
+# Ensure cleanup runs even if the script exits early (e.g. set -e triggered).
+# Each scenario also calls cleanup() explicitly; the trap handles unexpected exits
+# so containers don't leak between scenarios.
+trap 'cleanup 2>/dev/null || true' EXIT
+
 # ── Config ────────────────────────────────────────────────────
 
 E2E_IMAGE="${E2E_IMAGE:-syfrah-e2e-test}"
@@ -145,7 +150,7 @@ join_mesh() {
 # Leave the mesh. Args: <container>
 leave_mesh() {
     local container="$1"
-    docker exec "$container" syfrah fabric leave 2>&1 || true
+    docker exec "$container" syfrah fabric leave --yes 2>&1 || true
 }
 
 # Stop the daemon. Args: <container>
@@ -497,7 +502,7 @@ assert_command_suggests() {
 assert_consistent_region() {
     local container="$1"
     local status_region peers_region
-    status_region=$(docker exec "$container" syfrah fabric status 2>&1 | grep -i region | awk '{print $NF}')
+    status_region=$(docker exec "$container" syfrah fabric status 2>&1 | grep -i region | awk '{print $2}')
     peers_region=$(docker exec "$container" syfrah fabric peers 2>&1 | tail -n +3 | head -1 | awk '{print $2}')
     if [ "$status_region" = "$peers_region" ]; then
         pass "$container: region consistent (status=peers=$status_region)"

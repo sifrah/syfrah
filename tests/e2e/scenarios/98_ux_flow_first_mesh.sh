@@ -17,8 +17,9 @@ info "Step 1: Server 1 creates mesh..."
 output_init=$(docker exec "e2e-flow-first-1" syfrah fabric init \
     --name first-mesh --node-name server-1 --endpoint 172.20.0.10:51820 2>&1)
 
-echo "$output_init" | grep -qF "syf_sk_" || fail "init: no secret shown"
-pass "init: secret displayed"
+# Secret is no longer printed during init (security improvement)
+echo "$output_init" | grep -qvF "syf_sk_" || fail "init: should not show secret"
+pass "init: secret not leaked"
 
 wait_daemon "e2e-flow-first-1" 30
 

@@ -19,8 +19,8 @@ use syfrah_core::mesh::{
 use crate::events::{self, EventType};
 use crate::sanitize::sanitize;
 
-const JOIN_TIMEOUT: Duration = Duration::from_secs(300);
-const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
+const JOIN_TIMEOUT: Duration = Duration::from_secs(10);
+const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_MSG_SIZE: u32 = 65536;
 
 /// Maximum failed PIN attempts per IP before lockout.

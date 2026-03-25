@@ -53,7 +53,7 @@ SCENARIOS=()
 for f in "$SCRIPT_DIR/scenarios/"*.sh; do
     [ -f "$f" ] || continue
     if [ -n "$FILTER" ]; then
-        if ! basename "$f" | grep -q "$FILTER"; then
+        if ! basename "$f" | grep -Eq "$FILTER"; then
             continue
         fi
     fi

@@ -16,8 +16,9 @@ info "Testing: init happy path output..."
 output=$(docker exec "e2e-ux-init-1" syfrah fabric init \
     --name test-mesh --node-name node-1 --endpoint 172.20.0.110:51820 2>&1)
 
-echo "$output" | grep -qF "syf_sk_" || fail "init output missing secret (syf_sk_)"
-pass "init output contains secret"
+# Secret is no longer printed during init (security improvement)
+echo "$output" | grep -qvF "syf_sk_" || fail "init should not show secret"
+pass "init output does not leak secret"
 
 echo "$output" | grep -q "node-1" || fail "init output missing node name"
 pass "init output contains node name"

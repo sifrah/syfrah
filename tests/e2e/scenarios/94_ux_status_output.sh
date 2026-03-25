@@ -55,7 +55,8 @@ if echo "$output" | grep -q "show-secret"; then
 else
     fail "status does not mask secret"
 fi
-if echo "$output" | grep -q "syf_sk_.\{20,\}"; then
+# Check that the full secret (without masking asterisks) is not shown
+if echo "$output" | grep -q "syf_sk_[A-Za-z0-9]\{20,\}"; then
     fail "status leaks full secret in default mode"
 else
     pass "status does not leak full secret"

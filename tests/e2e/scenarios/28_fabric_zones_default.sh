@@ -29,7 +29,7 @@ else
     echo "$status1"
 fi
 
-if echo "$status1" | grep -q "Zone:.*zone-1"; then
+if echo "$status1" | grep -q "zone:.*zone-1"; then
     pass "node-1 has default zone: zone-1"
 else
     fail "node-1 missing default zone"

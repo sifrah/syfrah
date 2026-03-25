@@ -37,9 +37,9 @@ join_mesh "e2e-zinc-3" "172.20.0.10" "172.20.0.12" "node-3"
 sleep 3
 
 # Each node should have a unique zone
-z1=$(docker exec "e2e-zinc-1" syfrah fabric status 2>&1 | grep "Zone:" | awk '{print $2}')
-z2=$(docker exec "e2e-zinc-2" syfrah fabric status 2>&1 | grep "Zone:" | awk '{print $2}')
-z3=$(docker exec "e2e-zinc-3" syfrah fabric status 2>&1 | grep "Zone:" | awk '{print $2}')
+z1=$(docker exec "e2e-zinc-1" syfrah fabric status 2>&1 | grep -o "zone: [^ ]*" | awk '{print $2}')
+z2=$(docker exec "e2e-zinc-2" syfrah fabric status 2>&1 | grep -o "zone: [^ ]*" | awk '{print $2}')
+z3=$(docker exec "e2e-zinc-3" syfrah fabric status 2>&1 | grep -o "zone: [^ ]*" | awk '{print $2}')
 
 info "Zones: $z1, $z2, $z3"
 

@@ -31,7 +31,7 @@ else
     echo "$status1"
 fi
 
-if echo "$status1" | grep -q "Zone:.*eu-west-paris-1"; then
+if echo "$status1" | grep -q "zone:.*eu-west-paris-1"; then
     pass "node-1 has manual zone: eu-west-paris-1"
 else
     fail "node-1 zone override failed"
@@ -59,7 +59,7 @@ else
     echo "$status2"
 fi
 
-if echo "$status2" | grep -q "Zone:.*eu-central-frankfurt-1"; then
+if echo "$status2" | grep -q "zone:.*eu-central-frankfurt-1"; then
     pass "node-2 has manual zone: eu-central-frankfurt-1"
 else
     fail "node-2 zone override failed"

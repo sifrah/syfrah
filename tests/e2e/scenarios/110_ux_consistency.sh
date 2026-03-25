@@ -23,7 +23,7 @@ join_mesh "e2e-consist-2" "172.20.0.10" "172.20.0.11" "consist-srv-2"
 sleep 3
 join_mesh "e2e-consist-3" "172.20.0.10" "172.20.0.12" "consist-srv-3"
 
-sleep 10
+wait_for_convergence "e2e-consist-" 3 2 30 || true
 
 # === Version consistency ===
 info "Testing: version consistency..."
@@ -35,13 +35,13 @@ else
 fi
 
 # === Secret consistency ===
+# Secret is no longer shown during init, so verify via token command
 info "Testing: secret consistency..."
-init_secret=$(echo "$output_init" | grep -oE "syf_sk_[a-zA-Z0-9]+" | head -1)
 token_secret=$(docker exec "e2e-consist-1" syfrah fabric token 2>&1 | grep -oE "syf_sk_[a-zA-Z0-9]+" | head -1)
-if [ -n "$init_secret" ] && [ "$init_secret" = "$token_secret" ]; then
-    pass "secret: init matches token"
+if [ -n "$token_secret" ]; then
+    pass "secret: token returns valid secret"
 else
-    fail "secret: mismatch (init=${init_secret:-empty}, token=${token_secret:-empty})"
+    fail "secret: token returned empty"
 fi
 
 # === Region/zone consistency ===
@@ -79,11 +79,11 @@ done
 
 # === Post leave+rejoin: no stale data ===
 info "Testing: no stale data after leave+rejoin..."
-docker exec "e2e-consist-3" syfrah fabric leave 2>&1 || true
+docker exec "e2e-consist-3" syfrah fabric leave --yes 2>&1 || true
 sleep 3
 start_peering "e2e-consist-1"
 join_mesh "e2e-consist-3" "172.20.0.10" "172.20.0.12" "consist-srv-3"
-sleep 10
+wait_for_convergence "e2e-consist-" 3 2 30 || true
 
 # Verify node 3 is visible after rejoin
 if docker exec "e2e-consist-1" syfrah fabric peers 2>&1 | grep -q "consist-srv-3"; then

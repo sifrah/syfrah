@@ -30,7 +30,7 @@ wait_daemon "e2e-zmix-2"
 # Node-3: default (auto-increment)
 join_mesh "e2e-zmix-3" "172.20.0.10" "172.20.0.12" "node-3"
 
-sleep 3
+wait_for_convergence "e2e-zmix-" 3 2 30 || true
 
 # Verify all 3 nodes connected
 assert_peer_count "e2e-zmix-1" 2

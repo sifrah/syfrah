@@ -35,7 +35,7 @@ assert_command_fails "e2e-corrupt-1" syfrah fabric start
 
 # Recovery: leave cleans up, then re-init works
 info "Recovery: leave + re-init..."
-docker exec "e2e-corrupt-1" syfrah fabric leave 2>/dev/null || true
+docker exec "e2e-corrupt-1" syfrah fabric leave --yes 2>/dev/null || true
 docker exec "e2e-corrupt-1" rm -rf /root/.syfrah 2>/dev/null || true
 init_mesh "e2e-corrupt-1" "172.20.0.10" "node-1"
 assert_daemon_running "e2e-corrupt-1"

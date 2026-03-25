@@ -44,9 +44,9 @@ for cycle in $(seq 1 $CYCLES); do
     info "Cycle $cycle/$CYCLES: leaving..."
 
     # Leave
-    docker exec "e2e-churn-2" syfrah fabric leave 2>/dev/null || true
+    docker exec "e2e-churn-2" syfrah fabric leave --yes 2>/dev/null || true
     docker exec "e2e-churn-2" pkill -f syfrah 2>/dev/null || true
-    docker exec "e2e-churn-3" syfrah fabric leave 2>/dev/null || true
+    docker exec "e2e-churn-3" syfrah fabric leave --yes 2>/dev/null || true
     docker exec "e2e-churn-3" pkill -f syfrah 2>/dev/null || true
 
     sleep 2

@@ -33,7 +33,7 @@ fi
 # Repeat leave/rejoin 3 times
 for round in 1 2 3; do
     info "Churn round $round: server-3 leaves..."
-    docker exec "e2e-flow-churn-3" syfrah fabric leave 2>&1 || true
+    docker exec "e2e-flow-churn-3" syfrah fabric leave --yes 2>&1 || true
     sleep 3
 
     info "Churn round $round: server-3 rejoins..."

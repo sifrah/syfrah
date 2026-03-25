@@ -227,16 +227,23 @@ async fn join_with_wrong_pin_falls_to_pending() {
     let target: SocketAddr = format!("127.0.0.1:{peering_port}").parse().unwrap();
 
     // The request should be pending (not auto-accepted), which means
-    // it will timeout since nobody approves it manually. The 2s PIN
-    // fail delay means we need a longer outer timeout.
+    // the internal JOIN_TIMEOUT (5s) will expire and return an error.
+    // The 2s PIN fail delay fires first, then the server leaves the
+    // request pending without replying. We use a longer outer timeout
+    // to let the internal timeout fire and produce an Err.
     let result = tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(10),
         send_join_request(target, join_request),
     )
     .await;
 
-    // Should timeout (request is pending after delay, not auto-accepted)
-    assert!(result.is_err(), "wrong PIN should not be auto-accepted");
+    // The inner JOIN_TIMEOUT should fire, returning Ok(Err(Timeout)).
+    // Either way (outer timeout or inner error), the join was not accepted.
+    match result {
+        Err(_) => {}     // outer timeout — fine, request was not accepted
+        Ok(Err(_)) => {} // inner timeout/error — fine, request was not accepted
+        Ok(Ok(_)) => panic!("wrong PIN should not be auto-accepted"),
+    }
 
     // The request should be in the pending list
     let pending = peering_state.list_pending().await;
