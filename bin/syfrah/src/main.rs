@@ -119,6 +119,9 @@ enum FabricCommand {
         /// Show the full mesh secret (masked by default)
         #[arg(long)]
         show_secret: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Show the event log
     Events {
@@ -133,7 +136,11 @@ enum FabricCommand {
         since: Option<u64>,
     },
     /// List all peers
-    Peers,
+    Peers {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Show the mesh secret
     Token,
     /// Rotate the mesh secret
@@ -141,7 +148,11 @@ enum FabricCommand {
     /// Leave the mesh, tear down interface, clear state
     Leave,
     /// Run diagnostic checks on the fabric
-    Diagnose,
+    Diagnose {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Manage the systemd service
     Service {
         #[command(subcommand)]
@@ -492,11 +503,13 @@ async fn run() -> Result<()> {
             FabricCommand::Status {
                 verbose,
                 show_secret,
+                json,
             } => {
                 setup_logging(false);
                 cli::status::run(cli::status::StatusOpts {
                     verbose,
                     show_secret,
+                    json,
                 })
                 .await
             }
@@ -504,9 +517,9 @@ async fn run() -> Result<()> {
                 setup_logging(false);
                 cli::events::run(json, limit, since).await
             }
-            FabricCommand::Peers => {
+            FabricCommand::Peers { json } => {
                 setup_logging(false);
-                cli::peers::run().await
+                cli::peers::run(json).await
             }
             FabricCommand::Token => {
                 setup_logging(false);
@@ -520,9 +533,9 @@ async fn run() -> Result<()> {
                 setup_logging(false);
                 cli::leave::run().await
             }
-            FabricCommand::Diagnose => {
+            FabricCommand::Diagnose { json } => {
                 setup_logging(false);
-                cli::diagnose::run().await
+                cli::diagnose::run(json).await
             }
             FabricCommand::Service { action } => {
                 setup_logging(false);

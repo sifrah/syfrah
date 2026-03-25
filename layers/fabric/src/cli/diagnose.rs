@@ -1,34 +1,75 @@
 use crate::{config, store, ui, wg};
 use anyhow::Result;
+use serde::Serialize;
 use syfrah_state::LayerDb;
 
-pub async fn run() -> Result<()> {
+#[derive(Serialize)]
+struct DiagnoseCheck {
+    name: String,
+    passed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+#[derive(Serialize)]
+struct DiagnoseOutput {
+    checks: Vec<DiagnoseCheck>,
+    passed: u32,
+    failed: u32,
+    total: u32,
+}
+
+pub async fn run(json: bool) -> Result<()> {
     let tuning = config::load_tuning().unwrap_or_default();
     wg::set_interface_name(&tuning.interface_name);
 
-    ui::heading("Syfrah Fabric Diagnostics");
-    println!();
-
+    let mut checks: Vec<DiagnoseCheck> = Vec::new();
     let mut pass_count = 0u32;
     let mut fail_count = 0u32;
 
-    let mut check = |name: &str, result: bool, detail: &str| {
-        if result {
-            ui::check_pass(name);
-            pass_count += 1;
-        } else {
-            ui::check_fail(name, detail);
-            fail_count += 1;
-        }
-    };
+    macro_rules! check {
+        ($name:expr, $result:expr, $detail:expr) => {{
+            let name: String = $name.into();
+            let result: bool = $result;
+            let detail: &str = $detail;
+            if result {
+                pass_count += 1;
+            } else {
+                fail_count += 1;
+            }
+            if !json {
+                if result {
+                    ui::check_pass(&name);
+                } else {
+                    ui::check_fail(&name, detail);
+                }
+            }
+            checks.push(DiagnoseCheck {
+                name,
+                passed: result,
+                detail: if detail.is_empty() {
+                    None
+                } else {
+                    Some(detail.to_string())
+                },
+            });
+        }};
+    }
+
+    if !json {
+        ui::heading("Syfrah Fabric Diagnostics");
+        println!();
+    }
 
     // -- State store --
-    ui::heading("State store");
+    if !json {
+        ui::heading("State store");
+    }
     let state_exists = store::exists();
-    check(
+    check!(
         "Mesh state exists",
         state_exists,
-        "run 'syfrah fabric init' or 'syfrah fabric join'",
+        "run 'syfrah fabric init' or 'syfrah fabric join'"
     );
 
     let state_file = dirs::home_dir()
@@ -44,41 +85,45 @@ pub async fn run() -> Result<()> {
         false
     };
     if state_file.exists() {
-        check("state.json is valid JSON", json_ok, "file may be corrupted");
+        check!("state.json is valid JSON", json_ok, "file may be corrupted");
     }
 
     let redb_ok = LayerDb::layer_exists("fabric") && LayerDb::open("fabric").is_ok();
-    check(
+    check!(
         "redb database is readable",
         redb_ok || !LayerDb::layer_exists("fabric"),
-        "fabric.redb may be corrupted",
+        "fabric.redb may be corrupted"
     );
 
     let state = store::load();
     if let Ok(ref s) = state {
-        check(
-            &format!("Loaded {} peers from state", s.peers.len()),
+        check!(
+            format!("Loaded {} peers from state", s.peers.len()),
             true,
-            "",
+            ""
         );
     }
-    println!();
+    if !json {
+        println!();
+    }
 
     // -- Daemon --
-    ui::heading("Daemon");
+    if !json {
+        ui::heading("Daemon");
+    }
     let pid = store::daemon_running();
-    check(
+    check!(
         "Daemon process",
         pid.is_some(),
-        "daemon is not running — start with 'syfrah fabric start'",
+        "daemon is not running — start with 'syfrah fabric start'"
     );
 
     let socket_path = store::control_socket_path();
     let socket_exists = socket_path.exists();
-    check(
+    check!(
         "Control socket exists",
         socket_exists,
-        &format!("missing: {}", socket_path.display()),
+        &format!("missing: {}", socket_path.display())
     );
 
     let log_path = dirs::home_dir()
@@ -87,23 +132,27 @@ pub async fn run() -> Result<()> {
         .join("syfrah.log");
     if log_path.exists() {
         let log_size = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
-        check(&format!("Log file ({} bytes)", log_size), true, "");
+        check!(format!("Log file ({} bytes)", log_size), true, "");
     } else {
-        check("Log file", false, "~/.syfrah/syfrah.log not found");
+        check!("Log file", false, "~/.syfrah/syfrah.log not found");
     }
-    println!();
+    if !json {
+        println!();
+    }
 
     // -- WireGuard --
-    ui::heading("WireGuard");
+    if !json {
+        ui::heading("WireGuard");
+    }
     match wg::interface_summary() {
         Ok(summary) => {
-            check(
-                &format!("Interface {} is up", wg::interface_name()),
+            check!(
+                format!("Interface {} is up", wg::interface_name()),
                 true,
-                "",
+                ""
             );
-            check(
-                &format!(
+            check!(
+                format!(
                     "{} WG peers configured, {} with handshake",
                     summary.peer_count,
                     summary
@@ -113,7 +162,7 @@ pub async fn run() -> Result<()> {
                         .count()
                 ),
                 true,
-                "",
+                ""
             );
 
             // Check consistency: stored peers vs WG peers
@@ -121,31 +170,43 @@ pub async fn run() -> Result<()> {
                 let stored_count = s.peers.len();
                 let wg_count = summary.peer_count;
                 let consistent = stored_count == wg_count;
-                check(
-                    &format!("Store/WG consistency ({stored_count} stored, {wg_count} in WG)"),
+                check!(
+                    format!("Store/WG consistency ({stored_count} stored, {wg_count} in WG)"),
                     consistent,
-                    "mismatch — reconciliation may fix this",
+                    "mismatch — reconciliation may fix this"
                 );
             }
         }
         Err(e) => {
-            check(
-                &format!("Interface {}", wg::interface_name()),
+            check!(
+                format!("Interface {}", wg::interface_name()),
                 false,
-                &format!("not found: {e}"),
+                &format!("not found: {e}")
             );
         }
     }
-    println!();
 
-    // -- Summary --
-    let total = pass_count + fail_count;
-    if fail_count == 0 {
-        ui::success(&format!(
-            "{pass_count}/{total} checks passed. Fabric is healthy."
-        ));
+    if json {
+        let total = pass_count + fail_count;
+        let output = DiagnoseOutput {
+            checks,
+            passed: pass_count,
+            failed: fail_count,
+            total,
+        };
+        println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        ui::warn(&format!("{fail_count}/{total} checks failed."));
+        println!();
+
+        // -- Summary --
+        let total = pass_count + fail_count;
+        if fail_count == 0 {
+            ui::success(&format!(
+                "{pass_count}/{total} checks passed. Fabric is healthy."
+            ));
+        } else {
+            ui::warn(&format!("{fail_count}/{total} checks failed."));
+        }
     }
 
     Ok(())

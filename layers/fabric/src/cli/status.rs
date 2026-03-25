@@ -1,6 +1,7 @@
 use crate::sanitize::sanitize;
 use crate::{config, no_mesh_error, store, ui, wg};
 use anyhow::Result;
+use serde::Serialize;
 
 /// Options for the status command.
 pub struct StatusOpts {
@@ -8,6 +9,8 @@ pub struct StatusOpts {
     pub verbose: bool,
     /// Show the full mesh secret instead of masking it.
     pub show_secret: bool,
+    /// Output as JSON.
+    pub json: bool,
 }
 
 pub async fn run(opts: StatusOpts) -> Result<()> {
@@ -15,6 +18,10 @@ pub async fn run(opts: StatusOpts) -> Result<()> {
     wg::set_interface_name(&tuning.interface_name);
 
     let state = store::load().map_err(|_| no_mesh_error())?;
+
+    if opts.json {
+        return run_json(&state, &opts);
+    }
 
     // ── Uptime (computed early for the Mesh box) ────────────────────
     let m = &state.metrics;
@@ -195,6 +202,115 @@ fn fmt_duration(secs: u64) -> String {
     } else {
         format!("{}d {}h", secs / 86400, (secs % 86400) / 3600)
     }
+}
+
+fn run_json(state: &store::NodeState, opts: &StatusOpts) -> Result<()> {
+    let daemon_pid = store::daemon_running();
+    let iface_up = wg::interface_summary()
+        .map(|s| s.public_key.is_some())
+        .unwrap_or(false);
+
+    let total_peers = state.peers.len();
+    let active = state
+        .peers
+        .iter()
+        .filter(|p| p.status == syfrah_core::mesh::PeerStatus::Active)
+        .count();
+    let unreachable = state
+        .peers
+        .iter()
+        .filter(|p| p.status == syfrah_core::mesh::PeerStatus::Unreachable)
+        .count();
+
+    let (rx, tx) = wg::interface_summary()
+        .map(|s| {
+            s.peers.iter().fold((0u64, 0u64), |(rx, tx), p| {
+                (rx + p.rx_bytes, tx + p.tx_bytes)
+            })
+        })
+        .unwrap_or((0, 0));
+
+    let secret_display = if opts.show_secret {
+        state.mesh_secret.clone()
+    } else {
+        ui::mask_secret(&state.mesh_secret)
+    };
+
+    let tuning = config::load_tuning().unwrap_or_default();
+
+    let output = StatusJson {
+        mesh_name: &state.mesh_name,
+        node_name: &state.node_name,
+        region: state.region.as_deref(),
+        zone: state.zone.as_deref(),
+        mesh_prefix: state.mesh_prefix.to_string(),
+        mesh_ipv6: state.mesh_ipv6.to_string(),
+        wg_listen_port: state.wg_listen_port,
+        peering_port: state.peering_port,
+        daemon_pid,
+        interface_up: iface_up,
+        peers_total: total_peers,
+        peers_active: active,
+        peers_unreachable: unreachable,
+        secret: secret_display,
+        traffic_rx: rx,
+        traffic_tx: tx,
+        metrics: JsonMetrics {
+            daemon_started_at: state.metrics.daemon_started_at,
+            peers_discovered: state.metrics.peers_discovered,
+            wg_reconciliations: state.metrics.wg_reconciliations,
+            peers_marked_unreachable: state.metrics.peers_marked_unreachable,
+            announcements_failed: state.metrics.announcements_failed,
+        },
+        config: JsonConfig {
+            health_check_interval_secs: tuning.health_check_interval.as_secs(),
+            reconcile_interval_secs: tuning.reconcile_interval.as_secs(),
+            persist_interval_secs: tuning.persist_interval.as_secs(),
+            unreachable_timeout_secs: tuning.unreachable_timeout.as_secs(),
+        },
+    };
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct StatusJson<'a> {
+    mesh_name: &'a str,
+    node_name: &'a str,
+    region: Option<&'a str>,
+    zone: Option<&'a str>,
+    mesh_prefix: String,
+    mesh_ipv6: String,
+    wg_listen_port: u16,
+    peering_port: u16,
+    daemon_pid: Option<u32>,
+    interface_up: bool,
+    peers_total: usize,
+    peers_active: usize,
+    peers_unreachable: usize,
+    secret: String,
+    traffic_rx: u64,
+    traffic_tx: u64,
+    metrics: JsonMetrics,
+    config: JsonConfig,
+}
+
+#[derive(Serialize)]
+struct JsonMetrics {
+    daemon_started_at: u64,
+    peers_discovered: u64,
+    wg_reconciliations: u64,
+    peers_marked_unreachable: u64,
+    announcements_failed: u64,
+}
+
+#[derive(Serialize)]
+struct JsonConfig {
+    health_check_interval_secs: u64,
+    reconcile_interval_secs: u64,
+    persist_interval_secs: u64,
+    unreachable_timeout_secs: u64,
 }
 
 fn fmt_bytes(b: u64) -> String {
