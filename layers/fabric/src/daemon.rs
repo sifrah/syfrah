@@ -75,7 +75,7 @@ pub fn setup_init(config: &DaemonConfig) -> anyhow::Result<DaemonReady> {
     let mesh_prefix = derive_prefix_from_secret(&mesh_secret);
     let mesh_ipv6 = addressing::derive_node_address(&mesh_prefix, wg_keypair.public.as_bytes());
     let endpoint = resolve_endpoint(config);
-    ui::step_ok(&sp, &format!("Secret: {mesh_secret}"));
+    ui::step_ok(&sp, "Mesh secret generated (stored in state file)");
 
     let sp = ui::spinner("Setting up WireGuard interface...");
     wg::setup_interface(&wg_keypair, config.wg_listen_port, mesh_ipv6)?;
