@@ -151,8 +151,12 @@ pub fn apply_peers(
 /// Compute the diff between desired peer state and current WireGuard device peers.
 ///
 /// Returns `(to_add_or_update, to_remove)`:
-/// - `to_add_or_update`: peers in `desired` that are missing from WG or have a changed endpoint.
+/// - `to_add_or_update`: peers in `desired` that are missing from WG or have changed allowed IPs.
 /// - `to_remove`: public keys present in WG but not in the desired set.
+///
+/// Endpoint differences are intentionally ignored: WireGuard handles endpoint
+/// roaming natively. Re-applying a peer just because the observed endpoint
+/// differs from the stored one resets the session and causes packet loss.
 ///
 /// This is a pure function suitable for unit testing.
 pub fn diff_peers(
@@ -160,18 +164,21 @@ pub fn diff_peers(
     desired: &[PeerRecord],
     wg_peers: &[PeerSummary],
 ) -> Result<(Vec<PeerRecord>, Vec<String>), WgError> {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
-    // Build a map of current WG peers: pubkey -> endpoint
-    let wg_map: HashMap<&str, Option<SocketAddr>> = wg_peers
+    // Build a map of current WG peers: pubkey -> allowed_ips set
+    let wg_map: HashMap<&str, HashSet<&str>> = wg_peers
         .iter()
-        .map(|p| (p.public_key.as_str(), p.endpoint))
+        .map(|p| {
+            let ips: HashSet<&str> = p.allowed_ips.iter().map(|s| s.as_str()).collect();
+            (p.public_key.as_str(), ips)
+        })
         .collect();
 
     let self_b64 = self_pubkey.to_base64();
 
     // Determine desired set (non-removed, non-self)
-    let mut desired_keys = std::collections::HashSet::new();
+    let mut desired_keys = HashSet::new();
     let mut to_add_or_update = Vec::new();
 
     for peer in desired {
@@ -183,12 +190,15 @@ pub fn diff_peers(
         }
         desired_keys.insert(peer.wg_public_key.as_str());
 
+        let desired_aip = format!("{}/128", peer.mesh_ipv6);
+
         match wg_map.get(peer.wg_public_key.as_str()) {
-            Some(Some(existing_endpoint)) if *existing_endpoint == peer.endpoint => {
-                // Peer exists with same endpoint — no change needed
+            Some(existing_ips) if existing_ips.contains(desired_aip.as_str()) => {
+                // Peer exists with correct allowed IPs — no change needed.
+                // Endpoint may differ due to WG roaming; that's fine.
             }
             Some(_) => {
-                // Peer exists but endpoint changed (or endpoint unknown) — update
+                // Peer exists but allowed IPs changed — update
                 to_add_or_update.push(peer.clone());
             }
             None => {
@@ -686,7 +696,8 @@ mod tests {
         PeerSummary {
             public_key: pubkey.to_string(),
             endpoint: Some(endpoint.parse().unwrap()),
-            allowed_ips: vec![],
+            // Default allowed IP matches make_peer's mesh_ipv6
+            allowed_ips: vec!["fd12:3456:7800::1/128".to_string()],
             last_handshake: None,
             rx_bytes: 0,
             tx_bytes: 0,
@@ -738,19 +749,37 @@ mod tests {
     }
 
     #[test]
-    fn diff_peers_endpoint_changed() {
+    fn diff_peers_endpoint_changed_no_update() {
         let self_kp = generate_keypair();
         let peer_kp = generate_keypair();
         let peer_b64 = peer_kp.public.to_base64();
 
-        // Desired endpoint differs from WG endpoint
+        // Desired endpoint differs from WG endpoint — should NOT trigger update
+        // because WireGuard handles endpoint roaming natively.
         let mut desired_peer = make_peer(&peer_b64, syfrah_core::mesh::PeerStatus::Active);
         desired_peer.endpoint = "198.51.100.5:51820".parse().unwrap();
         let desired = vec![desired_peer];
         let wg_peers = vec![make_wg_summary(&peer_b64, "203.0.113.1:51820")];
 
         let (add, remove) = diff_peers(&self_kp.public, &desired, &wg_peers).unwrap();
-        assert_eq!(add.len(), 1, "endpoint change should trigger update");
+        assert!(add.is_empty(), "endpoint-only change must not trigger update (WG handles roaming)");
+        assert!(remove.is_empty());
+    }
+
+    #[test]
+    fn diff_peers_allowed_ip_changed() {
+        let self_kp = generate_keypair();
+        let peer_kp = generate_keypair();
+        let peer_b64 = peer_kp.public.to_base64();
+
+        // Desired mesh_ipv6 differs from WG allowed IPs — should trigger update
+        let mut desired_peer = make_peer(&peer_b64, syfrah_core::mesh::PeerStatus::Active);
+        desired_peer.mesh_ipv6 = "fd12:3456:7800::99".parse().unwrap();
+        let desired = vec![desired_peer];
+        let wg_peers = vec![make_wg_summary(&peer_b64, "203.0.113.1:51820")];
+
+        let (add, remove) = diff_peers(&self_kp.public, &desired, &wg_peers).unwrap();
+        assert_eq!(add.len(), 1, "allowed IP change should trigger update");
         assert!(remove.is_empty());
     }
 
