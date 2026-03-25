@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
-use sha2::{Digest, Sha256};
+use hkdf::Hkdf;
+use sha2::Sha256;
 use thiserror::Error;
 
 const SECRET_PREFIX: &str = "syf_sk_";
@@ -38,11 +39,11 @@ impl MeshSecret {
         Self { bytes }
     }
 
-    /// Deterministic mesh identifier (first 16 bytes of SHA256(secret)).
+    /// Deterministic mesh identifier (first 16 bytes of HKDF-derived key).
     pub fn mesh_id(&self) -> [u8; 16] {
-        let hash = Sha256::digest(self.bytes);
+        let derived = Self::derive("mesh-id", &self.bytes);
         let mut id = [0u8; 16];
-        id.copy_from_slice(&hash[..16]);
+        id.copy_from_slice(&derived[..16]);
         id
     }
 
@@ -54,12 +55,12 @@ impl MeshSecret {
 
     /// AES-256-GCM encryption key for IPFS records.
     pub fn encryption_key(&self) -> [u8; 32] {
-        Self::derive("encrypt:", &self.bytes)
+        Self::derive("encryption-key", &self.bytes)
     }
 
     /// IPFS discovery key — used to derive the CID/path where peer records are published.
     pub fn ipfs_key(&self) -> [u8; 32] {
-        Self::derive("ipfs:", &self.bytes)
+        Self::derive("ipfs-key", &self.bytes)
     }
 
     /// IPFS key as hex string (used as filename/path on IPFS).
@@ -72,11 +73,14 @@ impl MeshSecret {
         &self.bytes
     }
 
-    fn derive(domain: &str, secret: &[u8]) -> [u8; 32] {
-        let mut hasher = Sha256::new();
-        hasher.update(domain.as_bytes());
-        hasher.update(secret);
-        hasher.finalize().into()
+    /// Derive a sub-key using HKDF-SHA256 (RFC 5869).
+    /// Salt is versioned to allow future rotation.
+    fn derive(info: &str, secret: &[u8]) -> [u8; 32] {
+        let hkdf = Hkdf::<Sha256>::new(Some(b"syfrah-fabric-v1"), secret);
+        let mut output = [0u8; 32];
+        hkdf.expand(info.as_bytes(), &mut output)
+            .expect("32 bytes is valid for HKDF-SHA256");
+        output
     }
 }
 
@@ -165,5 +169,25 @@ mod tests {
         let long = format!("syf_sk_{}", bs58::encode(&[0u8; 64]).into_string());
         let err = long.parse::<MeshSecret>().unwrap_err();
         assert!(matches!(err, SecretError::InvalidLength(64)));
+    }
+
+    #[test]
+    fn hkdf_domain_separation() {
+        let secret = MeshSecret::from_bytes([0xAB; 32]);
+        let enc = secret.encryption_key();
+        let ipfs = secret.ipfs_key();
+        let mid = secret.mesh_id();
+        // All derived values must be distinct
+        assert_ne!(enc, ipfs);
+        assert_ne!(&enc[..16], &mid[..]);
+        assert_ne!(&ipfs[..16], &mid[..]);
+    }
+
+    #[test]
+    fn hkdf_deterministic_output() {
+        let secret = MeshSecret::from_bytes([0x42; 32]);
+        let key1 = secret.encryption_key();
+        let key2 = secret.encryption_key();
+        assert_eq!(key1, key2);
     }
 }
