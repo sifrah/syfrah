@@ -15,9 +15,12 @@ pub async fn watch(pin: Option<String>, continuous: bool) -> Result<()> {
         anyhow::bail!("No mesh configured. Run 'syfrah fabric init' first.");
     }
 
+    let state = store::load()?;
+    let port = state.peering_port;
+
     // Start peering with optional PIN
     let resp = send_request(ControlRequest::PeeringStart {
-        port: 51821,
+        port,
         pin: pin.clone(),
     })
     .await?;
@@ -27,7 +30,7 @@ pub async fn watch(pin: Option<String>, continuous: bool) -> Result<()> {
         _ => {}
     }
 
-    ui::peering_banner(51821, pin.as_deref(), continuous);
+    ui::peering_banner(port, pin.as_deref(), continuous);
 
     // Poll for new requests; handle Ctrl+C gracefully
     let mut seen: HashSet<String> = HashSet::new();
