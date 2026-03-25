@@ -21,8 +21,16 @@ pub async fn run() -> Result<()> {
     let wg_summary = wg::interface_summary().ok();
 
     ui::heading(&format!(
-        "{:<18} {:<12} {:<14} {:<24} {:>8} {:<14} {:>12} {:>14}",
-        "NAME", "REGION", "ZONE", "ENDPOINT", "STATUS", "SINCE", "HANDSHAKE", "TRAFFIC"
+        "{:<18} {:<12} {:<14} {:<40} {:<24} {:>8} {:<14} {:>12} {:>14}",
+        "NAME",
+        "REGION",
+        "ZONE",
+        "MESH_IPV6",
+        "ENDPOINT",
+        "STATUS",
+        "SINCE",
+        "HANDSHAKE",
+        "TRAFFIC"
     ));
 
     for peer in &peers {
@@ -66,11 +74,14 @@ pub async fn run() -> Result<()> {
 
         let since_str = format_since(peer.last_seen);
 
+        let mesh_ipv6 = peer.mesh_ipv6.to_string();
+
         println!(
-            "{:<18} {:<12} {:<14} {:<24} {:>8} {:<14} {:>12} {:>14}",
+            "{:<18} {:<12} {:<14} {:<40} {:<24} {:>8} {:<14} {:>12} {:>14}",
             truncate(&sanitize(&peer.name), 17),
             truncate(&region, 11),
             truncate(&zone, 13),
+            truncate(&mesh_ipv6, 39),
             peer.endpoint,
             status,
             since_str,
