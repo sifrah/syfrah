@@ -45,9 +45,16 @@ const DEDUP_WINDOW_SECS: u64 = 300;
 /// Rejects announces that are:
 /// 1. Older than `MAX_ANNOUNCE_AGE_SECS` (stale timestamp).
 /// 2. Duplicates of a previously seen ciphertext within `DEDUP_WINDOW_SECS`.
+///
+/// All timing comparisons use monotonic `Instant` so that NTP corrections
+/// or manual clock changes cannot bypass replay protection.
 pub struct ReplayGuard {
-    /// SHA-256 hash -> timestamp when it was first seen.
-    seen: Mutex<HashMap<[u8; 32], u64>>,
+    /// SHA-256 hash -> monotonic instant when it was first seen.
+    seen: Mutex<HashMap<[u8; 32], Instant>>,
+    /// Monotonic anchor captured at construction (for epoch conversion).
+    instant_anchor: Instant,
+    /// Wall-clock epoch seconds captured at the same moment as `instant_anchor`.
+    epoch_anchor: u64,
 }
 
 impl Default for ReplayGuard {
@@ -60,21 +67,30 @@ impl ReplayGuard {
     pub fn new() -> Self {
         Self {
             seen: Mutex::new(HashMap::new()),
+            instant_anchor: Instant::now(),
+            epoch_anchor: epoch_now(),
         }
+    }
+
+    /// Return a monotonically increasing approximation of epoch seconds.
+    /// Immune to wall-clock jumps after construction.
+    pub(crate) fn monotonic_epoch(&self) -> u64 {
+        self.epoch_anchor + self.instant_anchor.elapsed().as_secs()
     }
 
     /// Check whether a ciphertext is a duplicate. Returns `true` if the
     /// ciphertext has already been seen within the dedup window.
     pub async fn is_duplicate(&self, ciphertext: &[u8]) -> bool {
         let hash = sha256(ciphertext);
-        let current = now();
+        let now = Instant::now();
         let mut seen = self.seen.lock().await;
 
         // Periodically evict expired entries (piggyback on every check).
-        seen.retain(|_, ts| current.saturating_sub(*ts) < DEDUP_WINDOW_SECS);
+        let window = Duration::from_secs(DEDUP_WINDOW_SECS);
+        seen.retain(|_, ts| now.checked_duration_since(*ts).is_none_or(|d| d < window));
 
         if let std::collections::hash_map::Entry::Vacant(e) = seen.entry(hash) {
-            e.insert(current);
+            e.insert(now);
             false
         } else {
             true
@@ -82,8 +98,8 @@ impl ReplayGuard {
     }
 
     /// Check whether a PeerRecord timestamp is too old.
-    pub fn is_stale(record_last_seen: u64) -> bool {
-        let current = now();
+    pub fn is_stale(&self, record_last_seen: u64) -> bool {
+        let current = self.monotonic_epoch();
         current.saturating_sub(record_last_seen) > MAX_ANNOUNCE_AGE_SECS
     }
 }
@@ -568,7 +584,7 @@ async fn handle_incoming(
                 wg_public_key: req.wg_public_key,
                 endpoint: req.endpoint,
                 wg_listen_port: req.wg_listen_port,
-                received_at: now(),
+                received_at: epoch_now(),
                 region: req.region,
                 zone: req.zone,
             };
@@ -658,8 +674,10 @@ async fn handle_incoming(
             }
 
             // Replay protection: reject announces with stale timestamps.
-            if ReplayGuard::is_stale(record.last_seen) {
-                let age = now().saturating_sub(record.last_seen);
+            if replay_guard.is_stale(record.last_seen) {
+                let age = replay_guard
+                    .monotonic_epoch()
+                    .saturating_sub(record.last_seen);
                 debug!(
                     peer = %record.name,
                     from = %peer_addr,
@@ -732,7 +750,7 @@ fn build_auto_accept_response(
         wg_public_key: req.wg_public_key.clone(),
         endpoint: req.endpoint,
         mesh_ipv6: new_mesh_ipv6,
-        last_seen: now(),
+        last_seen: epoch_now(),
         status: syfrah_core::mesh::PeerStatus::Active,
         region: Some(region),
         zone: Some(zone),
@@ -796,7 +814,7 @@ pub async fn announce_peer(
     let target = SocketAddr::new(target_endpoint.ip(), peering_port);
     // Stamp the record with the current time for replay protection.
     let mut stamped = record.clone();
-    stamped.last_seen = now();
+    stamped.last_seen = epoch_now();
     let ciphertext = encrypt_record(&stamped, encryption_key)?;
 
     let mut last_err = None;
@@ -894,7 +912,9 @@ async fn read_message(stream: &mut TcpStream) -> Result<PeeringMessage, PeeringE
     Ok(msg)
 }
 
-fn now() -> u64 {
+/// Wall-clock epoch seconds — used only for wire timestamps and display,
+/// never for security-critical timing comparisons.
+fn epoch_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -928,6 +948,7 @@ pub fn generate_pin() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::now;
 
     #[tokio::test]
     async fn replay_guard_detects_duplicate_ciphertext() {
@@ -949,27 +970,73 @@ mod tests {
 
     #[test]
     fn replay_guard_rejects_stale_timestamp() {
-        let stale = now().saturating_sub(MAX_ANNOUNCE_AGE_SECS + 100);
-        assert!(ReplayGuard::is_stale(stale));
+        let guard = ReplayGuard::new();
+        let stale = guard
+            .monotonic_epoch()
+            .saturating_sub(MAX_ANNOUNCE_AGE_SECS + 100);
+        assert!(guard.is_stale(stale));
     }
 
     #[test]
     fn replay_guard_accepts_fresh_timestamp() {
-        let fresh = now();
-        assert!(!ReplayGuard::is_stale(fresh));
+        let guard = ReplayGuard::new();
+        let fresh = guard.monotonic_epoch();
+        assert!(!guard.is_stale(fresh));
     }
 
     #[test]
     fn replay_guard_accepts_timestamp_at_boundary() {
+        let guard = ReplayGuard::new();
         // Exactly at the boundary (age == MAX_ANNOUNCE_AGE_SECS) should pass.
-        let at_boundary = now().saturating_sub(MAX_ANNOUNCE_AGE_SECS);
-        assert!(!ReplayGuard::is_stale(at_boundary));
+        let at_boundary = guard
+            .monotonic_epoch()
+            .saturating_sub(MAX_ANNOUNCE_AGE_SECS);
+        assert!(!guard.is_stale(at_boundary));
     }
 
     #[test]
     fn replay_guard_rejects_timestamp_just_past_boundary() {
-        let past = now().saturating_sub(MAX_ANNOUNCE_AGE_SECS + 1);
-        assert!(ReplayGuard::is_stale(past));
+        let guard = ReplayGuard::new();
+        let past = guard
+            .monotonic_epoch()
+            .saturating_sub(MAX_ANNOUNCE_AGE_SECS + 1);
+        assert!(guard.is_stale(past));
+    }
+
+    #[tokio::test]
+    async fn replay_guard_evicts_entries_after_dedup_window() {
+        let guard = ReplayGuard::new();
+        let data = b"eviction-test-payload";
+
+        // Insert the entry, then backdate it beyond the dedup window.
+        assert!(!guard.is_duplicate(data).await);
+        {
+            let mut seen = guard.seen.lock().await;
+            let hash = sha256(data);
+            if let Some(ts) = seen.get_mut(&hash) {
+                *ts = Instant::now()
+                    .checked_sub(Duration::from_secs(DEDUP_WINDOW_SECS + 1))
+                    .expect("backdating should succeed");
+            }
+        }
+        // After eviction, the same payload should no longer be considered duplicate.
+        assert!(!guard.is_duplicate(data).await);
+    }
+
+    #[test]
+    fn monotonic_epoch_never_decreases() {
+        let guard = ReplayGuard::new();
+        let t1 = guard.monotonic_epoch();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let t2 = guard.monotonic_epoch();
+        assert!(t2 >= t1);
+    }
+
+    #[test]
+    fn replay_guard_accepts_future_timestamp() {
+        let guard = ReplayGuard::new();
+        let future = guard.monotonic_epoch() + 1000;
+        assert!(!guard.is_stale(future));
     }
 
     /// Malformed WG key with a stale timestamp must be rejected by validation,
