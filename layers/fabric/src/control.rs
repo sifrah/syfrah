@@ -1,10 +1,14 @@
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tracing::{debug, warn};
+
+/// Maximum time to wait for a client to send a complete control request.
+const CONTROL_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 use crate::peering::JoinRequestInfo;
 
@@ -93,7 +97,16 @@ async fn handle_control_connection(
     mut stream: UnixStream,
     handler: Arc<dyn ControlHandler>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let req = read_control(&mut stream).await?;
+    let req = match tokio::time::timeout(CONTROL_READ_TIMEOUT, read_control(&mut stream)).await {
+        Ok(result) => result?,
+        Err(_) => {
+            warn!(
+                "control client timed out after {:?}, dropping connection",
+                CONTROL_READ_TIMEOUT
+            );
+            return Err("control read timed out".into());
+        }
+    };
     let resp = handler.handle(req).await;
     write_control(&mut stream, &resp).await?;
     Ok(())
@@ -212,5 +225,101 @@ mod tests {
 
         let result: Result<ControlRequest, _> = read_control(&mut server).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn control_truncated_body_errors() {
+        let (mut client, mut server) = duplex(4096);
+
+        // Length header claims 100 bytes, but only 5 are written
+        let len: u32 = 100;
+        tokio::io::AsyncWriteExt::write_all(&mut client, &len.to_be_bytes())
+            .await
+            .unwrap();
+        tokio::io::AsyncWriteExt::write_all(&mut client, b"hello")
+            .await
+            .unwrap();
+        drop(client); // EOF before 100 bytes
+
+        let result: Result<ControlRequest, _> = read_control(&mut server).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn control_response_roundtrip() {
+        let (mut client, mut server) = duplex(4096);
+
+        let resp = ControlResponse::PeeringList {
+            requests: vec![JoinRequestInfo {
+                request_id: "req-1".into(),
+                node_name: "node-a".into(),
+                wg_public_key: "pk-abc".into(),
+                endpoint: "192.168.1.1:7946".parse().unwrap(),
+                wg_listen_port: 51820,
+                received_at: 0,
+                region: None,
+                zone: None,
+            }],
+        };
+        write_control(&mut client, &resp).await.unwrap();
+        drop(client);
+
+        let read_resp: ControlResponse = read_control(&mut server).await.unwrap();
+        match read_resp {
+            ControlResponse::PeeringList { requests } => {
+                assert_eq!(requests.len(), 1);
+                assert_eq!(requests[0].node_name, "node-a");
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn control_slow_client_times_out() {
+        tokio::time::pause();
+
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tokio::net::UnixListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("ctl.sock");
+
+        let handled = Arc::new(AtomicBool::new(false));
+        let handled_clone = handled.clone();
+
+        struct NoOpHandler(Arc<AtomicBool>);
+        #[async_trait::async_trait]
+        impl ControlHandler for NoOpHandler {
+            async fn handle(&self, _req: ControlRequest) -> ControlResponse {
+                self.0.store(true, Ordering::SeqCst);
+                ControlResponse::Ok
+            }
+        }
+
+        let handler: Arc<dyn ControlHandler> = Arc::new(NoOpHandler(handled_clone));
+
+        let listener = UnixListener::bind(&sock).unwrap();
+
+        // Connect but send nothing — simulate a slow/stalled client
+        let _client = tokio::net::UnixStream::connect(&sock).await.unwrap();
+
+        // Accept the connection and handle it; should timeout within CONTROL_READ_TIMEOUT
+        let (stream, _) = listener.accept().await.unwrap();
+        let result = tokio::time::timeout(
+            CONTROL_READ_TIMEOUT + Duration::from_secs(1),
+            handle_control_connection(stream, handler),
+        )
+        .await
+        .expect("server should complete before outer timeout");
+
+        assert!(result.is_err(), "expected timeout error from slow client");
+        assert!(
+            result.unwrap_err().to_string().contains("timed out"),
+            "error should mention timeout"
+        );
+        assert!(
+            !handled.load(Ordering::SeqCst),
+            "handler must not be invoked for timed-out client"
+        );
     }
 }
