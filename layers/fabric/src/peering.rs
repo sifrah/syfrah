@@ -736,7 +736,10 @@ fn build_auto_accept_response(
     // Use the joiner's region/zone from the request. If zone was not
     // provided, auto-generate one using the leader's peer list so the
     // joiner gets a unique zone.
-    let region = req.region.clone().unwrap_or_else(|| "region-1".to_string());
+    let region = req
+        .region
+        .clone()
+        .unwrap_or_else(|| crate::daemon::DEFAULT_REGION.to_string());
     let zone = req
         .zone
         .clone()

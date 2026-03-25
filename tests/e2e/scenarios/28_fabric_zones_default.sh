@@ -20,10 +20,10 @@ join_mesh "e2e-zdef-3" "172.20.0.10" "172.20.0.12" "node-3"
 
 sleep 3
 
-# Node-1 should have region-1 and zone-1
+# Node-1 should have default region and zone-1
 status1=$(docker exec "e2e-zdef-1" syfrah fabric status 2>&1)
-if echo "$status1" | grep -q "Region:.*region-1"; then
-    pass "node-1 has default region: region-1"
+if echo "$status1" | grep -q "Region:.*default"; then
+    pass "node-1 has default region: default"
 else
     fail "node-1 missing default region"
     echo "$status1"

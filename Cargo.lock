@@ -1407,7 +1407,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "syfrah-bin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1429,7 +1429,7 @@ dependencies = [
 
 [[package]]
 name = "syfrah-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -1445,7 +1445,7 @@ dependencies = [
 
 [[package]]
 name = "syfrah-fabric"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1471,7 +1471,7 @@ dependencies = [
 
 [[package]]
 name = "syfrah-state"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
