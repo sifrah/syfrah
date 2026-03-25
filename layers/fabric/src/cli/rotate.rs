@@ -10,6 +10,10 @@ pub async fn run() -> Result<()> {
         anyhow::bail!("daemon is running. Stop it first with 'syfrah fabric stop'.");
     }
 
+    if !ui::confirm("Rotate mesh secret? All peers must rejoin afterwards.") {
+        anyhow::bail!("aborted by user.");
+    }
+
     let sp = ui::spinner("Rotating mesh secret...");
     let new_secret = MeshSecret::generate();
     let new_prefix = crate::daemon::derive_prefix_from_secret(&new_secret);
