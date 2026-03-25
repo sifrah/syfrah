@@ -99,7 +99,7 @@ pub const MAX_NAME_LENGTH: usize = 255;
 pub const MAX_SHORT_FIELD_LENGTH: usize = 32;
 
 /// Maximum number of peers in a JoinResponse.
-pub const MAX_PEERS_IN_RESPONSE: usize = 10_000;
+pub const MAX_PEERS_IN_RESPONSE: usize = 500;
 
 /// Expected base64-encoded WireGuard public key length (32 bytes -> 44 chars base64).
 pub const WG_KEY_BASE64_LENGTH: usize = 44;
