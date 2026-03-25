@@ -106,7 +106,7 @@ tests/e2e/
     ├── 03_fabric_node_leave.sh
     ├── 04_fabric_daemon_restart.sh
     ├── 05_fabric_large_mesh.sh
-    ├── ...                              (40+ scenarios)
+    ├── ...                              (65+ scenarios)
     ├── 21_state_cli_list.sh
     ├── 22_state_cli_get.sh
     ├── 23_state_cli_drop.sh
@@ -119,6 +119,9 @@ tests/e2e/
 
 | Function | What it does |
 |---|---|
+| **Setup & lifecycle** | |
+| `create_network` | Create the shared Docker bridge network |
+| `remove_network` | Remove the shared Docker bridge network |
 | `start_node <name> <ip>` | Start a container on the test network |
 | `init_mesh <container> <ip>` | Run `syfrah fabric init` |
 | `start_peering <container>` | Run `syfrah fabric peering start --pin` |
@@ -127,13 +130,44 @@ tests/e2e/
 | `stop_daemon <container>` | Run `syfrah fabric stop` |
 | `leave_mesh <container>` | Run `syfrah fabric leave` |
 | `get_mesh_ipv6 <container>` | Extract the mesh IPv6 from status |
+| `cleanup` | Remove all containers created by this scenario |
+| `summary` | Print pass/fail count, return exit code |
+| **Assertions — daemon & interface** | |
 | `assert_daemon_running <container>` | Verify daemon is running |
+| `assert_daemon_stopped <container>` | Verify daemon is not running |
 | `assert_peer_count <container> <n>` | Verify peer count |
 | `assert_interface_exists <container>` | Verify syfrah0 exists |
 | `assert_interface_gone <container>` | Verify syfrah0 is removed |
+| **Assertions — connectivity** | |
 | `assert_can_ping <from> <ipv6>` | Verify IPv6 mesh connectivity |
-| `cleanup` | Remove all containers created by this scenario |
-| `summary` | Print pass/fail count, return exit code |
+| `assert_cannot_ping <from> <ipv6>` | Verify IPv6 mesh is unreachable |
+| `block_traffic <container> <target_ip>` | Simulate network partition with iptables |
+| `unblock_traffic <container> <target_ip>` | Restore connectivity after partition |
+| **Assertions — commands & output** | |
+| `assert_command_fails <container> <cmd>` | Verify a command exits non-zero |
+| `assert_command_succeeds <container> <cmd>` | Verify a command exits zero |
+| `assert_output_contains <container> <cmd> <str>` | Verify command output contains string |
+| `assert_output_not_contains <container> <cmd> <str>` | Verify command output does not contain string |
+| `assert_output_matches <container> <cmd> <regex>` | Verify command output matches regex |
+| `assert_command_suggests <container> <cmd> <suggestion>` | Verify error suggests a corrective action |
+| `assert_all_commands_valid <container>` | Verify all CLI commands parse correctly |
+| **Assertions — state & consistency** | |
+| `get_state_field <container> <field>` | Extract a field from daemon state |
+| `assert_state_exists <container>` | Verify state file is present |
+| `assert_state_gone <container>` | Verify state file is removed |
+| `assert_clean_state <container>` | Verify state file has no corruption |
+| `assert_no_duplicate_peers <container>` | Verify no duplicate peers in mesh |
+| `assert_consistent_peer_count <containers...>` | Verify all nodes agree on peer count |
+| `assert_consistent_region <containers...>` | Verify all nodes agree on region |
+| `assert_regions_displayed <container>` | Verify region info appears in output |
+| `assert_no_epoch_dates <container>` | Verify no raw epoch timestamps in output |
+| `assert_join_retry_works <container> <target>` | Verify join retries on transient failure |
+| `wait_for_convergence <containers...>` | Wait until all nodes have consistent state |
+| **Logging** | |
+| `pass <msg>` | Log a passing check |
+| `fail <msg>` | Log a failing check |
+| `info <msg>` | Log an informational message |
+| `debug <msg>` | Log a debug message |
 
 **What belongs here:**
 - Multi-node mesh formation
@@ -212,23 +246,33 @@ The existing CI workflow runs unit + non-ignored integration tests per layer:
 
 ### E2E tests (e2e.yml)
 
-A separate workflow runs the full E2E suite:
+A separate workflow runs the full E2E suite. It builds the Docker image once, discovers which layers have scenarios, then runs each layer's tests **in parallel** using a matrix strategy:
 
 ```
     Push to main + PRs with code changes + weekly (Monday 4am UTC) + manual
          |
-    +----+-----------------------------------------+
-    |  Ubuntu, Docker pre-installed                 |
-    |                                               |
-    |  docker build + ./tests/e2e/run.sh            |
-    |                                               |
-    |  Runs all tests/e2e/scenarios/*.sh:           |
-    |    01_fabric_mesh_formation.sh                |
-    |    02_fabric_mesh_connectivity.sh             |
-    |    ...                                        |
-    |    21_state_cli_list.sh                       |
-    |    ...                                        |
-    +-----------------------------------------------+
+    +----+-----------------------------+
+    |  build job                        |
+    |  docker build → upload artifact   |
+    +----+-----------------------------+
+         |
+    +----+-----------------------------+
+    |  discover job                     |
+    |  Extract layer names from         |
+    |  scenario filenames (fabric,      |
+    |  state, ux, quickstart, ...)      |
+    +----+-----------------------------+
+         |
+         +-------+-------+-------+
+         |       |       |       |  (parallel matrix)
+    +----+--+ +--+---+ +-+----+ +--+---+
+    |fabric | |state | |ux    | |quick |
+    |       | |      | |      | |start |
+    | load  | | load | | load | | load |
+    | image | | img  | | img  | | img  |
+    | run.sh| | run  | | run  | | run  |
+    | fabric| | state| | ux   | | quick|
+    +-------+ +------+ +------+ +------+
 ```
 
 Containers use `--privileged` for WireGuard kernel access.
