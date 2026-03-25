@@ -153,7 +153,10 @@ fn stop_daemon() -> Result<Option<usize>> {
         );
     }
 
-    syfrah_fabric::store::remove_pid();
+    // Only remove PID if no new daemon has started in the meantime (TOCTOU guard).
+    if syfrah_fabric::store::daemon_running().is_none() {
+        syfrah_fabric::store::remove_pid();
+    }
     if peer_count > 0 {
         ui::step_ok(
             &sp,
@@ -188,8 +191,9 @@ fn start_daemon(exe_path: &std::path::Path) -> Result<Option<u32>> {
         bail!("daemon failed to start: {detail}");
     }
 
-    // Wait briefly for daemon to register its PID
-    for _ in 0..30 {
+    // Wait up to 5 seconds for daemon to register its PID.
+    // This matches the timeout used by background_daemon() to avoid racing.
+    for _ in 0..50 {
         std::thread::sleep(std::time::Duration::from_millis(100));
         if syfrah_fabric::store::daemon_running().is_some() {
             break;
@@ -212,9 +216,10 @@ fn start_daemon(exe_path: &std::path::Path) -> Result<Option<u32>> {
         None => {
             ui::step_fail(
                 &sp,
-                "Daemon may not have started. Check: ~/.syfrah/syfrah.log",
+                "Daemon process exited successfully but did not register a PID within 5s. \
+                 Check: ~/.syfrah/syfrah.log",
             );
-            Ok(None)
+            bail!("daemon started but did not register PID within 5 seconds")
         }
     }
 }
@@ -406,12 +411,15 @@ pub fn run(no_restart: bool, force: bool) -> Result<()> {
         } else {
             match start_daemon(&current_exe) {
                 Ok(_) => {
-                    // Daemon started (pid may or may not be visible yet)
+                    // Daemon started successfully — backup no longer needed.
                     let _ = fs::remove_file(&backup_path);
                 }
-                Err(_) => {
+                Err(e) => {
                     rollback_daemon(&backup_path, &current_exe, has_backup, latest);
-                    return Ok(());
+                    bail!(
+                        "daemon failed to start after update to {latest}; \
+                         rolled back to previous version: {e}"
+                    );
                 }
             }
         }
@@ -435,8 +443,8 @@ fn rollback_daemon(
             "Daemon failed to start and no backup available. \
              Try: syfrah fabric start",
         );
-        ui::success(&format!(
-            "syfrah updated to {latest} (daemon restart failed)."
+        ui::warn(&format!(
+            "Binary was replaced with {latest} but the daemon could not be started."
         ));
         return;
     }
@@ -451,8 +459,8 @@ fn rollback_daemon(
             "The backup is preserved at the .bak path. \
              Try restoring it manually and run: syfrah fabric start",
         );
-        ui::success(&format!(
-            "syfrah updated to {latest} (daemon restart failed)."
+        ui::warn(&format!(
+            "Update to {latest} failed: could not restore previous binary."
         ));
         return;
     }
@@ -472,8 +480,8 @@ fn rollback_daemon(
         );
     }
 
-    ui::success(&format!(
-        "syfrah updated to {latest} (daemon restart failed)."
+    ui::warn(&format!(
+        "Update to {latest} was rolled back. The previous version is still running."
     ));
 }
 
@@ -530,8 +538,13 @@ mod tests {
     #[test]
     fn stop_daemon_returns_none_when_no_daemon() {
         // NOTE: This test assumes no syfrah daemon is running in the test environment.
-        // If a daemon happens to be running, the test may fail — this is expected
-        // and not a flaky test.
+        // If a daemon happens to be running, the test will fail because stop_daemon()
+        // will attempt to kill it. This IS environment-dependent — skip in CI if
+        // a syfrah daemon may be running alongside tests.
+        if syfrah_fabric::store::daemon_running().is_some() {
+            eprintln!("skipping stop_daemon_returns_none_when_no_daemon: daemon is running");
+            return;
+        }
         let result = stop_daemon();
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
@@ -583,6 +596,67 @@ mod tests {
         rollback_daemon(&backup, &exe, false, "v0.0.0-test");
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rollback_successful_rename_consumes_backup() {
+        // When rollback rename succeeds, the backup file is consumed (moved to current_exe).
+        let dir = std::env::temp_dir().join("syfrah-test-rollback-rename-ok");
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::create_dir_all(&dir);
+
+        let backup = dir.join("syfrah.bak");
+        let exe = dir.join("syfrah");
+
+        fs::write(&backup, b"old-binary-content").unwrap();
+
+        rollback_daemon(&backup, &exe, true, "v0.0.0-test");
+
+        // The backup should have been renamed to exe, so backup is gone
+        assert!(!backup.exists(), "backup should be consumed by rename");
+        // The exe should now have the old binary content
+        assert!(exe.exists(), "exe should exist after rollback");
+        assert_eq!(
+            fs::read(&exe).unwrap(),
+            b"old-binary-content",
+            "exe should contain the old binary"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn start_daemon_with_nonexistent_binary_returns_err() {
+        // Verify start_daemon returns Err (not Ok(None)) for a missing binary.
+        // This confirms the Ok(None) → Err refactor is correct.
+        let fake_path = std::path::Path::new("/tmp/nonexistent-syfrah-binary-err-check");
+        let result = start_daemon(fake_path);
+        assert!(
+            result.is_err(),
+            "start_daemon should return Err for missing binary"
+        );
+    }
+
+    #[test]
+    fn is_newer_edge_cases() {
+        // Additional edge cases for version comparison
+        assert!(
+            !is_newer("invalid", "0.1.0"),
+            "invalid current should not be newer"
+        );
+        assert!(
+            !is_newer("0.1.0", "invalid"),
+            "invalid latest should not be newer"
+        );
+        assert!(
+            !is_newer("invalid", "invalid"),
+            "both invalid should not be newer"
+        );
+        assert!(is_newer("0.0.1", "0.0.2"), "patch bump should be newer");
+        assert!(
+            !is_newer("0.0.2", "0.0.1"),
+            "patch downgrade should not be newer"
+        );
     }
 
     #[test]
