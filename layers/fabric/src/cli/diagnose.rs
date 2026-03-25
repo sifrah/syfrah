@@ -20,7 +20,7 @@ pub async fn run() -> Result<()> {
     };
 
     // -- State store --
-    println!("State store");
+    ui::heading("State store");
     let state_exists = store::exists();
     check(
         "Mesh state exists",
@@ -62,7 +62,7 @@ pub async fn run() -> Result<()> {
     println!();
 
     // -- Daemon --
-    println!("Daemon");
+    ui::heading("Daemon");
     let pid = store::daemon_running();
     check(
         "Daemon process",
@@ -91,7 +91,7 @@ pub async fn run() -> Result<()> {
     println!();
 
     // -- WireGuard --
-    println!("WireGuard");
+    ui::heading("WireGuard");
     match wg::interface_summary() {
         Ok(summary) => {
             check("Interface syfrah0 is up", true, "");
