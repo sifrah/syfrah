@@ -414,11 +414,7 @@ pub async fn run_join(
 /// Setup restart from saved state: load state, setup WG, print info.
 /// Returns a DaemonReady that can be passed to run_daemon.
 pub fn setup_start() -> anyhow::Result<DaemonReady> {
-    let state = store::load().map_err(|_| {
-        anyhow::anyhow!(
-            "no mesh state found. Run 'syfrah fabric init' or 'syfrah fabric join' first."
-        )
-    })?;
+    let state = store::load().map_err(|_| crate::no_mesh_error())?;
 
     let mesh_secret: MeshSecret = state
         .mesh_secret
