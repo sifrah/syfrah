@@ -74,14 +74,25 @@ pub fn info_line(key: &str, value: &str) {
     }
 }
 
+/// Return the current terminal width, falling back to 120 columns.
+fn term_width() -> usize {
+    terminal_size::terminal_size()
+        .map(|(w, _)| w.0 as usize)
+        .unwrap_or(120)
+}
+
 /// Print a styled heading.
+///
+/// The separator / underline width is capped at the terminal width so it
+/// doesn't wrap on narrow terminals (see issue #210).
 pub fn heading(text: &str) {
+    let width = text.len().min(term_width());
     if is_tty() {
         let bold = Style::new().bold().underlined();
         println!("{}", bold.apply_to(text));
     } else {
         println!("{text}");
-        println!("{}", "=".repeat(text.len()));
+        println!("{}", "=".repeat(width));
     }
 }
 

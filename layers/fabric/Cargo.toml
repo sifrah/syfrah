@@ -27,6 +27,7 @@ clap = { version = "4", features = ["derive"] }
 console = "0.15"
 hostname = "0.4"
 indicatif = "0.17"
+terminal_size = "0.4"
 toml = "0.8"
 
 [dev-dependencies]
