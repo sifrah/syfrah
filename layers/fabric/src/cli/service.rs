@@ -5,6 +5,8 @@ use anyhow::Context;
 #[cfg(target_os = "linux")]
 use std::process::Command;
 
+use crate::ui;
+
 pub const UNIT_FILE_PATH: &str = "/etc/systemd/system/syfrah.service";
 
 pub const UNIT_FILE_CONTENTS: &str = "\
@@ -36,7 +38,7 @@ pub async fn install() -> Result<()> {
 
         if std::path::Path::new(UNIT_FILE_PATH).exists() {
             println!("Systemd service is already installed at {UNIT_FILE_PATH}.");
-            if !crate::ui::confirm("Overwrite the existing unit file?") {
+            if !ui::confirm("Overwrite the existing unit file?") {
                 bail!("Aborted — existing unit file was not modified.");
             }
         }
