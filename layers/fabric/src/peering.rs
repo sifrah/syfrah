@@ -502,8 +502,10 @@ async fn handle_incoming(
                         );
                     }
 
-                    // Case-insensitive comparison for alphanumeric PINs
-                    if config.pin.eq_ignore_ascii_case(req_pin) {
+                    // Case-sensitive comparison: PINs are short, so every bit
+                    // of entropy counts. The charset already excludes ambiguous
+                    // characters (0/O, 1/I/L), making exact matching safe.
+                    if config.pin == *req_pin {
                         // Check peer limit before accepting
                         let current_peers = crate::store::peer_count().unwrap_or(0);
                         if current_peers >= config.max_peers {
