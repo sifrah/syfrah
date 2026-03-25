@@ -1,5 +1,5 @@
 use crate::sanitize::sanitize;
-use crate::{config, store, ui, wg};
+use crate::{config, no_mesh_error, store, ui, wg};
 use anyhow::Result;
 
 /// Options for the status command.
@@ -11,11 +11,7 @@ pub struct StatusOpts {
 }
 
 pub async fn run(opts: StatusOpts) -> Result<()> {
-    let state = store::load().map_err(|_| {
-        anyhow::anyhow!(
-            "no mesh configured. Run 'syfrah fabric init' or 'syfrah fabric join' first."
-        )
-    })?;
+    let state = store::load().map_err(|_| no_mesh_error())?;
 
     // ── Uptime (computed early for the Mesh box) ────────────────────
     let m = &state.metrics;
