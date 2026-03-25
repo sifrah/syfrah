@@ -105,7 +105,14 @@ enum FabricCommand {
     /// Stop the running daemon
     Stop,
     /// Show mesh and daemon status
-    Status,
+    Status {
+        /// Show config and metrics sections
+        #[arg(long)]
+        verbose: bool,
+        /// Show the full mesh secret (masked by default)
+        #[arg(long)]
+        show_secret: bool,
+    },
     /// Show the event log
     Events {
         /// Output as JSON
@@ -462,9 +469,16 @@ async fn run() -> Result<()> {
                 setup_logging(false);
                 cli::stop::run().await
             }
-            FabricCommand::Status => {
+            FabricCommand::Status {
+                verbose,
+                show_secret,
+            } => {
                 setup_logging(false);
-                cli::status::run().await
+                cli::status::run(cli::status::StatusOpts {
+                    verbose,
+                    show_secret,
+                })
+                .await
             }
             FabricCommand::Events { json } => {
                 setup_logging(false);
