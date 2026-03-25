@@ -20,9 +20,11 @@ use crate::store::{self, NodeState};
 use crate::ui;
 use crate::wg;
 
-/// TLS certificate verifier that accepts any certificate.
-/// Used only during the join handshake where the joiner does not yet have
-/// the mesh secret to verify the server's certificate.
+/// TLS certificate verifier that skips trust-anchor verification but still
+/// validates TLS 1.3 handshake signatures.  Used only during the join
+/// handshake where the joiner does not yet have the mesh secret to verify
+/// the server's certificate chain.  The PIN exchange provides the
+/// authentication guarantee at this stage.
 mod danger {
     use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
     use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
@@ -40,6 +42,8 @@ mod danger {
             _ocsp_response: &[u8],
             _now: UnixTime,
         ) -> Result<ServerCertVerified, rustls::Error> {
+            // Skip trust-anchor check — the joiner cannot verify the
+            // mesh-derived CA yet.  Signature math is still enforced below.
             Ok(ServerCertVerified::assertion())
         }
 
@@ -49,30 +53,32 @@ mod danger {
             _cert: &CertificateDer<'_>,
             _dss: &DigitallySignedStruct,
         ) -> Result<HandshakeSignatureValid, rustls::Error> {
-            Ok(HandshakeSignatureValid::assertion())
+            // TLS 1.2 is disabled at the config level; reject if reached.
+            Err(rustls::Error::General(
+                "TLS 1.2 is not supported".to_string(),
+            ))
         }
 
         fn verify_tls13_signature(
             &self,
-            _message: &[u8],
-            _cert: &CertificateDer<'_>,
-            _dss: &DigitallySignedStruct,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &DigitallySignedStruct,
         ) -> Result<HandshakeSignatureValid, rustls::Error> {
-            Ok(HandshakeSignatureValid::assertion())
+            // Delegate to the real ring signature verifier so that a MITM
+            // cannot present an arbitrary certificate with a garbage signature.
+            rustls::crypto::verify_tls13_signature(
+                message,
+                cert,
+                dss,
+                &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+            )
         }
 
         fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-            vec![
-                rustls::SignatureScheme::ED25519,
-                rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-                rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
-                rustls::SignatureScheme::RSA_PSS_SHA256,
-                rustls::SignatureScheme::RSA_PSS_SHA384,
-                rustls::SignatureScheme::RSA_PSS_SHA512,
-                rustls::SignatureScheme::RSA_PKCS1_SHA256,
-                rustls::SignatureScheme::RSA_PKCS1_SHA384,
-                rustls::SignatureScheme::RSA_PKCS1_SHA512,
-            ]
+            rustls::crypto::ring::default_provider()
+                .signature_verification_algorithms
+                .supported_schemes()
         }
     }
 }
@@ -315,7 +321,7 @@ pub async fn setup_join(
     // (that arrives in the JoinResponse), so it cannot verify the mesh-derived cert.
     // The PIN exchange provides authentication at this stage.
     let join_tls_config = {
-        let cfg = rustls::ClientConfig::builder()
+        let cfg = rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(danger::NoCertVerifier))
             .with_no_client_auth();

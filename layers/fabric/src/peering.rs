@@ -85,8 +85,10 @@ fn generate_mesh_cert(
     let mut params = CertificateParams::new(vec!["syfrah-mesh.internal".to_string()])
         .map_err(|e| PeeringError::Tls(format!("cert params: {e}")))?;
     params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    // Valid for 10 years.
-    params.not_after = rcgen::date_time_ymd(2035, 1, 1);
+    // Pin both not_before and not_after so the cert is fully deterministic
+    // across nodes (all nodes holding the same mesh secret produce identical DER).
+    params.not_before = rcgen::date_time_ymd(2025, 1, 1);
+    params.not_after = rcgen::date_time_ymd(2045, 1, 1);
 
     let cert = params
         .self_signed(&key_pair)
@@ -925,6 +927,83 @@ fn build_auto_accept_response(
     Ok((response, new_record))
 }
 
+// --- Client-side helpers ---
+
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+/// A stream that is either a plain TCP connection or a TLS-upgraded one.
+/// Implements `AsyncRead + AsyncWrite` so callers can use a single code path.
+enum MaybeTlsStream {
+    Plain(TcpStream),
+    Tls(Box<tokio_rustls::client::TlsStream<TcpStream>>),
+}
+
+impl AsyncRead for MaybeTlsStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            MaybeTlsStream::Plain(s) => Pin::new(s).poll_read(cx, buf),
+            MaybeTlsStream::Tls(s) => Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for MaybeTlsStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            MaybeTlsStream::Plain(s) => Pin::new(s).poll_write(cx, buf),
+            MaybeTlsStream::Tls(s) => Pin::new(s).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            MaybeTlsStream::Plain(s) => Pin::new(s).poll_flush(cx),
+            MaybeTlsStream::Tls(s) => Pin::new(s).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            MaybeTlsStream::Plain(s) => Pin::new(s).poll_shutdown(cx),
+            MaybeTlsStream::Tls(s) => Pin::new(s).poll_shutdown(cx),
+        }
+    }
+}
+
+/// Upgrade a `TcpStream` to TLS if a config is provided, returning a
+/// `MaybeTlsStream`.  This eliminates duplicated TLS / non-TLS branches
+/// in every client-side function.
+async fn maybe_upgrade_tls(
+    tcp_stream: TcpStream,
+    tls_config: Option<Arc<rustls::ClientConfig>>,
+    target: &SocketAddr,
+) -> Result<MaybeTlsStream, PeeringError> {
+    if let Some(cfg) = tls_config {
+        let connector = tokio_rustls::TlsConnector::from(cfg);
+        let server_name = rustls::pki_types::ServerName::try_from("syfrah-mesh.internal")
+            .map_err(|e| PeeringError::Tls(format!("server name: {e}")))?;
+        let tls_stream = tokio::time::timeout(
+            EXCHANGE_TIMEOUT,
+            connector.connect(server_name.to_owned(), tcp_stream),
+        )
+        .await
+        .map_err(|_| PeeringError::Timeout)?
+        .map_err(|e| PeeringError::Tls(format!("TLS handshake failed with {target}. Verify the node is running a compatible version. ({e})")))?;
+        Ok(MaybeTlsStream::Tls(Box::new(tls_stream)))
+    } else {
+        Ok(MaybeTlsStream::Plain(tcp_stream))
+    }
+}
+
 // --- Client-side functions ---
 
 /// Send a join request to an existing node and wait for response.
@@ -944,54 +1023,24 @@ pub async fn send_join_request(
         .await
         .map_err(|_| PeeringError::Timeout)??;
 
-    if let Some(cfg) = tls_config {
-        let connector = tokio_rustls::TlsConnector::from(cfg);
-        let server_name = rustls::pki_types::ServerName::try_from("syfrah-mesh.internal")
-            .map_err(|e| PeeringError::Tls(format!("server name: {e}")))?;
-        let mut tls_stream = tokio::time::timeout(
-            EXCHANGE_TIMEOUT,
-            connector.connect(server_name.to_owned(), tcp_stream),
-        )
+    let mut stream = maybe_upgrade_tls(tcp_stream, tls_config, &target).await?;
+
+    write_message(&mut stream, &PeeringMessage::JoinRequest(request)).await?;
+    let msg = tokio::time::timeout(JOIN_TIMEOUT, read_message(&mut stream))
         .await
-        .map_err(|_| PeeringError::Timeout)?
-        .map_err(|e| PeeringError::Tls(format!("TLS handshake failed with {target}. Verify the node is running a compatible version. ({e})")))?;
+        .map_err(|_| PeeringError::Timeout)??;
 
-        write_message(&mut tls_stream, &PeeringMessage::JoinRequest(request)).await?;
-        let msg = tokio::time::timeout(JOIN_TIMEOUT, read_message(&mut tls_stream))
-            .await
-            .map_err(|_| PeeringError::Timeout)??;
-
-        match msg {
-            PeeringMessage::JoinResponse(resp) => {
-                if let Err(e) = validate_join_response(&resp) {
-                    warn!(error = %e, "rejecting join response: validation failed");
-                    return Err(PeeringError::Protocol(format!(
-                        "invalid join response: {e}"
-                    )));
-                }
-                Ok(resp)
+    match msg {
+        PeeringMessage::JoinResponse(resp) => {
+            if let Err(e) = validate_join_response(&resp) {
+                warn!(error = %e, "rejecting join response: validation failed");
+                return Err(PeeringError::Protocol(format!(
+                    "invalid join response: {e}"
+                )));
             }
-            _ => Err(PeeringError::Protocol("expected JoinResponse".into())),
+            Ok(resp)
         }
-    } else {
-        let mut stream = tcp_stream;
-        write_message(&mut stream, &PeeringMessage::JoinRequest(request)).await?;
-        let msg = tokio::time::timeout(JOIN_TIMEOUT, read_message(&mut stream))
-            .await
-            .map_err(|_| PeeringError::Timeout)??;
-
-        match msg {
-            PeeringMessage::JoinResponse(resp) => {
-                if let Err(e) = validate_join_response(&resp) {
-                    warn!(error = %e, "rejecting join response: validation failed");
-                    return Err(PeeringError::Protocol(format!(
-                        "invalid join response: {e}"
-                    )));
-                }
-                Ok(resp)
-            }
-            _ => Err(PeeringError::Protocol("expected JoinResponse".into())),
-        }
+        _ => Err(PeeringError::Protocol("expected JoinResponse".into())),
     }
 }
 
@@ -1021,9 +1070,11 @@ pub async fn announce_peer(
         match try_announce(&target, &ciphertext, tls_config.clone()).await {
             Ok(()) => return Ok(()),
             Err(e) => {
-                // Only retry on transient errors (Io, Timeout, Tls)
+                // Only retry on transient errors (Io, Timeout). TLS errors
+                // indicate a mesh-secret mismatch or incompatible config and
+                // will not resolve on retry.
                 match &e {
-                    PeeringError::Io(_) | PeeringError::Timeout | PeeringError::Tls(_) => {
+                    PeeringError::Io(_) | PeeringError::Timeout => {
                         debug!(
                             "announce attempt {}/{} to {target} failed: {e}",
                             attempt + 1,
@@ -1048,30 +1099,12 @@ async fn try_announce(
         .await
         .map_err(|_| PeeringError::Timeout)??;
 
-    if let Some(cfg) = tls_config {
-        let connector = tokio_rustls::TlsConnector::from(cfg);
-        let server_name = rustls::pki_types::ServerName::try_from("syfrah-mesh.internal")
-            .map_err(|e| PeeringError::Tls(format!("server name: {e}")))?;
-        let mut tls_stream = tokio::time::timeout(
-            EXCHANGE_TIMEOUT,
-            connector.connect(server_name.to_owned(), tcp_stream),
-        )
-        .await
-        .map_err(|_| PeeringError::Timeout)?
-        .map_err(|e| PeeringError::Tls(format!("TLS handshake failed with {target}. Verify the node is running a compatible version. ({e})")))?;
-        write_message(
-            &mut tls_stream,
-            &PeeringMessage::PeerAnnounce(ciphertext.to_vec()),
-        )
-        .await?;
-    } else {
-        let mut stream = tcp_stream;
-        write_message(
-            &mut stream,
-            &PeeringMessage::PeerAnnounce(ciphertext.to_vec()),
-        )
-        .await?;
-    }
+    let mut stream = maybe_upgrade_tls(tcp_stream, tls_config, target).await?;
+    write_message(
+        &mut stream,
+        &PeeringMessage::PeerAnnounce(ciphertext.to_vec()),
+    )
+    .await?;
     Ok(())
 }
 

@@ -88,7 +88,13 @@ async fn join_with_pin_auto_accept() {
     let listener_state = peering_state.clone();
     let listener_handle = tokio::spawn(async move {
         listener_state
-            .run_listener(peering_port, Some(encryption_key), on_announce, on_accepted, None)
+            .run_listener(
+                peering_port,
+                Some(encryption_key),
+                on_announce,
+                on_accepted,
+                None,
+            )
             .await
             .ok();
     });
@@ -202,7 +208,13 @@ async fn join_with_wrong_pin_falls_to_pending() {
     let listener_state = peering_state.clone();
     let listener_handle = tokio::spawn(async move {
         listener_state
-            .run_listener(peering_port, Some(encryption_key), on_announce, on_accepted, None)
+            .run_listener(
+                peering_port,
+                Some(encryption_key),
+                on_announce,
+                on_accepted,
+                None,
+            )
             .await
             .ok();
     });
@@ -302,7 +314,13 @@ async fn join_without_pin_goes_to_pending() {
     let listener_state = peering_state.clone();
     let listener_handle = tokio::spawn(async move {
         listener_state
-            .run_listener(peering_port, Some(encryption_key), on_announce, on_accepted, None)
+            .run_listener(
+                peering_port,
+                Some(encryption_key),
+                on_announce,
+                on_accepted,
+                None,
+            )
             .await
             .ok();
     });
@@ -443,7 +461,13 @@ async fn rate_limited_ip_gets_rejection() {
     let listener_state = peering_state.clone();
     let listener_handle = tokio::spawn(async move {
         listener_state
-            .run_listener(peering_port, Some(encryption_key), on_announce, on_accepted, None)
+            .run_listener(
+                peering_port,
+                Some(encryption_key),
+                on_announce,
+                on_accepted,
+                None,
+            )
             .await
             .ok();
     });
