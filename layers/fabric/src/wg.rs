@@ -196,7 +196,11 @@ pub fn diff_peers(
 /// preserves existing WireGuard sessions and in-flight traffic.
 ///
 /// Returns the number of peers that were added, updated, or removed.
-pub fn sync_peers(self_pubkey: &Key, desired: &[PeerRecord], keepalive_interval: u16) -> Result<usize, WgError> {
+pub fn sync_peers(
+    self_pubkey: &Key,
+    desired: &[PeerRecord],
+    keepalive_interval: u16,
+) -> Result<usize, WgError> {
     let summary = interface_summary()?;
     let (to_add_or_update, to_remove) = diff_peers(self_pubkey, desired, &summary.peers)?;
 
