@@ -20,6 +20,9 @@ use crate::store::{self, NodeState};
 use crate::ui;
 use crate::wg;
 
+/// Default region used when the operator does not specify `--region`.
+pub const DEFAULT_REGION: &str = "default";
+
 pub struct DaemonConfig {
     pub mesh_name: String,
     pub node_name: String,
@@ -62,7 +65,7 @@ pub fn setup_init(config: &DaemonConfig) -> anyhow::Result<DaemonReady> {
     let region = config
         .region
         .clone()
-        .unwrap_or_else(|| "default".to_string());
+        .unwrap_or_else(|| DEFAULT_REGION.to_string());
     if config.region.is_none() {
         ui::warn("No --region specified; using 'default'. Set --region to label this node.");
     }
@@ -158,7 +161,7 @@ pub fn auto_init(
         public_endpoint: None,
         peering_port,
         peers: vec![],
-        region: Some("default".to_string()),
+        region: Some(DEFAULT_REGION.to_string()),
         zone: Some("default-zone-1".to_string()),
         metrics: Default::default(),
     };
@@ -198,7 +201,7 @@ pub async fn setup_join(
         config
             .region
             .clone()
-            .unwrap_or_else(|| "default".to_string()),
+            .unwrap_or_else(|| DEFAULT_REGION.to_string()),
     );
     if config.region.is_none() {
         ui::warn("No --region specified; using 'default'. Set --region to label this node.");
@@ -270,7 +273,7 @@ async fn finalize_join(
     let region = config
         .region
         .clone()
-        .unwrap_or_else(|| "default".to_string());
+        .unwrap_or_else(|| DEFAULT_REGION.to_string());
     let zone = config
         .zone
         .clone()
@@ -1112,7 +1115,7 @@ impl ControlHandler for DaemonControlHandler {
                         // Use the joiner's region/zone from the request.
                         // If zone was not provided, auto-generate one
                         // using the current peer list.
-                        let region = info.region.unwrap_or_else(|| "default".to_string());
+                        let region = info.region.unwrap_or_else(|| DEFAULT_REGION.to_string());
                         let zone = info
                             .zone
                             .unwrap_or_else(|| store::generate_zone(&region, &state.peers));
@@ -1561,5 +1564,33 @@ mod tests {
     fn rollback_join_state_is_safe_when_no_state() {
         // rollback should not panic even when there's nothing to clean up
         rollback_join_state();
+    }
+
+    // ── DEFAULT_REGION tests ──
+
+    fn resolve_region(config_region: Option<String>) -> String {
+        config_region.unwrap_or_else(|| DEFAULT_REGION.to_string())
+    }
+
+    #[test]
+    fn default_region_used_when_config_region_is_none() {
+        assert_eq!(resolve_region(None), "default");
+    }
+
+    #[test]
+    fn explicit_region_overrides_default() {
+        assert_eq!(resolve_region(Some("us-east".to_string())), "us-east");
+    }
+
+    #[test]
+    fn default_region_zone_generation() {
+        // When region is None, zone should be generated from DEFAULT_REGION
+        let region = resolve_region(None);
+        let zone = store::generate_zone(&region, &[]);
+        assert_eq!(region, "default");
+        assert!(
+            zone.starts_with("zone-"),
+            "generated zone should start with 'zone-'"
+        );
     }
 }
