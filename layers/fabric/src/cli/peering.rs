@@ -10,53 +10,9 @@ use std::collections::HashSet;
 /// In default mode (`continuous=false`), exits after the first accept/reject.
 /// With `--watch` (`continuous=true`), loops indefinitely for batch use.
 pub async fn watch(pin: Option<String>, continuous: bool) -> Result<()> {
-    // Auto-init if no mesh exists
+    // Require an existing mesh — never auto-init.
     if !store::exists() {
-        let node_name = hostname::get()
-            .ok()
-            .and_then(|h| h.into_string().ok())
-            .unwrap_or_else(|| "syfrah-node".into());
-        let sp = ui::spinner("No mesh configured. Creating one automatically...");
-        crate::daemon::auto_init(&node_name, 51820, 51821)?;
-        ui::step_ok(&sp, "Mesh auto-created");
-        println!();
-
-        // Start daemon in background
-        let mesh_secret: syfrah_core::secret::MeshSecret = store::load()?
-            .mesh_secret
-            .parse()
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let wg_private = wireguard_control::Key::from_base64(&store::load()?.wg_private_key)
-            .map_err(|_| anyhow::anyhow!("corrupt WG key"))?;
-        let wg_keypair = wireguard_control::KeyPair::from_private(wg_private);
-        let state = store::load()?;
-        let endpoint = state.public_endpoint.unwrap_or_else(|| {
-            std::net::SocketAddr::new("0.0.0.0".parse().unwrap(), state.wg_listen_port)
-        });
-        let my_record = syfrah_core::mesh::PeerRecord {
-            name: state.node_name.clone(),
-            wg_public_key: wg_keypair.public.to_base64(),
-            endpoint,
-            mesh_ipv6: state.mesh_ipv6,
-            last_seen: 0,
-            status: syfrah_core::mesh::PeerStatus::Active,
-            region: None,
-            zone: None,
-        };
-        let pp = state.peering_port;
-        tokio::spawn(async move {
-            if let Err(e) = crate::daemon::run_daemon(my_record, &wg_keypair, mesh_secret, pp).await
-            {
-                eprintln!("daemon error: {e}");
-            }
-        });
-        // Wait for control socket
-        for _ in 0..30 {
-            if store::control_socket_path().exists() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
+        anyhow::bail!("No mesh configured. Run 'syfrah fabric init' first.");
     }
 
     // Start peering with optional PIN
@@ -297,5 +253,26 @@ fn truncate(s: &str, max: usize) -> String {
         s.to_string()
     } else {
         format!("{}...", &s[..max - 3])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `watch()` must fail immediately when no mesh is configured
+    /// instead of silently auto-initialising one.
+    #[tokio::test]
+    async fn watch_errors_without_mesh() {
+        // Point HOME at a fresh temp dir so store::exists() returns false.
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path());
+
+        let err = watch(None, false).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("No mesh configured. Run 'syfrah fabric init' first."),
+            "unexpected error: {err}"
+        );
     }
 }
