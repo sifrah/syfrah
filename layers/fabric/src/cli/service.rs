@@ -1,15 +1,18 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 use crate::ui;
-
-#[cfg(target_os = "linux")]
-use anyhow::Context;
 #[cfg(target_os = "linux")]
 use std::process::Command;
 
 pub const UNIT_FILE_PATH: &str = "/etc/systemd/system/syfrah.service";
 
-pub const UNIT_FILE_CONTENTS: &str = "\
+pub fn unit_file_contents() -> Result<String> {
+    let exe = std::env::current_exe().context("Failed to determine current executable path")?;
+    let exe_path = exe
+        .to_str()
+        .context("Executable path contains invalid UTF-8")?;
+    Ok(format!(
+        "\
 [Unit]
 Description=Syfrah mesh daemon
 After=network-online.target
@@ -17,14 +20,16 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/syfrah fabric start --foreground
+ExecStart={exe_path} fabric start --foreground
 Restart=always
 RestartSec=5
 LimitNOFILE=65535
 
 [Install]
 WantedBy=multi-user.target
-";
+"
+    ))
+}
 
 pub async fn install() -> Result<()> {
     #[cfg(not(target_os = "linux"))]
@@ -43,7 +48,8 @@ pub async fn install() -> Result<()> {
             }
         }
 
-        std::fs::write(UNIT_FILE_PATH, UNIT_FILE_CONTENTS)
+        let contents = unit_file_contents()?;
+        std::fs::write(UNIT_FILE_PATH, &contents)
             .context("Failed to write unit file. Are you running as root?")?;
         ui::success(&format!("Wrote {UNIT_FILE_PATH}"));
 
@@ -144,13 +150,14 @@ mod tests {
 
     #[test]
     fn unit_file_contains_required_directives() {
-        assert!(UNIT_FILE_CONTENTS
-            .contains("ExecStart=/usr/local/bin/syfrah fabric start --foreground"));
-        assert!(UNIT_FILE_CONTENTS.contains("Restart=always"));
-        assert!(UNIT_FILE_CONTENTS.contains("RestartSec=5"));
-        assert!(UNIT_FILE_CONTENTS.contains("After=network-online.target"));
-        assert!(UNIT_FILE_CONTENTS.contains("WantedBy=multi-user.target"));
-        assert!(UNIT_FILE_CONTENTS.contains("LimitNOFILE=65535"));
+        let contents = unit_file_contents().expect("should resolve current_exe in tests");
+        assert!(contents.contains("ExecStart="));
+        assert!(contents.contains("fabric start --foreground"));
+        assert!(contents.contains("Restart=always"));
+        assert!(contents.contains("RestartSec=5"));
+        assert!(contents.contains("After=network-online.target"));
+        assert!(contents.contains("WantedBy=multi-user.target"));
+        assert!(contents.contains("LimitNOFILE=65535"));
     }
 
     #[test]
