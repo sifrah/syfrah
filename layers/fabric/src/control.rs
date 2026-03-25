@@ -144,7 +144,7 @@ pub async fn read_control<T: serde::de::DeserializeOwned, R: AsyncReadExt + Unpi
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf).await?;
     let len = u32::from_be_bytes(len_buf);
-    if len > 1_000_000 {
+    if len > 65_536 {
         return Err("control message too large".into());
     }
     let mut data = vec![0u8; len as usize];
