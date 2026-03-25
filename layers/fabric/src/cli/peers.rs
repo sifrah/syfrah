@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::sanitize::sanitize;
-use crate::{store, wg};
+use crate::{store, ui, wg};
 use anyhow::Result;
 use syfrah_core::mesh::{PeerRecord, PeerStatus};
 
@@ -14,7 +14,7 @@ pub async fn run() -> Result<()> {
     })?;
 
     if state.peers.is_empty() {
-        println!("No peers discovered yet.");
+        ui::info_line("Peers", "No peers discovered yet.");
         return Ok(());
     }
 
@@ -24,11 +24,10 @@ pub async fn run() -> Result<()> {
     // Try to get live WG stats
     let wg_summary = wg::interface_summary().ok();
 
-    println!(
+    ui::heading(&format!(
         "{:<18} {:<12} {:<14} {:<24} {:>8} {:<14} {:>12} {:>14}",
         "NAME", "REGION", "ZONE", "ENDPOINT", "STATUS", "SINCE", "HANDSHAKE", "TRAFFIC"
-    );
-    println!("{}", "-".repeat(120));
+    ));
 
     for peer in &peers {
         let status = match peer.status {
