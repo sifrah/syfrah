@@ -36,6 +36,13 @@ pub async fn install() -> Result<()> {
             bail!("systemctl not found. This command requires a systemd-based Linux distribution.");
         }
 
+        if std::path::Path::new(UNIT_FILE_PATH).exists() {
+            println!("Systemd service is already installed at {UNIT_FILE_PATH}.");
+            if !ui::confirm("Overwrite the existing unit file?") {
+                bail!("Aborted — existing unit file was not modified.");
+            }
+        }
+
         std::fs::write(UNIT_FILE_PATH, UNIT_FILE_CONTENTS)
             .context("Failed to write unit file. Are you running as root?")?;
         ui::success(&format!("Wrote {UNIT_FILE_PATH}"));
