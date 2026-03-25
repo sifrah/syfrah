@@ -196,11 +196,27 @@ impl LayerDb {
     }
 
     /// Count the number of keys in a table.
+    ///
+    /// Tries `Table<&str, &[u8]>` first; if the table uses a different value
+    /// type (e.g. `u64` for the metrics table), falls back to `Table<&str, u64>`.
     pub fn count(&self, table_name: &str) -> Result<u64> {
         let table_def: TableDefinition<&str, &[u8]> = TableDefinition::new(table_name);
         let read_txn = self.db.begin_read()?;
 
-        let table = match read_txn.open_table(table_def) {
+        match read_txn.open_table(table_def) {
+            Ok(t) => return t.len().map_err(StateError::Storage),
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(0),
+            Err(redb::TableError::TableTypeMismatch { .. }) => {
+                // Fall through to try u64 value type.
+            }
+            Err(e) => return Err(StateError::Table(e)),
+        }
+
+        // Retry with u64 value type (used by the metrics table).
+        let table_def_u64: TableDefinition<&str, u64> = TableDefinition::new(table_name);
+        let read_txn = self.db.begin_read()?;
+
+        let table = match read_txn.open_table(table_def_u64) {
             Ok(t) => t,
             Err(redb::TableError::TableDoesNotExist(_)) => return Ok(0),
             Err(e) => return Err(StateError::Table(e)),
@@ -210,11 +226,30 @@ impl LayerDb {
     }
 
     /// Count keys and check existence in a single read transaction.
+    ///
+    /// Like [`count`], falls back to `Table<&str, u64>` on type mismatch.
     pub fn count_and_exists(&self, table_name: &str, key: &str) -> Result<(u64, bool)> {
         let table_def: TableDefinition<&str, &[u8]> = TableDefinition::new(table_name);
         let read_txn = self.db.begin_read()?;
 
-        let table = match read_txn.open_table(table_def) {
+        match read_txn.open_table(table_def) {
+            Ok(t) => {
+                let count = t.len().map_err(StateError::Storage)?;
+                let exists = t.get(key).map_err(StateError::Storage)?.is_some();
+                return Ok((count, exists));
+            }
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok((0, false)),
+            Err(redb::TableError::TableTypeMismatch { .. }) => {
+                // Fall through to try u64 value type.
+            }
+            Err(e) => return Err(StateError::Table(e)),
+        }
+
+        // Retry with u64 value type (used by the metrics table).
+        let table_def_u64: TableDefinition<&str, u64> = TableDefinition::new(table_name);
+        let read_txn = self.db.begin_read()?;
+
+        let table = match read_txn.open_table(table_def_u64) {
             Ok(t) => t,
             Err(redb::TableError::TableDoesNotExist(_)) => return Ok((0, false)),
             Err(e) => return Err(StateError::Table(e)),
