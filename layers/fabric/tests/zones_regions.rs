@@ -18,28 +18,28 @@ fn make_peer(name: &str, region: Option<&str>, zone: Option<&str>) -> PeerRecord
 
 #[test]
 fn generate_zone_first_node() {
-    let zone = generate_zone("region-1", &[]);
+    let zone = generate_zone("us-east", &[]);
     assert_eq!(zone, "zone-1");
 }
 
 #[test]
 fn generate_zone_increments() {
     let peers = vec![
-        make_peer("a", Some("region-1"), Some("zone-1")),
-        make_peer("b", Some("region-1"), Some("zone-2")),
+        make_peer("a", Some("us-east"), Some("zone-1")),
+        make_peer("b", Some("us-east"), Some("zone-2")),
     ];
-    let zone = generate_zone("region-1", &peers);
+    let zone = generate_zone("us-east", &peers);
     assert_eq!(zone, "zone-3");
 }
 
 #[test]
 fn generate_zone_different_region_ignored() {
     let peers = vec![
-        make_peer("a", Some("region-1"), Some("zone-1")),
+        make_peer("a", Some("us-east"), Some("zone-1")),
         make_peer("b", Some("region-2"), Some("zone-1")),
     ];
     // Both zones parse as zone-1, peer count = 2 → max(1,2)+1 = 3
-    let zone = generate_zone("region-1", &peers);
+    let zone = generate_zone("us-east", &peers);
     assert_eq!(zone, "zone-3");
 }
 
@@ -47,10 +47,10 @@ fn generate_zone_different_region_ignored() {
 fn generate_zone_with_gaps() {
     // Zone-1 and zone-3 exist but zone-2 was removed — still takes max+1
     let peers = vec![
-        make_peer("a", Some("region-1"), Some("zone-1")),
-        make_peer("c", Some("region-1"), Some("zone-3")),
+        make_peer("a", Some("us-east"), Some("zone-1")),
+        make_peer("c", Some("us-east"), Some("zone-3")),
     ];
-    let zone = generate_zone("region-1", &peers);
+    let zone = generate_zone("us-east", &peers);
     assert_eq!(zone, "zone-4");
 }
 
@@ -58,7 +58,7 @@ fn generate_zone_with_gaps() {
 fn generate_zone_no_matching_region() {
     let peers = vec![make_peer("a", Some("region-2"), Some("zone-5"))];
     // zone-5 is parsed, peer count = 1 → max(5,1)+1 = 6
-    let zone = generate_zone("region-1", &peers);
+    let zone = generate_zone("us-east", &peers);
     assert_eq!(zone, "zone-6");
 }
 
@@ -66,10 +66,10 @@ fn generate_zone_no_matching_region() {
 fn generate_zone_peers_without_zone() {
     let peers = vec![
         make_peer("a", None, None),
-        make_peer("b", Some("region-1"), None),
+        make_peer("b", Some("us-east"), None),
     ];
     // No zone prefixes found, but 2 peers → max(0,2)+1 = 3
-    let zone = generate_zone("region-1", &peers);
+    let zone = generate_zone("us-east", &peers);
     assert_eq!(zone, "zone-3");
 }
 
@@ -87,10 +87,10 @@ fn generate_zone_custom_region_name() {
 fn generate_zone_legacy_format_backward_compat() {
     // Legacy peers with region-prefixed zone names should still be parsed
     let peers = vec![
-        make_peer("a", Some("region-1"), Some("region-1-zone-1")),
-        make_peer("b", Some("region-1"), Some("region-1-zone-2")),
+        make_peer("a", Some("us-east"), Some("us-east-zone-1")),
+        make_peer("b", Some("us-east"), Some("us-east-zone-2")),
     ];
-    let zone = generate_zone("region-1", &peers);
+    let zone = generate_zone("us-east", &peers);
     assert_eq!(zone, "zone-3");
 }
 
@@ -98,10 +98,10 @@ fn generate_zone_legacy_format_backward_compat() {
 fn generate_zone_mixed_legacy_and_new() {
     // Mix of old and new format zones
     let peers = vec![
-        make_peer("a", Some("region-1"), Some("region-1-zone-3")),
-        make_peer("b", Some("region-1"), Some("zone-5")),
+        make_peer("a", Some("us-east"), Some("us-east-zone-3")),
+        make_peer("b", Some("us-east"), Some("zone-5")),
     ];
-    let zone = generate_zone("region-1", &peers);
+    let zone = generate_zone("us-east", &peers);
     assert_eq!(zone, "zone-6");
 }
 
@@ -140,10 +140,10 @@ fn generate_zone_large_index() {
     for i in 1..=100 {
         peers.push(make_peer(
             &format!("n{i}"),
-            Some("region-1"),
+            Some("us-east"),
             Some(&format!("zone-{i}")),
         ));
     }
-    let zone = generate_zone("region-1", &peers);
+    let zone = generate_zone("us-east", &peers);
     assert_eq!(zone, "zone-101");
 }

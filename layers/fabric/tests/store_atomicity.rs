@@ -387,3 +387,35 @@ fn json_and_redb_consistent_after_concurrent_upserts() {
         );
     });
 }
+
+// ── Test 7: peer_count_and_exists returns correct values ────
+
+#[test]
+fn peer_count_and_exists_empty_store() {
+    with_temp_home(|| {
+        // No peers inserted yet — count should be 0, exists should be false
+        let (count, exists) = store::peer_count_and_exists("nonexistent-key").unwrap();
+        assert_eq!(count, 0, "expected 0 peers in fresh store");
+        assert!(!exists, "nonexistent key should not exist");
+    });
+}
+
+#[test]
+fn peer_count_and_exists_after_upserts() {
+    with_temp_home(|| {
+        let peer1 = make_test_peer("pce-1", 1);
+        let peer2 = make_test_peer("pce-2", 2);
+        store::upsert_peer(&peer1).unwrap();
+        store::upsert_peer(&peer2).unwrap();
+
+        // Existing key
+        let (count, exists) = store::peer_count_and_exists(&peer1.wg_public_key).unwrap();
+        assert_eq!(count, 2, "expected 2 peers after two upserts");
+        assert!(exists, "peer1 should exist");
+
+        // Non-existing key
+        let (count, exists) = store::peer_count_and_exists("no-such-key").unwrap();
+        assert_eq!(count, 2, "count should still be 2");
+        assert!(!exists, "non-existent key should return false");
+    });
+}

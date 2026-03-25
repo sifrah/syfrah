@@ -8,9 +8,13 @@
 syfrah <namespace> <command> [flags]
 ```
 
-The CLI communicates with the local daemon via a Unix domain socket (`~/.syfrah/control.sock`) for runtime operations, with the Raft-based control plane (via HTTP on the fabric) for cluster-wide operations, or directly reads/writes state for offline operations.
+The CLI communicates with the local daemon via a Unix domain socket (`~/.syfrah/control.sock`) for runtime operations, or directly reads/writes state for offline operations.
+
+> **Implementation status:** Only `syfrah fabric`, `syfrah state`, and `syfrah update` are implemented. All other namespaces (`forge`, `org`, `vm`, `vpc`, etc.) are planned. See the command tree below for details.
 
 ## Command tree
+
+Commands marked **(planned)** are not yet implemented.
 
 ```
 syfrah
@@ -24,9 +28,15 @@ syfrah
 │   ├── stop                      Stop the daemon
 │   ├── leave                     Leave the mesh, clear state
 │   ├── status                    Show mesh and daemon status
+│   ├── events                    Show the event log
 │   ├── peers                     List all mesh peers
 │   ├── token                     Show the mesh secret
 │   ├── rotate                    Rotate the mesh secret
+│   ├── diagnose                  Run diagnostic checks
+│   ├── service                   Manage the systemd service
+│   │   ├── install               Install and enable service
+│   │   ├── uninstall             Disable and remove service
+│   │   └── status                Show service status
 │   └── peering                   Manage join requests
 │       ├── start                 Start accepting joins
 │       ├── stop                  Stop accepting joins
@@ -34,7 +44,14 @@ syfrah
 │       ├── accept                Accept a request
 │       └── reject                Reject a request
 │
-├── forge                         Per-node debug and ops
+├── state                         Inspect and manage layer state databases
+│   ├── list                      List tables in a layer's state database
+│   ├── get                       Get values from a table
+│   └── drop                      Drop (delete) a layer's state database
+│
+├── update                        Update syfrah to the latest release
+│
+├── forge                         Per-node debug and ops (planned)
 │   ├── status                    This node's health and resources
 │   ├── vms                       Firecracker processes on this node
 │   ├── bridges                   Active bridges, VXLAN, TAP devices
@@ -43,23 +60,23 @@ syfrah
 │   ├── logs                      Tail daemon logs
 │   └── drain                     Prepare node for maintenance
 │
-├── org                           Organization management
+├── org                           Organization management (planned)
 │   ├── create
 │   ├── list
 │   └── delete
 │
-├── project                       Project management
+├── project                       Project management (planned)
 │   ├── create
 │   ├── list
 │   └── delete
 │
-├── env                           Environment management
+├── env                           Environment management (planned)
 │   ├── create
 │   ├── list
 │   ├── update
 │   └── destroy
 │
-├── vm                            Virtual machine management
+├── vm                            Virtual machine management (planned)
 │   ├── create
 │   ├── list
 │   ├── start
@@ -68,23 +85,23 @@ syfrah
 │   ├── delete
 │   └── ssh
 │
-├── vpc                           VPC management
+├── vpc                           VPC management (planned)
 │   ├── create
 │   ├── list
 │   ├── delete
 │   └── peer
 │
-├── subnet                        Subnet management
+├── subnet                        Subnet management (planned)
 │   ├── create
 │   └── list
 │
-├── sg                            Security group management
+├── sg                            Security group management (planned)
 │   ├── create
 │   ├── list
 │   ├── add-rule
 │   └── remove-rule
 │
-├── volume                        Volume management
+├── volume                        Volume management (planned)
 │   ├── create
 │   ├── list
 │   ├── attach
@@ -92,40 +109,42 @@ syfrah
 │   ├── delete
 │   └── snapshot
 │
-├── user                          User management
+├── user                          User management (planned)
 │   ├── create
 │   ├── list
 │   └── disable
 │
-├── iam                           Role assignment
+├── iam                           Role assignment (planned)
 │   ├── assign
 │   ├── list
 │   └── revoke
 │
-├── apikey                        API key management
+├── apikey                        API key management (planned)
 │   ├── create
 │   ├── list
 │   ├── rotate
 │   └── delete
 │
-├── login                         Authenticate
-└── logout                        Clear session
+├── login                         Authenticate (planned)
+└── logout                        Clear session (planned)
 ```
 
 ## Namespace mapping
 
-Each CLI namespace maps to an architectural layer, a source of truth, and a directory in the codebase:
+Each CLI namespace maps to an architectural layer, a source of truth, and a directory in the codebase. Only **implemented** namespaces have working code today.
 
-| Namespace | Layer | Source of truth | Code directory |
-|---|---|---|---|
-| `fabric` | Fabric | Local state + Raft | `commands/fabric/` |
-| `forge` | Forge (per-node) | Local reality (observed) | `commands/forge/` |
-| `org`, `project`, `env` | Organization | Raft (desired) | `commands/org/`, `commands/project/`, `commands/env/` |
-| `vm` | Compute | Raft (desired) | `commands/vm/` |
-| `vpc`, `subnet`, `sg` | Overlay | Raft (desired) | `commands/vpc/`, `commands/subnet/`, `commands/sg/` |
-| `volume` | Storage | Raft (desired) | `commands/volume/` |
-| `user`, `iam`, `apikey` | IAM | Raft (desired) | `commands/user/`, `commands/iam/`, `commands/apikey/` |
-| `login`, `logout` | IAM | Local session | `commands/login.rs`, `commands/logout.rs` |
+| Namespace | Layer | Source of truth | Code directory | Status |
+|---|---|---|---|---|
+| `fabric` | Fabric | Local state (redb) | `layers/fabric/src/cli/` | Implemented |
+| `state` | State | Local state databases | `layers/state/src/cli/` | Implemented |
+| `update` | — | GitHub releases | `bin/syfrah/src/update.rs` | Implemented |
+| `forge` | Forge (per-node) | Local reality (observed) | — | Planned |
+| `org`, `project`, `env` | Organization | Raft (desired) | — | Planned |
+| `vm` | Compute | Raft (desired) | — | Planned |
+| `vpc`, `subnet`, `sg` | Overlay | Raft (desired) | — | Planned |
+| `volume` | Storage | Raft (desired) | — | Planned |
+| `user`, `iam`, `apikey` | IAM | Raft (desired) | — | Planned |
+| `login`, `logout` | IAM | Local session | — | Planned |
 
 ## `update` — self-update
 
@@ -255,7 +274,56 @@ syfrah fabric peering accept abc12345
 syfrah fabric peering reject abc12345 --reason "unknown"
 ```
 
-## `forge` — per-node debug and ops
+### `syfrah fabric events`
+
+```bash
+syfrah fabric events          # show the event log
+syfrah fabric events --json   # output as JSON
+```
+
+### `syfrah fabric diagnose`
+
+```bash
+syfrah fabric diagnose        # run diagnostic checks on the fabric
+```
+
+### `syfrah fabric service`
+
+```bash
+syfrah fabric service install     # install and enable the systemd service
+syfrah fabric service uninstall   # disable and remove the systemd service
+syfrah fabric service status      # show systemd service status
+```
+
+## `state` — inspect and manage layer state databases
+
+The `state` namespace provides low-level access to the redb state databases used by each layer. Useful for debugging and recovery.
+
+### `syfrah state list`
+
+```bash
+syfrah state list fabric          # list tables in the fabric state database
+syfrah state list nonexistent     # error: no database for this layer
+```
+
+### `syfrah state get`
+
+```bash
+syfrah state get fabric peers     # get all values from the "peers" table
+syfrah state get fabric config    # get all values from the "config" table
+```
+
+### `syfrah state drop`
+
+```bash
+syfrah state drop fabric --force  # delete the fabric state database
+```
+
+**Warning:** `syfrah state drop` permanently deletes a layer's state database. Use `--force` to confirm.
+
+## `forge` — per-node debug and ops (planned)
+
+> **Not yet implemented.** The following describes the planned design.
 
 Exposes the **observed state** of a specific node. While `syfrah vm list` shows what Raft thinks (desired state), `syfrah forge vms` shows what is actually running on the node (reality).
 
@@ -357,6 +425,8 @@ Marks the node as `Draining` in Raft. The scheduler stops placing new VMs here. 
 
 ## Future namespaces (planned)
 
+> **Not yet implemented.** The following describes the planned CLI design for future layers.
+
 ### `org`, `project`, `env`
 
 ```bash
@@ -407,48 +477,40 @@ syfrah login --email alice@example.com
 
 ## Code structure
 
-The CLI codebase mirrors the command tree. One directory per namespace, one file per command.
+CLI commands live inside their layer crate. The binary (`bin/syfrah/`) composes them.
 
 ```
-crates/syfrah-cli/src/
-├── main.rs
-└── commands/
-    ├── mod.rs
-    ├── fabric/
-    │   ├── mod.rs          FabricCommand enum
-    │   ├── init.rs         Args + run()
-    │   ├── join.rs
-    │   ├── start.rs
-    │   ├── stop.rs
-    │   ├── leave.rs
-    │   ├── status.rs
-    │   ├── peers.rs
-    │   ├── token.rs
-    │   ├── rotate.rs
-    │   └── peering.rs
-    ├── forge/
-    │   ├── mod.rs          ForgeCommand enum
-    │   ├── status.rs
-    │   ├── vms.rs
-    │   ├── bridges.rs
-    │   ├── volumes.rs
-    │   ├── nftables.rs
-    │   ├── logs.rs
-    │   └── drain.rs
-    ├── org/
-    │   ├── mod.rs
-    │   ├── create.rs
-    │   ├── list.rs
-    │   └── delete.rs
-    ├── ...                 (same pattern for each namespace)
-    ├── login.rs            top-level command
-    └── logout.rs           top-level command
+bin/syfrah/src/
+├── main.rs              Binary — composes all layers, defines clap tree
+└── update.rs            Self-update logic
+
+layers/fabric/src/cli/
+├── mod.rs               CLI command modules
+├── init.rs              syfrah fabric init
+├── join.rs              syfrah fabric join
+├── start.rs             syfrah fabric start
+├── stop.rs              syfrah fabric stop
+├── leave.rs             syfrah fabric leave
+├── status.rs            syfrah fabric status
+├── events.rs            syfrah fabric events
+├── peers.rs             syfrah fabric peers
+├── token.rs             syfrah fabric token
+├── rotate.rs            syfrah fabric rotate
+├── diagnose.rs          syfrah fabric diagnose
+├── service.rs           syfrah fabric service {install,uninstall,status}
+└── peering.rs           syfrah fabric peering {start,stop,list,accept,reject}
+
+layers/state/src/cli/
+├── mod.rs               StateCommand enum + dispatch
+├── list.rs              syfrah state list
+├── get.rs               syfrah state get
+└── drop.rs              syfrah state drop
 ```
 
 ### Convention
 
 Every command file exports:
-- `pub struct Args` — clap args/flags
+- `pub struct Args` — clap args/flags (where applicable)
 - `pub async fn run(args: Args) -> Result<()>` — implementation
 
 Every namespace `mod.rs` exports:
@@ -456,9 +518,9 @@ Every namespace `mod.rs` exports:
 - `pub async fn run(cmd: {Namespace}Command) -> Result<()>` — dispatch
 
 Adding a new command:
-1. Create `commands/{namespace}/{command}.rs` with `Args` + `run()`
-2. Add `mod {command}` + variant in `commands/{namespace}/mod.rs`
-3. Done
+1. Create `layers/{layer}/src/cli/{command}.rs` with `Args` + `run()`
+2. Add `mod {command}` + variant in `layers/{layer}/src/cli/mod.rs`
+3. Wire it up in `bin/syfrah/src/main.rs`
 
 ## Design principles
 

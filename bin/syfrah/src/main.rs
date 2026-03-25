@@ -60,7 +60,7 @@ enum FabricCommand {
         endpoint: Option<SocketAddr>,
         #[arg(long)]
         peering_port: Option<u16>,
-        /// Region label for this node
+        /// Region label for this node [default: "default"]
         #[arg(long)]
         region: Option<String>,
         /// Zone label for this node (auto-incremented if not set)
@@ -86,7 +86,7 @@ enum FabricCommand {
         /// PIN for auto-accept (skip manual approval)
         #[arg(long)]
         pin: Option<String>,
-        /// Region label for this node
+        /// Region label for this node [default: "default"]
         #[arg(long)]
         region: Option<String>,
         /// Zone label for this node (auto-incremented if not set)
@@ -202,6 +202,11 @@ fn setup_logging(daemon_mode: bool) {
             if meta.len() > 10 * 1024 * 1024 {
                 let old = log_path.with_extension("log.old");
                 let _ = std::fs::rename(&log_path, &old);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o600));
+                }
             }
         }
         let file = std::fs::OpenOptions::new()
@@ -212,7 +217,7 @@ fn setup_logging(daemon_mode: bool) {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&log_path, std::fs::Permissions::from_mode(0o644));
+            let _ = std::fs::set_permissions(&log_path, std::fs::Permissions::from_mode(0o600));
         }
         if json_mode {
             tracing_subscriber::fmt()
@@ -300,7 +305,7 @@ fn background_daemon() -> Result<()> {
                 let log_fd = libc::open(
                     log_cstr.as_ptr(),
                     libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND,
-                    0o644,
+                    0o600,
                 );
                 if log_fd >= 0 {
                     libc::dup2(log_fd, 2); // stderr

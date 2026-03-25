@@ -46,6 +46,39 @@ trap 'rm -rf "$TMPDIR"' EXIT
 echo "Downloading ${URL}..."
 curl -fSL -o "${TMPDIR}/${ARCHIVE}" "$URL"
 
+# --- Verify checksum ---
+CHECKSUMS_URL="https://github.com/${REPO}/releases/download/${VERSION}/SHA256SUMS.txt"
+echo "Downloading checksums from ${CHECKSUMS_URL}..."
+if ! curl -fSL -o "${TMPDIR}/SHA256SUMS.txt" "$CHECKSUMS_URL"; then
+  echo "Error: could not download SHA256SUMS.txt from ${CHECKSUMS_URL}" >&2
+  echo "The release may not include a checksum file. Verify the release manually." >&2
+  exit 1
+fi
+
+echo "Verifying checksum..."
+EXPECTED="$(grep -F "${ARCHIVE}" "${TMPDIR}/SHA256SUMS.txt" | head -1 | awk '{print $1}')"
+if [ -z "$EXPECTED" ]; then
+  echo "Error: no checksum found for ${ARCHIVE} in SHA256SUMS.txt" >&2
+  exit 1
+fi
+
+if command -v sha256sum > /dev/null 2>&1; then
+  ACTUAL="$(sha256sum "${TMPDIR}/${ARCHIVE}" | awk '{print $1}')"
+elif command -v shasum > /dev/null 2>&1; then
+  ACTUAL="$(shasum -a 256 "${TMPDIR}/${ARCHIVE}" | awk '{print $1}')"
+else
+  echo "Error: no sha256sum or shasum command found" >&2
+  exit 1
+fi
+
+if [ "$EXPECTED" != "$ACTUAL" ]; then
+  echo "Error: checksum mismatch for ${ARCHIVE}" >&2
+  echo "  expected: ${EXPECTED}" >&2
+  echo "  actual:   ${ACTUAL}" >&2
+  exit 1
+fi
+echo "Checksum verified."
+
 # --- Extract and install ---
 echo "Extracting ${ARCHIVE}..."
 tar xzf "${TMPDIR}/${ARCHIVE}" -C "$TMPDIR"
