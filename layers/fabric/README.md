@@ -418,27 +418,46 @@ The fabric has several important properties by design:
 
 - **Manual trust** — Every new node must be explicitly approved by an operator. There is no automatic discovery. This is a deliberate security choice: the operator controls exactly which machines join the fabric.
 
-## Future: Zones and Regions
+## Zones and Regions
 
-Today, the fabric treats all nodes as equal members of a flat mesh. There is no concept of locality — a node in Paris and a node in Singapore are peers with the same status.
+Each node in the fabric carries a **region** and **zone** label. These are logical metadata that describe where a node sits in your topology, enabling higher layers (control plane, overlay, placement) to make topology-aware decisions: prefer intra-zone traffic, place replicas across zones, route overlay traffic efficiently within a region.
 
-In the future, Syfrah will introduce **regions** and **availability zones** (AZ) as logical groupings of nodes:
+### Setting region and zone
+
+Both `syfrah init` and `syfrah join` accept `--region` and `--zone` flags:
+
+```
+syfrah init --name prod --region eu-west --zone par-1
+syfrah join 10.0.0.1:51821 --region eu-west --zone par-2
+```
+
+- If `--region` is omitted, it defaults to `default` (a warning is printed encouraging you to set one).
+- If `--zone` is omitted, one is auto-generated as `zone-{N}`, where N is auto-incremented based on the highest zone index among existing peers. This ensures each node gets a unique zone by default.
+
+### Topology example
 
 ```
     Region: eu-west                    Region: eu-central
     ┌────────────────────┐             ┌────────────────────┐
-    │  AZ: par-1         │             │  AZ: fsn-1         │
+    │  Zone: par-1       │             │  Zone: fsn-1       │
     │  ┌──────┐┌──────┐  │             │  ┌──────┐┌──────┐  │
     │  │Node A││Node B│  │             │  │Node E││Node F│  │
     │  └──────┘└──────┘  │             │  └──────┘└──────┘  │
     │                    │             │                    │
-    │  AZ: par-2         │  ◄─fabric─► │  AZ: fsn-2         │
+    │  Zone: par-2       │  ◄─fabric─► │  Zone: fsn-2       │
     │  ┌──────┐┌──────┐  │             │  ┌──────┐          │
     │  │Node C││Node D│  │             │  │Node G│          │
     │  └──────┘└──────┘  │             │  └──────┘          │
     └────────────────────┘             └────────────────────┘
 ```
 
-The fabric will remain the same full-mesh WireGuard network connecting all nodes. Regions and zones will be logical metadata used by higher layers (control plane, overlay, placement) to make topology-aware decisions: prefer intra-AZ traffic, place replicas across AZs, route overlay traffic efficiently within a region.
+### Observability
 
-The fabric itself won't change — it's the overlay and control plane that will use zone/region information.
+Region and zone are displayed in CLI output:
+
+- `syfrah status` — shows the current node's region and zone.
+- `syfrah peers` — includes REGION and ZONE columns for every peer.
+
+### Design notes
+
+The fabric remains a flat full-mesh WireGuard network connecting all nodes regardless of region or zone. Region and zone are purely logical labels stored in the node state and propagated to peers. They do not affect routing or tunnel topology at the fabric layer — it is the overlay and control plane that consume this metadata for topology-aware decisions.
