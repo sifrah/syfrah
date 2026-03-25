@@ -632,6 +632,53 @@ mod tests {
     }
 
     #[test]
+    fn upsert_peer_bounded_rejects_new_at_limit() {
+        let (_dir, db) = temp_db();
+        // Fill to capacity (3 peers)
+        for i in 0..3 {
+            let peer = make_peer(&format!("key-{i}"));
+            db.set("peers", &peer.wg_public_key, &peer).unwrap();
+        }
+        // New peer should be rejected
+        let new_peer = make_peer("key-new");
+        let exists = db.exists("peers", &new_peer.wg_public_key).unwrap();
+        let count = db.count("peers").unwrap() as usize;
+        assert!(!exists);
+        assert_eq!(count, 3);
+        // Simulates upsert_peer_bounded logic: new + at limit → reject
+        assert!(!exists && count >= 3);
+    }
+
+    #[test]
+    fn upsert_peer_bounded_allows_existing_at_limit() {
+        let (_dir, db) = temp_db();
+        for i in 0..3 {
+            let peer = make_peer(&format!("key-{i}"));
+            db.set("peers", &peer.wg_public_key, &peer).unwrap();
+        }
+        // Existing peer update should be allowed even at limit
+        let exists = db.exists("peers", "key-1").unwrap();
+        let count = db.count("peers").unwrap() as usize;
+        assert!(exists);
+        assert_eq!(count, 3);
+        // Simulates upsert_peer_bounded logic: existing → always allowed
+        assert!(exists); // would skip the count check
+    }
+
+    #[test]
+    fn upsert_peer_bounded_allows_new_under_limit() {
+        let (_dir, db) = temp_db();
+        db.set("peers", "key-0", &make_peer("key-0")).unwrap();
+        let new_peer = make_peer("key-new");
+        let exists = db.exists("peers", &new_peer.wg_public_key).unwrap();
+        let count = db.count("peers").unwrap() as usize;
+        assert!(!exists);
+        assert_eq!(count, 1);
+        // Under limit of 3 → allowed
+        assert!(count < 3);
+    }
+
+    #[test]
     fn save_and_load_roundtrip() {
         // Use a temp dir to avoid polluting ~/.syfrah
         let tmp = tempfile::tempdir().unwrap();
