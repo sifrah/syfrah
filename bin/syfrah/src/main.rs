@@ -96,7 +96,7 @@ enum FabricCommand {
         #[arg(long, short)]
         foreground: bool,
     },
-    /// Restart the daemon from saved state
+    /// Start the daemon from saved state
     Start {
         /// Run daemon in foreground instead of backgrounding
         #[arg(long, short)]
@@ -451,6 +451,14 @@ async fn run() -> Result<()> {
                 }
             }
             FabricCommand::Start { foreground } => {
+                if !foreground {
+                    if let Some(pid) = syfrah_fabric::store::daemon_running() {
+                        eprintln!(
+                            "Daemon is already running (pid {pid}). Use 'syfrah fabric stop' first."
+                        );
+                        std::process::exit(1);
+                    }
+                }
                 if foreground {
                     // Log to file when running as daemon (foreground or background)
                     setup_logging(true);
