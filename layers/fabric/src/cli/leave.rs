@@ -4,8 +4,7 @@ use anyhow::Result;
 
 pub async fn run() -> Result<()> {
     if !ui::confirm("Leave the current mesh? This will remove all peer connections.") {
-        eprintln!("Aborted.");
-        return Ok(());
+        anyhow::bail!("Aborted by user.");
     }
 
     let sp = ui::spinner("Leaving mesh...");
