@@ -136,7 +136,7 @@ pub fn setup_init(config: &DaemonConfig) -> anyhow::Result<DaemonReady> {
 pub async fn run_init(config: DaemonConfig) -> anyhow::Result<()> {
     let ready = setup_init(&config)?;
     println!();
-    println!("Run 'syfrah peering' to accept new nodes.");
+    println!("Run 'syfrah fabric peering' to accept new nodes.");
     println!("Running daemon... (Ctrl+C to stop)");
     run_daemon(
         ready.my_record,
