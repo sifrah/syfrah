@@ -125,6 +125,12 @@ enum FabricCommand {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Maximum number of events to display (most recent first)
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Only show events after this Unix timestamp
+        #[arg(long)]
+        since: Option<u64>,
     },
     /// List all peers
     Peers,
@@ -494,9 +500,9 @@ async fn run() -> Result<()> {
                 })
                 .await
             }
-            FabricCommand::Events { json } => {
+            FabricCommand::Events { json, limit, since } => {
                 setup_logging(false);
-                cli::events::run(json).await
+                cli::events::run(json, limit, since).await
             }
             FabricCommand::Peers => {
                 setup_logging(false);
