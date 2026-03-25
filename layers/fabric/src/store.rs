@@ -608,6 +608,36 @@ fn is_zombie(_pid: u32) -> bool {
     false
 }
 
+/// Read the single-letter process state from `/proc/{pid}/status`.
+/// Returns `Some('S')`, `Some('D')`, `Some('Z')`, etc., or `None` if unreadable.
+#[cfg(target_os = "linux")]
+pub fn process_state(pid: u32) -> Option<char> {
+    let contents = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    for line in contents.lines() {
+        if let Some(state) = line.strip_prefix("State:") {
+            return state.trim().chars().next();
+        }
+    }
+    None
+}
+
+/// Non-Linux stub — always returns `None`.
+#[cfg(not(target_os = "linux"))]
+pub fn process_state(_pid: u32) -> Option<char> {
+    None
+}
+
+/// Attempt to reap a zombie process via `waitpid`.
+#[cfg(unix)]
+pub fn try_reap(pid: u32) {
+    unsafe {
+        libc::waitpid(pid as i32, std::ptr::null_mut(), libc::WNOHANG);
+    }
+}
+
+#[cfg(not(unix))]
+pub fn try_reap(_pid: u32) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
