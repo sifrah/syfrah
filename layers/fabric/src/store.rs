@@ -252,9 +252,10 @@ fn load_from_redb_with(db: &LayerDb) -> Result<NodeState, StoreError> {
 /// Generate a zone name based on region and existing peers.
 /// Format: zone-{next_index}
 ///
-/// The index is the greater of:
-/// - max zone index found in peers with matching zone prefix, or
-/// - total peer count (to handle peers whose zone is unknown to the leader)
+/// When existing peers already carry zone labels, `next_index` is one past
+/// the highest zone index found. When no zone labels exist yet, the peer
+/// count is used as the starting index so that each peer can be assigned a
+/// unique zone.
 ///
 /// For backward compatibility, both `zone-{N}` and legacy `{region}-zone-{N}`
 /// formats are recognized when scanning existing peers.
@@ -270,11 +271,16 @@ pub fn generate_zone(region: &str, existing_peers: &[PeerRecord]) -> String {
                     .and_then(|suffix| suffix.parse::<u32>().ok())
             })
         })
-        .max()
-        .unwrap_or(0);
-    // Also account for peers with no zone — they still occupy a slot
-    let peer_count = existing_peers.len() as u32;
-    let next_index = max_zone_index.max(peer_count) + 1;
+        .max();
+    let next_index = match max_zone_index {
+        Some(idx) => idx + 1,
+        None => {
+            // No peers have zone labels yet; use peer count so each peer
+            // can still receive a distinct zone.
+            let peer_count = existing_peers.len() as u32;
+            peer_count + 1
+        }
+    };
     format!("zone-{next_index}")
 }
 

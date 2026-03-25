@@ -38,9 +38,9 @@ fn generate_zone_different_region_ignored() {
         make_peer("a", Some("us-east"), Some("zone-1")),
         make_peer("b", Some("region-2"), Some("zone-1")),
     ];
-    // Both zones parse as zone-1, peer count = 2 → max(1,2)+1 = 3
+    // Both zones parse as zone-1, max index = 1 → next = 2
     let zone = generate_zone("us-east", &peers);
-    assert_eq!(zone, "zone-3");
+    assert_eq!(zone, "zone-2");
 }
 
 #[test]
