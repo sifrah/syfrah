@@ -1,6 +1,8 @@
 use std::fs;
 use std::net::Ipv6Addr;
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::time::Instant;
 
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
@@ -12,6 +14,14 @@ use syfrah_core::mesh::PeerRecord;
 use syfrah_state::LayerDb;
 
 const LAYER_NAME: &str = "fabric";
+
+/// Minimum interval between JSON state exports. Peer updates that arrive
+/// faster than this are persisted in redb (the source of truth) but the
+/// legacy `state.json` file is only regenerated once the cooldown expires.
+const JSON_DEBOUNCE_SECS: u64 = 5;
+
+/// Tracks the last time `state.json` was written so we can debounce.
+static LAST_JSON_WRITE: Mutex<Option<Instant>> = Mutex::new(None);
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -304,11 +314,10 @@ pub fn upsert_peer(peer: &PeerRecord) -> Result<(), StoreError> {
     let db = open_db()?;
     db.set("peers", &peer.wg_public_key, peer)?;
 
-    // Regenerate JSON from redb (single source of truth)
-    // Reuse the same db connection to avoid file lock contention
-    if let Ok(state) = load_from_redb_with(&db) {
-        let _ = save_json_only(&state);
-    }
+    // Regenerate JSON from redb only if the debounce window has elapsed.
+    // redb is the source of truth; JSON is a best-effort export for
+    // backward compat, so skipping a write here is safe.
+    maybe_write_json(&db);
     Ok(())
 }
 
@@ -328,9 +337,7 @@ pub fn upsert_peer_bounded(peer: &PeerRecord, max_peers: usize) -> Result<bool, 
     }
 
     db.set("peers", &peer.wg_public_key, peer)?;
-    if let Ok(state) = load_from_redb_with(&db) {
-        let _ = save_json_only(&state);
-    }
+    maybe_write_json(&db);
     Ok(true)
 }
 
@@ -381,6 +388,39 @@ pub fn set_metric(name: &str, value: u64) -> Result<(), StoreError> {
 
 fn open_db() -> Result<LayerDb, StoreError> {
     Ok(LayerDb::open(LAYER_NAME)?)
+}
+
+/// Write JSON from redb only if the debounce window has elapsed.
+/// Called after every peer upsert to avoid rewriting `state.json` on
+/// every single peer update.
+fn maybe_write_json(db: &LayerDb) {
+    let should_write = {
+        let guard = LAST_JSON_WRITE.lock().unwrap_or_else(|e| e.into_inner());
+        match *guard {
+            Some(last) => last.elapsed().as_secs() >= JSON_DEBOUNCE_SECS,
+            None => true, // never written yet
+        }
+    };
+    if should_write {
+        if let Ok(state) = load_from_redb_with(db) {
+            if save_json_only(&state).is_ok() {
+                let mut guard = LAST_JSON_WRITE.lock().unwrap_or_else(|e| e.into_inner());
+                *guard = Some(Instant::now());
+            }
+        }
+    }
+}
+
+/// Force-flush the legacy `state.json` from the current redb state.
+/// Call this on daemon shutdown or when an up-to-date JSON export is needed
+/// immediately (e.g., before an E2E test reads the file).
+pub fn flush_json() -> Result<(), StoreError> {
+    let db = open_db()?;
+    let state = load_from_redb_with(&db)?;
+    save_json_only(&state)?;
+    let mut guard = LAST_JSON_WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = Some(Instant::now());
+    Ok(())
 }
 
 /// Write JSON only (no redb) for backward compat.
