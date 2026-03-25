@@ -1,13 +1,17 @@
-use crate::store;
 use crate::ui;
+use crate::{no_mesh_error, store};
 use anyhow::Result;
 use syfrah_core::secret::MeshSecret;
 
 pub async fn run() -> Result<()> {
-    let mut state = store::load().map_err(|_| anyhow::anyhow!("no mesh configured."))?;
+    let mut state = store::load().map_err(|_| no_mesh_error())?;
 
     if store::daemon_running().is_some() {
         anyhow::bail!("daemon is running. Stop it first with 'syfrah fabric stop'.");
+    }
+
+    if !ui::confirm("Rotate mesh secret? All peers must rejoin afterwards.") {
+        anyhow::bail!("aborted by user.");
     }
 
     let sp = ui::spinner("Rotating mesh secret...");

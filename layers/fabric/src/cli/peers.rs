@@ -2,16 +2,12 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::sanitize::sanitize;
-use crate::{store, ui, wg};
+use crate::{no_mesh_error, store, ui, wg};
 use anyhow::Result;
 use syfrah_core::mesh::{PeerRecord, PeerStatus};
 
 pub async fn run() -> Result<()> {
-    let state = store::load().map_err(|_| {
-        anyhow::anyhow!(
-            "no mesh configured. Run 'syfrah fabric init' or 'syfrah fabric join' first."
-        )
-    })?;
+    let state = store::load().map_err(|_| no_mesh_error())?;
 
     if state.peers.is_empty() {
         ui::info_line("Peers", "No peers discovered yet.");
