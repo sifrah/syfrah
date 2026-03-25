@@ -3,6 +3,11 @@ use crate::ui;
 use anyhow::Result;
 
 pub async fn run() -> Result<()> {
+    if !ui::confirm("Leave the current mesh? This will remove all peer connections.") {
+        eprintln!("Aborted.");
+        return Ok(());
+    }
+
     let sp = ui::spinner("Leaving mesh...");
     match daemon::run_leave().await {
         Ok(true) => {
