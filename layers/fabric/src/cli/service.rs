@@ -1,5 +1,7 @@
 use anyhow::{bail, Result};
 
+use crate::ui;
+
 #[cfg(target_os = "linux")]
 use anyhow::Context;
 #[cfg(target_os = "linux")]
@@ -36,15 +38,14 @@ pub async fn install() -> Result<()> {
 
         std::fs::write(UNIT_FILE_PATH, UNIT_FILE_CONTENTS)
             .context("Failed to write unit file. Are you running as root?")?;
-        println!("Wrote {UNIT_FILE_PATH}");
+        ui::success(&format!("Wrote {UNIT_FILE_PATH}"));
 
         run_systemctl(&["daemon-reload"])?;
         run_systemctl(&["enable", "syfrah"])?;
 
-        println!("Systemd service installed and enabled.");
-        println!("The daemon will start automatically on reboot.");
-        println!();
-        println!("To start now: systemctl start syfrah");
+        ui::success("Systemd service installed and enabled.");
+        ui::info_line("Note", "The daemon will start automatically on reboot.");
+        ui::info_line("Start now", "systemctl start syfrah");
         Ok(())
     }
 }
@@ -66,12 +67,12 @@ pub async fn uninstall() -> Result<()> {
         if std::path::Path::new(UNIT_FILE_PATH).exists() {
             std::fs::remove_file(UNIT_FILE_PATH)
                 .context("Failed to remove unit file. Are you running as root?")?;
-            println!("Removed {UNIT_FILE_PATH}");
+            ui::success(&format!("Removed {UNIT_FILE_PATH}"));
         }
 
         run_systemctl(&["daemon-reload"])?;
 
-        println!("Systemd service uninstalled.");
+        ui::success("Systemd service uninstalled.");
         Ok(())
     }
 }
@@ -87,8 +88,8 @@ pub async fn status() -> Result<()> {
         }
 
         if !std::path::Path::new(UNIT_FILE_PATH).exists() {
-            println!("Systemd service is not installed.");
-            println!("Run 'syfrah fabric service install' to install it.");
+            ui::warn("Systemd service is not installed.");
+            ui::info_line("Install", "syfrah fabric service install");
             return Ok(());
         }
 

@@ -2,6 +2,7 @@ use anyhow::Result;
 
 use crate::events;
 use crate::sanitize::sanitize;
+use crate::ui;
 
 pub async fn run(json: bool) -> Result<()> {
     let events =
@@ -11,7 +12,7 @@ pub async fn run(json: bool) -> Result<()> {
         if json {
             println!("[]");
         } else {
-            println!("No events recorded yet.");
+            ui::info_line("Events", "No events recorded yet.");
         }
         return Ok(());
     }
@@ -22,12 +23,10 @@ pub async fn run(json: bool) -> Result<()> {
         return Ok(());
     }
 
-    let header = "DETAILS";
-    println!(
+    ui::heading(&format!(
         "{:<20} {:<24} {:<18} {}",
-        "TIMESTAMP", "EVENT", "PEER", header
-    );
-    println!("{}", "-".repeat(90));
+        "TIMESTAMP", "EVENT", "PEER", "DETAILS"
+    ));
 
     for event in &events {
         let ts = format_timestamp(event.timestamp);
