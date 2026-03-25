@@ -948,6 +948,7 @@ pub fn generate_pin() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::now;
 
     #[tokio::test]
     async fn replay_guard_detects_duplicate_ciphertext() {
