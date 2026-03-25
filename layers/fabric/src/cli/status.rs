@@ -30,7 +30,7 @@ pub async fn run() -> Result<()> {
             .map(sanitize)
             .unwrap_or_else(|| "(not set)".into())
     );
-    println!("Secret:    {}", state.mesh_secret);
+    println!("Secret:    **** (use 'syfrah fabric token')");
     println!("Peering:   port {}", state.peering_port);
 
     match store::daemon_running() {
