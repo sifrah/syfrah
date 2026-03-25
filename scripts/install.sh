@@ -49,10 +49,14 @@ curl -fSL -o "${TMPDIR}/${ARCHIVE}" "$URL"
 # --- Verify checksum ---
 CHECKSUMS_URL="https://github.com/${REPO}/releases/download/${VERSION}/SHA256SUMS.txt"
 echo "Downloading checksums from ${CHECKSUMS_URL}..."
-curl -fSL -o "${TMPDIR}/SHA256SUMS.txt" "$CHECKSUMS_URL"
+if ! curl -fSL -o "${TMPDIR}/SHA256SUMS.txt" "$CHECKSUMS_URL"; then
+  echo "Error: could not download SHA256SUMS.txt from ${CHECKSUMS_URL}" >&2
+  echo "The release may not include a checksum file. Verify the release manually." >&2
+  exit 1
+fi
 
 echo "Verifying checksum..."
-EXPECTED="$(grep "${ARCHIVE}" "${TMPDIR}/SHA256SUMS.txt" | awk '{print $1}')"
+EXPECTED="$(grep -F "${ARCHIVE}" "${TMPDIR}/SHA256SUMS.txt" | head -1 | awk '{print $1}')"
 if [ -z "$EXPECTED" ]; then
   echo "Error: no checksum found for ${ARCHIVE} in SHA256SUMS.txt" >&2
   exit 1
