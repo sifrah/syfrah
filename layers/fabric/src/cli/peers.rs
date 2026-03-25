@@ -2,16 +2,12 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::sanitize::sanitize;
-use crate::{store, ui, wg};
+use crate::{no_mesh_error, store, ui, wg};
 use anyhow::Result;
 use syfrah_core::mesh::{PeerRecord, PeerStatus};
 
 pub async fn run() -> Result<()> {
-    let state = store::load().map_err(|_| {
-        anyhow::anyhow!(
-            "no mesh configured. Run 'syfrah fabric init' or 'syfrah fabric join' first."
-        )
-    })?;
+    let state = store::load().map_err(|_| no_mesh_error())?;
 
     if state.peers.is_empty() {
         ui::info_line("Peers", "No peers discovered yet.");
@@ -188,13 +184,7 @@ fn format_short(bytes: u64) -> String {
     }
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max - 3])
-    }
-}
+use super::ui::truncate;
 
 #[cfg(test)]
 mod tests {
@@ -291,15 +281,5 @@ mod tests {
     #[test]
     fn format_traffic_nonzero() {
         assert_eq!(format_traffic(1200, 3400), "1K↓ 3K↑");
-    }
-
-    #[test]
-    fn truncate_short_string() {
-        assert_eq!(truncate("hello", 10), "hello");
-    }
-
-    #[test]
-    fn truncate_long_string() {
-        assert_eq!(truncate("hello world!", 8), "hello...");
     }
 }

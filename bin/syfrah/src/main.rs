@@ -468,11 +468,7 @@ async fn run() -> Result<()> {
                     cli::start::run().await
                 } else {
                     // Validate state can be loaded before spawning background daemon
-                    syfrah_fabric::store::load().map_err(|_| {
-                        anyhow::anyhow!(
-                            "no mesh state found. Run 'syfrah fabric init' or 'syfrah fabric join' first."
-                        )
-                    })?;
+                    syfrah_fabric::store::load().map_err(|_| syfrah_fabric::no_mesh_error())?;
                     background_daemon()
                 }
             }
