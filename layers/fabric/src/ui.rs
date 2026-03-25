@@ -125,6 +125,93 @@ pub fn warn(msg: &str) {
     }
 }
 
+// ── Box-drawing section helpers ──────────────────────────────────────
+
+const BOX_WIDTH: usize = 50;
+
+/// Print the top border of a section box with an optional title.
+pub fn box_top(title: &str) {
+    if is_tty() {
+        let bold = Style::new().bold();
+        if title.is_empty() {
+            println!("\u{256d}{}\u{256e}", "\u{2500}".repeat(BOX_WIDTH));
+        } else {
+            let label = format!(" {} ", title);
+            let rest = BOX_WIDTH.saturating_sub(label.len() + 1);
+            println!(
+                "\u{256d}\u{2500}{}{}\u{256e}",
+                bold.apply_to(&label),
+                "\u{2500}".repeat(rest)
+            );
+        }
+    } else if title.is_empty() {
+        println!("{}", "-".repeat(BOX_WIDTH + 2));
+    } else {
+        println!(
+            "-- {} {}",
+            title,
+            "-".repeat(BOX_WIDTH.saturating_sub(title.len() + 4))
+        );
+    }
+}
+
+/// Print a line inside a box section.
+pub fn box_row(text: &str) {
+    if is_tty() {
+        let pad = BOX_WIDTH.saturating_sub(console::measure_text_width(text));
+        println!("\u{2502} {text}{}\u{2502}", " ".repeat(pad));
+    } else {
+        println!("  {text}");
+    }
+}
+
+/// Print the bottom border of a section box.
+pub fn box_bottom() {
+    if is_tty() {
+        println!("\u{2570}{}\u{256f}", "\u{2500}".repeat(BOX_WIDTH));
+    } else {
+        println!("{}", "-".repeat(BOX_WIDTH + 2));
+    }
+}
+
+/// Print a health status line (outside a box). Green check or red cross.
+pub fn health_ok(msg: &str) {
+    if is_tty() {
+        let green = Style::new().green().bold();
+        println!("  {} {msg}", green.apply_to("\u{25cf}"));
+    } else {
+        println!("  [OK] {msg}");
+    }
+}
+
+/// Print a health problem line. Red cross in TTY, plain in non-TTY.
+pub fn health_bad(msg: &str) {
+    if is_tty() {
+        let red = Style::new().red().bold();
+        println!("  {} {msg}", red.apply_to("\u{2717}"));
+    } else {
+        println!("  [!!] {msg}");
+    }
+}
+
+/// Mask a secret string, showing only the prefix tag and last 4 chars.
+pub fn mask_secret(secret: &str) -> String {
+    if secret.len() <= 8 {
+        return "****".to_string();
+    }
+    // Try to find the prefix like "syf_sk_"
+    let prefix_end = secret
+        .find('_')
+        .and_then(|i| secret[i + 1..].find('_').map(|j| i + 1 + j + 1))
+        .unwrap_or(0);
+    let last4 = &secret[secret.len() - 4..];
+    if prefix_end > 0 {
+        format!("{}****...{}", &secret[..prefix_end], last4)
+    } else {
+        format!("****...{}", last4)
+    }
+}
+
 /// Print a styled pass/fail check line for diagnostics.
 pub fn check_pass(name: &str) {
     if is_tty() {
@@ -233,5 +320,34 @@ mod tests {
     fn check_pass_fail_do_not_panic() {
         check_pass("something works");
         check_fail("something broke", "details here");
+    }
+
+    #[test]
+    fn box_drawing_does_not_panic() {
+        box_top("Test");
+        box_row("some content");
+        box_bottom();
+        box_top("");
+        box_bottom();
+    }
+
+    #[test]
+    fn health_lines_do_not_panic() {
+        health_ok("Daemon running");
+        health_bad("Interface down");
+    }
+
+    #[test]
+    fn mask_secret_hides_middle() {
+        let masked = mask_secret("syf_sk_Gegx27CfeNjXiK3ABQZQ1YBk7NpXCunu3eytQYsTkvd1");
+        assert!(masked.starts_with("syf_sk_"));
+        assert!(masked.ends_with("kvd1"));
+        assert!(masked.contains("****"));
+        assert!(!masked.contains("Gegx27"));
+    }
+
+    #[test]
+    fn mask_secret_short_input() {
+        assert_eq!(mask_secret("short"), "****");
     }
 }
