@@ -11,8 +11,7 @@ use std::collections::HashSet;
 /// With `--watch` (`continuous=true`), loops indefinitely for batch use.
 pub async fn watch(pin: Option<String>, continuous: bool) -> Result<()> {
     // Load mesh state (fails fast with a friendly message if no mesh exists).
-    let state = store::load()
-        .map_err(|_| no_mesh_error())?;
+    let state = store::load().map_err(|_| no_mesh_error())?;
     let port = state.peering_port;
 
     // Start peering with optional PIN
