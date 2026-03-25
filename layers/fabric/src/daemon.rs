@@ -69,6 +69,9 @@ pub fn setup_init(config: &DaemonConfig) -> anyhow::Result<DaemonReady> {
         anyhow::bail!("mesh state already exists. Run 'syfrah fabric leave' first.");
     }
 
+    let tuning = config::load_tuning().unwrap_or_default();
+    wg::set_interface_name(&tuning.interface_name);
+
     let sp = ui::spinner("Generating mesh secret...");
     let mesh_secret = MeshSecret::generate();
     let wg_keypair = wg::generate_keypair();
@@ -79,7 +82,10 @@ pub fn setup_init(config: &DaemonConfig) -> anyhow::Result<DaemonReady> {
 
     let sp = ui::spinner("Setting up WireGuard interface...");
     wg::setup_interface(&wg_keypair, config.wg_listen_port, mesh_ipv6)?;
-    ui::step_ok(&sp, &format!("Interface syfrah0 up ({mesh_ipv6})"));
+    ui::step_ok(
+        &sp,
+        &format!("Interface {} up ({mesh_ipv6})", wg::interface_name()),
+    );
     info!(flow = "init", mesh = %config.mesh_name, node = %config.node_name, "wireguard interface up");
 
     // Region/zone: use provided or defaults
@@ -153,6 +159,9 @@ pub fn auto_init(
     wg_port: u16,
     peering_port: u16,
 ) -> anyhow::Result<(MeshSecret, KeyPair)> {
+    let tuning = config::load_tuning().unwrap_or_default();
+    wg::set_interface_name(&tuning.interface_name);
+
     let mesh_secret = MeshSecret::generate();
     let wg_keypair = wg::generate_keypair();
 
@@ -161,7 +170,10 @@ pub fn auto_init(
 
     let sp = ui::spinner("Setting up WireGuard interface...");
     wg::setup_interface(&wg_keypair, wg_port, mesh_ipv6)?;
-    ui::step_ok(&sp, &format!("Interface syfrah0 up ({mesh_ipv6})"));
+    ui::step_ok(
+        &sp,
+        &format!("Interface {} up ({mesh_ipv6})", wg::interface_name()),
+    );
 
     let (region, zone) = resolve_region_zone(None, None, &[]);
 
@@ -204,6 +216,9 @@ pub async fn setup_join(
     if store::exists() {
         anyhow::bail!("mesh state already exists. Run 'syfrah fabric leave' first.");
     }
+
+    let tuning = config::load_tuning().unwrap_or_default();
+    wg::set_interface_name(&tuning.interface_name);
 
     let sp = ui::spinner(&format!("Connecting to {target}..."));
     let wg_keypair = wg::generate_keypair();
@@ -295,7 +310,10 @@ async fn finalize_join(
 
     let sp = ui::spinner("Setting up WireGuard interface...");
     wg::setup_interface(wg_keypair, config.wg_listen_port, mesh_ipv6)?;
-    ui::step_ok(&sp, &format!("Interface syfrah0 up ({mesh_ipv6})"));
+    ui::step_ok(
+        &sp,
+        &format!("Interface {} up ({mesh_ipv6})", wg::interface_name()),
+    );
     info!(flow = "join", node = %config.node_name, "wireguard interface up");
 
     if !response.peers.is_empty() {
@@ -435,6 +453,9 @@ pub async fn run_join(
 /// Setup restart from saved state: load state, setup WG, print info.
 /// Returns a DaemonReady that can be passed to run_daemon.
 pub fn setup_start() -> anyhow::Result<DaemonReady> {
+    let tuning = config::load_tuning().unwrap_or_default();
+    wg::set_interface_name(&tuning.interface_name);
+
     let state = store::load().map_err(|_| crate::no_mesh_error())?;
 
     let mesh_secret: MeshSecret = state
@@ -447,7 +468,14 @@ pub fn setup_start() -> anyhow::Result<DaemonReady> {
 
     let sp = ui::spinner("Setting up WireGuard interface...");
     wg::setup_interface(&wg_keypair, state.wg_listen_port, state.mesh_ipv6)?;
-    ui::step_ok(&sp, &format!("Interface syfrah0 up ({})", state.mesh_ipv6));
+    ui::step_ok(
+        &sp,
+        &format!(
+            "Interface {} up ({})",
+            wg::interface_name(),
+            state.mesh_ipv6
+        ),
+    );
 
     if !state.peers.is_empty() {
         let sp_peers = ui::spinner("Syncing peers...");
@@ -578,6 +606,7 @@ pub async fn run_daemon(
         warn!("failed to load config.toml: {e}, using defaults");
         Tuning::default()
     });
+    wg::set_interface_name(&tuning.interface_name);
     info!(
         "daemon tuning: health_check={}s reconcile={}s persist={}s unreachable={}s max_peers={} max_concurrent_announces={}",
         tuning.health_check_interval.as_secs(),
@@ -1109,6 +1138,8 @@ pub async fn run_daemon(
         }
     }
 
+    // Flush any debounced JSON state so the on-disk export is up-to-date.
+    let _ = store::flush_json();
     let _ = std::fs::remove_file(store::control_socket_path());
     wg::teardown_interface()?;
     store::remove_pid();

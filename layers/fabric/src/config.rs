@@ -30,6 +30,8 @@ pub struct Tuning {
     pub max_peers: usize,
     /// Maximum number of concurrent announce-processing tasks.
     pub max_concurrent_announces: usize,
+    /// WireGuard interface name (default "syfrah0").
+    pub interface_name: String,
 }
 
 impl Default for Tuning {
@@ -47,6 +49,7 @@ impl Default for Tuning {
             max_pending_joins: 100,
             max_peers: 1000,
             max_concurrent_announces: 50,
+            interface_name: crate::wg::DEFAULT_INTERFACE_NAME.to_string(),
         }
     }
 }
@@ -76,6 +79,7 @@ struct DaemonSection {
 #[derive(Debug, Deserialize, Default)]
 struct WireguardSection {
     keepalive_interval: Option<u16>,
+    interface_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -161,5 +165,9 @@ pub fn load_tuning() -> Result<Tuning, String> {
             .limits
             .max_concurrent_announces
             .unwrap_or(defaults.max_concurrent_announces),
+        interface_name: config
+            .wireguard
+            .interface_name
+            .unwrap_or(defaults.interface_name),
     })
 }

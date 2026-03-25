@@ -1,7 +1,8 @@
 use std::net::SocketAddr;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::{generate, Shell};
 
 use syfrah_fabric::cli;
 use syfrah_fabric::daemon::{self, DaemonConfig};
@@ -31,6 +32,11 @@ enum Commands {
     State {
         #[command(subcommand)]
         command: StateCommand,
+    },
+    /// Generate shell completions for bash, zsh, or fish
+    Completions {
+        /// The shell to generate completions for
+        shell: Shell,
     },
     /// Update syfrah to the latest release
     Update {
@@ -122,6 +128,12 @@ enum FabricCommand {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Maximum number of events to display (most recent first)
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Only show events after this Unix timestamp
+        #[arg(long)]
+        since: Option<u64>,
     },
     /// List all peers
     Peers {
@@ -501,9 +513,9 @@ async fn run() -> Result<()> {
                 })
                 .await
             }
-            FabricCommand::Events { json } => {
+            FabricCommand::Events { json, limit, since } => {
                 setup_logging(false);
-                cli::events::run(json).await
+                cli::events::run(json, limit, since).await
             }
             FabricCommand::Peers { json } => {
                 setup_logging(false);
@@ -552,6 +564,11 @@ async fn run() -> Result<()> {
                 }
             }
         },
+        Commands::Completions { shell } => {
+            let mut cmd = Cli::command();
+            generate(shell, &mut cmd, "syfrah", &mut std::io::stdout());
+            Ok(())
+        }
         Commands::State { command } => syfrah_state::cli::run(command).await,
         Commands::Update {
             check,

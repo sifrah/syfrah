@@ -4,9 +4,22 @@ use crate::events;
 use crate::sanitize::sanitize;
 use crate::ui;
 
-pub async fn run(json: bool) -> Result<()> {
-    let events =
+pub async fn run(json: bool, limit: Option<usize>, since: Option<u64>) -> Result<()> {
+    let mut events =
         events::list_events().map_err(|e| anyhow::anyhow!("failed to load events: {e}"))?;
+
+    // Filter by --since (keep only events after the given timestamp)
+    if let Some(since_ts) = since {
+        events.retain(|e| e.timestamp >= since_ts);
+    }
+
+    // Apply --limit (show the N most recent events)
+    if let Some(n) = limit {
+        let len = events.len();
+        if n < len {
+            events = events.split_off(len - n);
+        }
+    }
 
     if events.is_empty() {
         if json {

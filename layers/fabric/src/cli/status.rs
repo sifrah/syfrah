@@ -14,6 +14,9 @@ pub struct StatusOpts {
 }
 
 pub async fn run(opts: StatusOpts) -> Result<()> {
+    let tuning = config::load_tuning().unwrap_or_default();
+    wg::set_interface_name(&tuning.interface_name);
+
     let state = store::load().map_err(|_| no_mesh_error())?;
 
     if opts.json {
@@ -68,9 +71,9 @@ pub async fn run(opts: StatusOpts) -> Result<()> {
         Err(_) => false,
     };
     if iface_up {
-        ui::health_ok("Interface syfrah0 is up");
+        ui::health_ok(&format!("Interface {} is up", wg::interface_name()));
     } else {
-        ui::health_bad("Interface syfrah0 is down");
+        ui::health_bad(&format!("Interface {} is down", wg::interface_name()));
     }
     println!();
 
