@@ -161,6 +161,8 @@ enum FabricCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Export metrics in Prometheus text format
+    Metrics,
     /// Manage the systemd service
     Service {
         #[command(subcommand)]
@@ -547,6 +549,10 @@ async fn run() -> Result<()> {
             FabricCommand::Diagnose { json } => {
                 setup_logging(false);
                 cli::diagnose::run(json).await
+            }
+            FabricCommand::Metrics => {
+                setup_logging(false);
+                cli::metrics::run().await
             }
             FabricCommand::Service { action } => {
                 setup_logging(false);
