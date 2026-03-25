@@ -7,8 +7,6 @@ use anyhow::Context;
 #[cfg(target_os = "linux")]
 use std::process::Command;
 
-use crate::ui;
-
 pub const UNIT_FILE_PATH: &str = "/etc/systemd/system/syfrah.service";
 
 pub const UNIT_FILE_CONTENTS: &str = "\
