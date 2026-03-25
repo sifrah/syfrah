@@ -962,6 +962,9 @@ pub async fn run_daemon(
             ) {
                 debug!(error = %e, "failed to persist store_failures metric");
             }
+
+            // Flush JSON export so state.json stays in sync with redb
+            let _ = store::flush_json();
         }
     };
 
