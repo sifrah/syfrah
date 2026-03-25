@@ -2,16 +2,14 @@
 
 ## Principle: tests follow the architecture
 
-Tests are organized by layer, just like the code. Each layer owns its unit and integration tests. End-to-end tests live at the repo root and test cross-layer scenarios.
+Tests are organized by layer, just like the code. Each layer owns its unit and integration tests. End-to-end tests live in `tests/e2e/` and test cross-layer scenarios using Docker containers and shell scripts.
 
 ```
-    layers/core/src/         ← unit tests (inline)
-    layers/core/tests/       ← integration tests
-    layers/fabric/src/       ← unit tests (inline)
-    layers/fabric/tests/     ← integration tests
-    layers/compute/tests/    ← integration tests
-    ...
-    tests/                   ← E2E tests (cross-layer)
+    layers/core/src/         <- unit tests (inline)
+    layers/core/tests/       <- integration tests
+    layers/fabric/src/       <- unit tests (inline)
+    layers/fabric/tests/     <- integration tests
+    tests/e2e/               <- E2E tests (shell scripts + Docker)
 ```
 
 ## Three levels
@@ -67,36 +65,7 @@ mod tests {
 - Normal: `cargo test -p syfrah-fabric` (skips `#[ignore]`)
 - With root: `sudo cargo test -p syfrah-fabric -- --ignored`
 
-**CI:** The non-ignored tests run automatically per-layer. Ignored tests run in the E2E workflow.
-
-```rust
-// layers/fabric/tests/wireguard.rs
-
-use syfrah_fabric::wg;
-
-#[test]
-#[ignore] // requires root — WireGuard interface creation
-fn create_and_destroy_interface() {
-    let kp = wg::generate_keypair();
-    wg::create_interface(&kp.private, 51820).unwrap();
-    let device = wg::get_device().unwrap();
-    assert_eq!(device.public_key, Some(kp.public.clone()));
-    wg::destroy_interface().unwrap();
-    assert!(wg::get_device().is_err());
-}
-```
-
-```rust
-// layers/fabric/tests/store.rs
-
-use syfrah_fabric::store;
-
-#[test]
-fn save_and_load_roundtrip() {
-    let tmp = tempfile::tempdir().unwrap();
-    // ... test state persistence
-}
-```
+**CI:** The non-ignored tests run automatically per-layer. Ignored tests are covered by E2E.
 
 **What belongs here:**
 - WireGuard interface creation/destruction (root, `#[ignore]`)
@@ -110,101 +79,115 @@ fn save_and_load_roundtrip() {
 
 ### E2E tests
 
-**What:** Full scenarios that cross multiple layers. Simulate a real cluster on a single machine.
+**What:** Full scenarios that test the real `syfrah` binary across multiple Docker containers simulating a multi-node cluster.
 
-**Where:** `tests/` at the repo root. Each file is a scenario.
+**Where:** `tests/e2e/scenarios/`. Each file is a self-contained shell script.
 
-**Requirements:** Root (WireGuard), Linux. Always `#[ignore]`.
+**Infrastructure:** Docker containers with WireGuard kernel support, running the statically-linked `syfrah` binary.
 
-**Run:** `sudo cargo test --test '*' -- --ignored`
-
-**CI:** Dedicated workflow (`e2e.yml`), weekly + manual + on code changes.
-
-```rust
-// tests/fabric_mesh.rs
-
-mod helpers;
-use helpers::TestNode;
-
-#[tokio::test]
-#[ignore] // requires root
-async fn three_nodes_form_mesh() {
-    let node_a = TestNode::init("node-a", "test-mesh").await;
-    let pin = node_a.start_peering().await;
-
-    let node_b = TestNode::join("node-b", node_a.peering_addr(), &pin).await;
-    let node_c = TestNode::join("node-c", node_a.peering_addr(), &pin).await;
-
-    // All nodes see each other
-    assert_eq!(node_a.peer_count().await, 2);
-    assert_eq!(node_b.peer_count().await, 2);
-    assert_eq!(node_c.peer_count().await, 2);
-
-    // Cleanup
-    node_c.stop().await;
-    node_b.stop().await;
-    node_a.stop().await;
-}
+**Run:**
+```bash
+./tests/e2e/run.sh                  # run all scenarios
+./tests/e2e/run.sh fabric           # run only fabric scenarios
+./tests/e2e/run.sh 01_fabric        # run scenarios matching "01_fabric"
+just e2e                            # shorthand
 ```
+
+**CI:** Dedicated workflow (`e2e.yml`), on push to main + PRs with code changes + weekly + manual trigger.
+
+```
+tests/e2e/
+├── Dockerfile          Docker image (debian + wireguard-tools + syfrah binary)
+├── run.sh              Orchestrator: builds image, discovers and runs scenarios
+├── lib.sh              Shared functions for all scenarios
+└── scenarios/
+    ├── 01_fabric_mesh_formation.sh
+    ├── 02_fabric_mesh_connectivity.sh
+    ├── 03_fabric_node_leave.sh
+    ├── 04_fabric_daemon_restart.sh
+    ├── 05_fabric_large_mesh.sh
+    ├── ...                              (40+ scenarios)
+    ├── 21_state_cli_list.sh
+    ├── 22_state_cli_get.sh
+    ├── 23_state_cli_drop.sh
+    └── ...
+```
+
+**`run.sh`** builds the Docker image (compiles syfrah with musl for static linking), discovers all `scenarios/*.sh` files, and runs them sequentially. Each scenario is independent.
+
+**`lib.sh`** provides shared functions that every scenario sources:
+
+| Function | What it does |
+|---|---|
+| `start_node <name> <ip>` | Start a container on the test network |
+| `init_mesh <container> <ip>` | Run `syfrah fabric init` |
+| `start_peering <container>` | Run `syfrah fabric peering start --pin` |
+| `join_mesh <container> <target_ip> <own_ip>` | Run `syfrah fabric join` |
+| `wait_daemon <container>` | Wait for the control socket (up to 30s) |
+| `stop_daemon <container>` | Run `syfrah fabric stop` |
+| `leave_mesh <container>` | Run `syfrah fabric leave` |
+| `get_mesh_ipv6 <container>` | Extract the mesh IPv6 from status |
+| `assert_daemon_running <container>` | Verify daemon is running |
+| `assert_peer_count <container> <n>` | Verify peer count |
+| `assert_interface_exists <container>` | Verify syfrah0 exists |
+| `assert_interface_gone <container>` | Verify syfrah0 is removed |
+| `assert_can_ping <from> <ipv6>` | Verify IPv6 mesh connectivity |
+| `cleanup` | Remove all containers created by this scenario |
+| `summary` | Print pass/fail count, return exit code |
 
 **What belongs here:**
 - Multi-node mesh formation
-- VM lifecycle across the stack (create, start, stop, delete)
-- VPC isolation verification (traffic between VPCs is blocked)
-- Volume migration between nodes
-- Full scenario: org → project → env → VPC → VM → connectivity
+- Node join, leave, rejoin flows
+- Daemon lifecycle (start, stop, restart)
+- Mesh connectivity (IPv6 ping between nodes)
+- State CLI operations
+- Error message validation
+- Stress tests (large meshes, concurrent joins)
 
 **What does NOT belong here:**
 - Tests that can run in a single layer (move them to integration tests)
 - Performance benchmarks (separate concern)
 
-## Test helpers
+### Adding an E2E scenario
 
-Shared utilities for E2E tests live in `tests/helpers/`:
+1. Create `tests/e2e/scenarios/XX_name.sh`
+2. Source the shared library: `source "$SCRIPT_DIR/../lib.sh"`
+3. Use `start_node`, `init_mesh`, `join_mesh`, `assert_*` functions
+4. End with `cleanup` and `summary`
+5. Done -- `run.sh` discovers it automatically
 
-```rust
-// tests/helpers/mod.rs
+Template:
 
-/// A syfrah node running in a temp directory with unique ports.
-/// Used by E2E tests to simulate a multi-node cluster on one machine.
-pub struct TestNode {
-    pub name: String,
-    pub wg_port: u16,
-    pub peering_port: u16,
-    pub api_port: u16,
-    pub data_dir: tempfile::TempDir,
-    pub mesh_ipv6: Option<Ipv6Addr>,
-}
+```bash
+#!/usr/bin/env bash
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+source "$SCRIPT_DIR/lib.sh"
 
-impl TestNode {
-    /// Initialize a new mesh (equivalent to `syfrah fabric init`)
-    pub async fn init(name: &str, mesh_name: &str) -> Self { ... }
+echo "-- My New Test --"
 
-    /// Join an existing mesh (equivalent to `syfrah fabric join`)
-    pub async fn join(name: &str, target: SocketAddr, pin: &str) -> Self { ... }
+create_network
 
-    /// Start peering and return the auto-accept PIN
-    pub async fn start_peering(&self) -> String { ... }
+start_node "e2e-mytest-1" "172.20.0.10"
+start_node "e2e-mytest-2" "172.20.0.11"
 
-    /// Get the number of connected peers
-    pub async fn peer_count(&self) -> usize { ... }
+init_mesh "e2e-mytest-1" "172.20.0.10"
+start_peering "e2e-mytest-1"
+join_mesh "e2e-mytest-2" "172.20.0.10" "172.20.0.11"
 
-    /// Stop the node and clean up
-    pub async fn stop(&self) { ... }
-}
+sleep 3
 
-impl Drop for TestNode {
-    fn drop(&mut self) {
-        // Ensure cleanup even if test panics
-    }
-}
+assert_peer_count "e2e-mytest-1" 1
+assert_can_ping "e2e-mytest-1" "$(get_mesh_ipv6 e2e-mytest-2)"
+
+cleanup
+summary
 ```
 
-Each `TestNode` instance:
-- Gets its own temp directory (`~/.syfrah` equivalent)
-- Gets unique ports (WireGuard, peering, API) to avoid conflicts
-- Creates its own WireGuard interface (requires root)
-- Cleans up on drop (interface teardown, temp dir removal)
+Container naming: each scenario uses a unique container name prefix (e.g., `e2e-form-*`, `e2e-ping-*`) to avoid conflicts between scenarios. The shared network (`syfrah-e2e`) is reused.
+
+## Test helpers (Rust)
+
+A placeholder `tests/helpers/mod.rs` exists for future Rust-based E2E helpers (`TestNode`), but is not yet implemented. All current E2E testing uses the shell-script approach described above.
 
 ## CI integration
 
@@ -214,16 +197,16 @@ The existing CI workflow runs unit + non-ignored integration tests per layer:
 
 ```
     Push / PR
-         │
-    ┌────┴──────┐  ┌────────────┐  ┌────────────┐
-    │syfrah-core│  │syfrah-     │  │syfrah-bin  │
-    │           │  │fabric      │  │            │
-    │ clippy    │  │ clippy     │  │ clippy     │
-    │ test      │  │ test       │  │ test       │
-    └───────────┘  └────────────┘  └────────────┘
+         |
+    +----+------+  +------------+  +------------+
+    |syfrah-core|  |syfrah-     |  |syfrah-bin  |
+    |           |  |fabric      |  |            |
+    | clippy    |  | clippy     |  | clippy     |
+    | test      |  | test       |  | test       |
+    +-----------+  +------------+  +------------+
 
     Only unit tests and non-#[ignore]d integration tests.
-    No root, no WireGuard, no Firecracker.
+    No root, no WireGuard, no Docker.
     Fast (~1-2 min per layer).
 ```
 
@@ -232,104 +215,58 @@ The existing CI workflow runs unit + non-ignored integration tests per layer:
 A separate workflow runs the full E2E suite:
 
 ```
-    Weekly (Monday 4am UTC) + manual + PR with code changes
-         │
-    ┌────┴────────────────────────────────────────┐
-    │  Ubuntu, root, WireGuard installed           │
-    │                                              │
-    │  sudo cargo test --test '*' -- --ignored     │
-    │                                              │
-    │  Runs all tests/ scenarios:                  │
-    │    fabric_mesh.rs                            │
-    │    vm_lifecycle.rs        (when implemented) │
-    │    vpc_isolation.rs       (when implemented) │
-    │    storage_migration.rs   (when implemented) │
-    │    full_stack.rs          (when implemented) │
-    └──────────────────────────────────────────────┘
+    Push to main + PRs with code changes + weekly (Monday 4am UTC) + manual
+         |
+    +----+-----------------------------------------+
+    |  Ubuntu, Docker pre-installed                 |
+    |                                               |
+    |  docker build + ./tests/e2e/run.sh            |
+    |                                               |
+    |  Runs all tests/e2e/scenarios/*.sh:           |
+    |    01_fabric_mesh_formation.sh                |
+    |    02_fabric_mesh_connectivity.sh             |
+    |    ...                                        |
+    |    21_state_cli_list.sh                       |
+    |    ...                                        |
+    +-----------------------------------------------+
 ```
 
-The E2E workflow:
-- Runs on `ubuntu-latest` with `sudo`
-- Installs WireGuard tools
-- Only triggers on code changes (not doc-only changes)
-- Can be triggered manually via `workflow_dispatch`
-- Runs weekly as a regression safety net
+Containers use `--privileged` for WireGuard kernel access.
 
 ## Running tests locally
 
 ```bash
-# Unit tests (all layers, fast, no root)
+# Unit tests (all layers, fast, no root, no Docker)
 just test
 
 # Unit tests for one layer
 cargo test -p syfrah-fabric
 
-# Integration tests requiring root (one layer)
-sudo cargo test -p syfrah-fabric -- --ignored
+# E2E tests (requires Docker)
+just e2e
 
-# E2E tests (all scenarios, root required)
-sudo cargo test --test '*' -- --ignored
+# Run a specific E2E scenario
+./tests/e2e/run.sh 01_mesh
 
-# Everything
-sudo cargo test --workspace -- --include-ignored
-```
-
-## Writing tests
-
-### For a new unit test
-
-Add a `#[test]` function inside a `#[cfg(test)]` block in the source file. No special setup needed.
-
-### For a new integration test
-
-Create a file in `layers/{layer}/tests/`. If it needs root, add `#[ignore]`.
-
-```rust
-// layers/{layer}/tests/my_test.rs
-
-#[test]
-fn my_test() {
-    // ...
-}
-
-#[test]
-#[ignore] // requires root
-fn my_root_test() {
-    // ...
-}
-```
-
-### For a new E2E scenario
-
-Create a file in `tests/`. Always `#[ignore]`. Use the `TestNode` helpers.
-
-```rust
-// tests/my_scenario.rs
-
-mod helpers;
-use helpers::TestNode;
-
-#[tokio::test]
-#[ignore]
-async fn my_scenario() {
-    let node = TestNode::init("test", "mesh").await;
-    // ... test something across layers
-    node.stop().await;
-}
+# Everything (unit + E2E)
+just ci && just e2e
 ```
 
 ## What we test at each layer
 
+> Layers marked **(planned)** have README-only documentation; their tests do not yet exist.
+
 | Layer | Unit tests | Integration tests | E2E scenarios |
 |---|---|---|---|
-| **core** | Types, validation, crypto, IPAM math | Serialization roundtrips | — |
-| **fabric** | Key generation, address derivation | WireGuard interface (root), peering protocol, state persistence | Multi-node mesh formation |
-| **compute** | VM spec validation | Firecracker process lifecycle (root) | VM create/start/stop/delete |
-| **storage** | Volume spec validation | ZeroFS NBD management (root) | Volume attach, detach, migrate |
-| **overlay** | IPAM allocation, MAC derivation | Bridge/VXLAN creation (root), nftables rules (root) | VPC isolation, cross-node connectivity |
-| **controlplane** | Scheduler scoring, state machine | Raft consensus (multi-instance) | Leader election, failover |
-| **org** | Name validation, hierarchy logic | — | Full org/project/env lifecycle |
-| **iam** | Role permissions, key hashing | — | Auth flow, API key scoping |
+| **core** | Types, validation, crypto, addressing | Serialization roundtrips | -- |
+| **fabric** | Key generation, address derivation | WireGuard interface (root), peering protocol, state persistence | Multi-node mesh, connectivity, rejoin, secret rotation, stress tests |
+| **state** | -- | -- | `syfrah state list/get/drop` |
+| **compute** (planned) | VM spec validation | Firecracker process lifecycle (root) | VM create/start/stop/delete |
+| **storage** (planned) | Volume spec validation | ZeroFS NBD management (root) | Volume attach, detach, migrate |
+| **overlay** (planned) | IPAM allocation, MAC derivation | Bridge/VXLAN creation (root), nftables rules (root) | VPC isolation, cross-node connectivity |
+| **controlplane** (planned) | Scheduler scoring, state machine | Raft consensus (multi-instance) | Leader election, failover |
+| **org** (planned) | Name validation, hierarchy logic | -- | Full org/project/env lifecycle |
+| **iam** (planned) | Role permissions, key hashing | -- | Auth flow, API key scoping |
 
 ## Conventions
 
@@ -337,11 +274,11 @@ async fn my_scenario() {
 |---|---|
 | Unit test location | Inline `#[cfg(test)]` in source files |
 | Integration test location | `layers/{layer}/tests/` |
-| E2E test location | `tests/` (repo root) |
-| Root-required tests | Always `#[ignore]` |
-| Test naming | Descriptive: `three_nodes_form_mesh`, not `test_1` |
-| Cleanup | Use `Drop` or explicit cleanup. Tests must not leak interfaces or processes. |
-| Shared helpers | `tests/helpers/mod.rs` for E2E |
-| CI unit/integration | `ci.yml` — automatic, per-layer, every push |
-| CI E2E | `e2e.yml` — weekly + manual + code PR |
-| Local full suite | `sudo cargo test --workspace -- --include-ignored` |
+| E2E test location | `tests/e2e/scenarios/` (shell scripts) |
+| E2E infrastructure | Docker containers with WireGuard, orchestrated by `run.sh` |
+| Test naming | Descriptive: `01_fabric_mesh_formation.sh`, not `test_1.sh` |
+| Cleanup | Each scenario calls `cleanup` to remove its containers |
+| Shared helpers | `tests/e2e/lib.sh` for E2E shell functions |
+| CI unit/integration | `ci.yml` -- automatic, per-layer, every push |
+| CI E2E | `e2e.yml` -- on code changes + weekly + manual |
+| Local full suite | `just ci && just e2e` |
