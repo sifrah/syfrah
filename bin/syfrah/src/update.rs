@@ -116,9 +116,10 @@ fn stop_daemon() -> Result<Option<usize>> {
     let peer_count = syfrah_fabric::store::peer_count().unwrap_or(0);
 
     let sp = ui::spinner("Stopping daemon...");
+    let pid_i32 = i32::try_from(pid).context("daemon PID out of range for signal delivery")?;
     #[cfg(unix)]
     unsafe {
-        libc::kill(pid as i32, libc::SIGTERM);
+        libc::kill(pid_i32, libc::SIGTERM);
     }
 
     // Wait up to 10 seconds for the daemon to exit
@@ -129,11 +130,26 @@ fn stop_daemon() -> Result<Option<usize>> {
         }
     }
 
+    // Escalate to SIGKILL if SIGTERM didn't work
+    if syfrah_fabric::store::daemon_running().is_some() {
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(pid_i32, libc::SIGKILL);
+        }
+        // Brief wait for SIGKILL to take effect
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if syfrah_fabric::store::daemon_running().is_none() {
+                break;
+            }
+        }
+    }
+
     if syfrah_fabric::store::daemon_running().is_some() {
         ui::step_fail(&sp, &format!("Daemon (pid {pid}) did not stop in time"));
         bail!(
-            "daemon did not stop within 10 seconds. \
-             Stop it manually with 'kill {pid}' and re-run the update."
+            "daemon did not stop within 12 seconds (SIGTERM + SIGKILL). \
+             Stop it manually with 'kill -9 {pid}' and re-run the update."
         );
     }
 
@@ -154,16 +170,22 @@ fn stop_daemon() -> Result<Option<usize>> {
 fn start_daemon(exe_path: &std::path::Path) -> Result<Option<u32>> {
     let sp = ui::spinner("Starting daemon...");
 
-    let status = std::process::Command::new(exe_path)
+    let output = std::process::Command::new(exe_path)
         .args(["fabric", "start"])
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+        .stderr(std::process::Stdio::piped())
+        .output()
         .context("failed to execute new binary for daemon start")?;
 
-    if !status.success() {
-        ui::step_fail(&sp, "Failed to start daemon");
-        return Ok(None);
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = if stderr.trim().is_empty() {
+            format!("exit code: {:?}", output.status.code())
+        } else {
+            stderr.trim().to_string()
+        };
+        ui::step_fail(&sp, &format!("Failed to start daemon: {detail}"));
+        bail!("daemon failed to start: {detail}");
     }
 
     // Wait briefly for daemon to register its PID
@@ -223,17 +245,7 @@ pub fn run(no_restart: bool, force: bool) -> Result<()> {
     }
     ui::step_ok(&sp, &format!("Update available: v{current} -> {latest}"));
 
-    // Check if daemon is running — we'll need to restart it later
-    let daemon_was_running = syfrah_fabric::store::daemon_running().is_some();
-
-    if daemon_was_running && !no_restart && !force {
-        let peer_count = syfrah_fabric::store::peer_count().unwrap_or(0);
-        if peer_count > 0 {
-            ui::warn(&format!(
-                "This will briefly interrupt connectivity with {peer_count} peer(s)."
-            ));
-        }
-    }
+    // Note: daemon-running check is deferred until just before stop to avoid TOCTOU.
 
     // Step 2: find the right asset
     let target = asset_name(latest)?;
@@ -303,8 +315,20 @@ pub fn run(no_restart: bool, force: bool) -> Result<()> {
     }
     ui::step_ok(&sp, "Checksum verified");
 
-    // Step 6: stop daemon before replacing binary (unless --no-restart)
+    // Step 6: check daemon state and stop before replacing binary (unless --no-restart)
+    // Daemon check is done here (not earlier) to avoid TOCTOU with the download.
+    let daemon_was_running = syfrah_fabric::store::daemon_running().is_some();
+
     if daemon_was_running && !no_restart {
+        let peer_count = syfrah_fabric::store::peer_count().unwrap_or(0);
+        if peer_count > 0
+            && !force
+            && !ui::confirm(&format!(
+                "This will briefly interrupt connectivity with {peer_count} peer(s). Continue?"
+            ))
+        {
+            bail!("update cancelled by user");
+        }
         stop_daemon()?;
     }
 
@@ -380,56 +404,77 @@ pub fn run(no_restart: bool, force: bool) -> Result<()> {
             ui::warn("A daemon is running. Restart it to use the new version:");
             ui::warn("  syfrah fabric stop && syfrah fabric start");
         } else {
-            // Try to start the daemon with the new binary
             match start_daemon(&current_exe) {
-                Ok(Some(_)) => {
-                    // Success — clean up backup
+                Ok(_) => {
+                    // Daemon started (pid may or may not be visible yet)
                     let _ = fs::remove_file(&backup_path);
                 }
-                Ok(None) | Err(_) => {
-                    // Daemon failed to start — attempt rollback
-                    if has_backup {
-                        ui::warn("New daemon failed to start. Rolling back to previous version...");
-                        let sp = ui::spinner("Restoring previous binary...");
-                        if fs::rename(&backup_path, &current_exe).is_ok() {
-                            ui::step_ok(&sp, "Previous binary restored");
-                            // Try to start the old daemon
-                            if start_daemon(&current_exe).is_ok() {
-                                ui::warn(
-                                    "Rolled back and restarted with previous version. \
-                                     Check release notes for compatibility issues.",
-                                );
-                            } else {
-                                ui::warn(
-                                    "Previous binary restored but daemon failed to start. \
-                                     Try: syfrah fabric start",
-                                );
-                            }
-                        } else {
-                            ui::step_fail(&sp, "Failed to restore previous binary");
-                            ui::warn("Try starting the daemon manually: syfrah fabric start");
-                        }
-                    } else {
-                        ui::warn(
-                            "Daemon failed to start and no backup available. \
-                             Try: syfrah fabric start",
-                        );
-                    }
-                    let _ = fs::remove_file(&backup_path);
-                    ui::success(&format!(
-                        "syfrah updated to {latest} (daemon restart failed)."
-                    ));
+                Err(_) => {
+                    rollback_daemon(&backup_path, &current_exe, has_backup, latest);
                     return Ok(());
                 }
             }
         }
     } else {
-        // Clean up backup — no daemon to worry about
         let _ = fs::remove_file(&backup_path);
     }
 
     ui::success(&format!("syfrah updated to {latest} successfully."));
     Ok(())
+}
+
+/// Attempt to restore the previous binary and restart the daemon after a failed start.
+fn rollback_daemon(
+    backup_path: &std::path::Path,
+    current_exe: &std::path::Path,
+    has_backup: bool,
+    latest: &str,
+) {
+    if !has_backup {
+        ui::warn(
+            "Daemon failed to start and no backup available. \
+             Try: syfrah fabric start",
+        );
+        ui::success(&format!(
+            "syfrah updated to {latest} (daemon restart failed)."
+        ));
+        return;
+    }
+
+    ui::warn("New daemon failed to start. Rolling back to previous version...");
+    let sp = ui::spinner("Restoring previous binary...");
+
+    if fs::rename(backup_path, current_exe).is_err() {
+        ui::step_fail(&sp, "Failed to restore previous binary");
+        // Do NOT delete the backup — it's the user's only recovery option.
+        ui::warn(
+            "The backup is preserved at the .bak path. \
+             Try restoring it manually and run: syfrah fabric start",
+        );
+        ui::success(&format!(
+            "syfrah updated to {latest} (daemon restart failed)."
+        ));
+        return;
+    }
+
+    ui::step_ok(&sp, "Previous binary restored");
+    // Backup has been consumed by the rename — no file to clean up.
+
+    if start_daemon(current_exe).is_ok() {
+        ui::warn(
+            "Rolled back and restarted with previous version. \
+             Check release notes for compatibility issues.",
+        );
+    } else {
+        ui::warn(
+            "Previous binary restored but daemon failed to start. \
+             Try: syfrah fabric start",
+        );
+    }
+
+    ui::success(&format!(
+        "syfrah updated to {latest} (daemon restart failed)."
+    ));
 }
 
 #[cfg(test)]
@@ -484,7 +529,9 @@ mod tests {
 
     #[test]
     fn stop_daemon_returns_none_when_no_daemon() {
-        // With no daemon running, stop_daemon should return Ok(None)
+        // NOTE: This test assumes no syfrah daemon is running in the test environment.
+        // If a daemon happens to be running, the test may fail — this is expected
+        // and not a flaky test.
         let result = stop_daemon();
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
@@ -496,6 +543,46 @@ mod tests {
         let result = start_daemon(fake_path);
         // Should return an error because the binary doesn't exist
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn rollback_preserves_backup_on_rename_failure() {
+        // Simulate: backup exists but rename to a non-writable target fails.
+        // The backup file must NOT be deleted.
+        let dir = std::env::temp_dir().join("syfrah-test-rollback-preserve");
+        let _ = fs::create_dir_all(&dir);
+
+        let backup = dir.join("syfrah.bak");
+        fs::write(&backup, b"old-binary").unwrap();
+
+        // Point current_exe at a path we can't write to (nonexistent deep dir)
+        let impossible_target = dir
+            .join("no-such-dir")
+            .join("deeply")
+            .join("nested")
+            .join("syfrah");
+
+        rollback_daemon(&backup, &impossible_target, true, "v0.0.0-test");
+
+        // The backup should still exist because the rename failed
+        assert!(backup.exists(), "backup was deleted after failed rollback");
+
+        // Clean up
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rollback_without_backup_does_not_panic() {
+        let dir = std::env::temp_dir().join("syfrah-test-rollback-no-backup");
+        let _ = fs::create_dir_all(&dir);
+
+        let backup = dir.join("syfrah.bak");
+        let exe = dir.join("syfrah");
+
+        // has_backup = false — should just warn, not panic or try to rename
+        rollback_daemon(&backup, &exe, false, "v0.0.0-test");
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

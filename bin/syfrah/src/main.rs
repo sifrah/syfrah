@@ -40,7 +40,7 @@ enum Commands {
         /// Skip automatic daemon restart (print manual instructions instead)
         #[arg(long)]
         no_restart: bool,
-        /// Skip confirmation when the node has active connections
+        /// Skip the confirmation prompt when the node has active peer connections
         #[arg(long)]
         force: bool,
     },

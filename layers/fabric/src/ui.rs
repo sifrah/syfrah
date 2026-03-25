@@ -95,6 +95,24 @@ pub fn success(msg: &str) {
     }
 }
 
+/// Prompt the user for y/n confirmation. Returns `true` if they accept.
+///
+/// In non-TTY mode always returns `true` (non-interactive defaults to yes).
+pub fn confirm(prompt: &str) -> bool {
+    use std::io::Write;
+    if !is_tty() {
+        return true;
+    }
+    let yellow = Style::new().yellow();
+    eprint!("{} [y/N] ", yellow.apply_to(prompt));
+    let _ = std::io::stderr().flush();
+    let mut input = String::new();
+    if std::io::stdin().read_line(&mut input).is_err() {
+        return false;
+    }
+    matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
+}
+
 /// Print a yellow warning line.
 pub fn warn(msg: &str) {
     if is_tty() {
