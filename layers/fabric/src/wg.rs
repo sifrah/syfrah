@@ -762,7 +762,10 @@ mod tests {
         let wg_peers = vec![make_wg_summary(&peer_b64, "203.0.113.1:51820")];
 
         let (add, remove) = diff_peers(&self_kp.public, &desired, &wg_peers).unwrap();
-        assert!(add.is_empty(), "endpoint-only change must not trigger update (WG handles roaming)");
+        assert!(
+            add.is_empty(),
+            "endpoint-only change must not trigger update (WG handles roaming)"
+        );
         assert!(remove.is_empty());
     }
 
