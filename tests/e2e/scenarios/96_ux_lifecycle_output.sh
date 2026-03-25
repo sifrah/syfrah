@@ -59,7 +59,7 @@ fi
 
 # Test 5: Leave — clean message
 info "Testing: leave output..."
-output_leave=$(docker exec "e2e-ux-life-1" syfrah fabric leave 2>&1 || true)
+output_leave=$(docker exec "e2e-ux-life-1" syfrah fabric leave --yes 2>&1 || true)
 if echo "$output_leave" | grep -qi "clear\|removed\|left\|clean"; then
     pass "leave: clean message"
 else
@@ -75,7 +75,7 @@ fi
 
 # Test 6: Double leave — "nothing to do"
 info "Testing: double leave..."
-output_leave2=$(docker exec "e2e-ux-life-1" syfrah fabric leave 2>&1 || true)
+output_leave2=$(docker exec "e2e-ux-life-1" syfrah fabric leave --yes 2>&1 || true)
 if echo "$output_leave2" | grep -qi "nothing\|already\|no mesh\|not.*found\|no state"; then
     pass "double leave: says nothing to do"
 else

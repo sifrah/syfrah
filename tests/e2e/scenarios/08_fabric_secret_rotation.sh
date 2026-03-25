@@ -30,7 +30,7 @@ info "Rotating secret on node-1..."
 docker exec "e2e-rot-1" syfrah fabric stop 2>/dev/null || true
 docker exec "e2e-rot-1" pkill -f syfrah 2>/dev/null || true
 sleep 2
-docker exec "e2e-rot-1" syfrah fabric rotate
+docker exec "e2e-rot-1" syfrah fabric rotate --yes
 
 # Verify new secret
 new_secret=$(get_state_field "e2e-rot-1" ".mesh_secret")
@@ -54,10 +54,10 @@ wait_daemon "e2e-rot-1"
 start_peering "e2e-rot-1"
 
 # Old nodes must leave and rejoin
-docker exec "e2e-rot-2" syfrah fabric leave 2>/dev/null || true
+docker exec "e2e-rot-2" syfrah fabric leave --yes 2>/dev/null || true
 docker exec "e2e-rot-2" pkill -f syfrah 2>/dev/null || true
 sleep 1
-docker exec "e2e-rot-3" syfrah fabric leave 2>/dev/null || true
+docker exec "e2e-rot-3" syfrah fabric leave --yes 2>/dev/null || true
 docker exec "e2e-rot-3" pkill -f syfrah 2>/dev/null || true
 sleep 1
 

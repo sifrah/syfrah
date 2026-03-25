@@ -27,7 +27,7 @@ info "Node-3 original key: ${old_key:0:20}..."
 
 # Node-3 leaves
 info "Node-3 leaving..."
-docker exec "e2e-rekey-3" syfrah fabric leave 2>/dev/null || true
+docker exec "e2e-rekey-3" syfrah fabric leave --yes 2>/dev/null || true
 docker exec "e2e-rekey-3" pkill -f syfrah 2>/dev/null || true
 sleep 2
 

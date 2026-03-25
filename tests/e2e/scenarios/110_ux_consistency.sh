@@ -79,7 +79,7 @@ done
 
 # === Post leave+rejoin: no stale data ===
 info "Testing: no stale data after leave+rejoin..."
-docker exec "e2e-consist-3" syfrah fabric leave 2>&1 || true
+docker exec "e2e-consist-3" syfrah fabric leave --yes 2>&1 || true
 sleep 3
 start_peering "e2e-consist-1"
 join_mesh "e2e-consist-3" "172.20.0.10" "172.20.0.12" "consist-srv-3"

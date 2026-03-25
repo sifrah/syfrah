@@ -2,8 +2,10 @@ use crate::daemon;
 use crate::ui;
 use anyhow::Result;
 
-pub async fn run() -> Result<()> {
-    if !ui::confirm("Leave the current mesh? This will remove all peer connections.") {
+pub async fn run(skip_confirm: bool) -> Result<()> {
+    if !skip_confirm
+        && !ui::confirm("Leave the current mesh? This will remove all peer connections.")
+    {
         anyhow::bail!("Aborted by user.");
     }
 

@@ -31,7 +31,7 @@ fi
 
 # Test 3: leave without mesh
 info "Testing: leave without mesh..."
-err3=$(docker exec "e2e-err-life-1" syfrah fabric leave 2>&1 || true)
+err3=$(docker exec "e2e-err-life-1" syfrah fabric leave --yes 2>&1 || true)
 if echo "$err3" | grep -qi "nothing\|no mesh\|not.*found\|no state\|already"; then
     pass "leave no mesh: says nothing to do"
 else
@@ -40,7 +40,7 @@ fi
 
 # Test 4: double leave
 info "Testing: double leave..."
-err4=$(docker exec "e2e-err-life-1" syfrah fabric leave 2>&1 || true)
+err4=$(docker exec "e2e-err-life-1" syfrah fabric leave --yes 2>&1 || true)
 if echo "$err4" | grep -qi "nothing\|no mesh\|not.*found\|no state\|already"; then
     pass "double leave: says nothing to do"
 else
@@ -68,7 +68,7 @@ fi
 # Test 7: leave then join — works first try
 info "Testing: leave then join cycle..."
 init_mesh "e2e-err-life-1" "172.20.0.10" "life-node-1"
-docker exec "e2e-err-life-1" syfrah fabric leave 2>&1 || true
+docker exec "e2e-err-life-1" syfrah fabric leave --yes 2>&1 || true
 sleep 2
 # Should be able to init again without issues
 output_reinit=$(docker exec "e2e-err-life-1" syfrah fabric init \

@@ -144,9 +144,17 @@ enum FabricCommand {
     /// Show the mesh secret
     Token,
     /// Rotate the mesh secret
-    Rotate,
+    Rotate {
+        /// Skip confirmation prompt
+        #[arg(long, short)]
+        yes: bool,
+    },
     /// Leave the mesh, tear down interface, clear state
-    Leave,
+    Leave {
+        /// Skip confirmation prompt
+        #[arg(long, short)]
+        yes: bool,
+    },
     /// Run diagnostic checks on the fabric
     Diagnose {
         /// Output as JSON
@@ -528,13 +536,13 @@ async fn run() -> Result<()> {
                 setup_logging(false);
                 cli::token::run().await
             }
-            FabricCommand::Rotate => {
+            FabricCommand::Rotate { yes } => {
                 setup_logging(false);
-                cli::rotate::run().await
+                cli::rotate::run(yes).await
             }
-            FabricCommand::Leave => {
+            FabricCommand::Leave { yes } => {
                 setup_logging(false);
-                cli::leave::run().await
+                cli::leave::run(yes).await
             }
             FabricCommand::Diagnose { json } => {
                 setup_logging(false);

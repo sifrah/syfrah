@@ -4,6 +4,11 @@
 
 set -euo pipefail
 
+# Ensure cleanup runs even if the script exits early (e.g. set -e triggered).
+# Each scenario also calls cleanup() explicitly; the trap handles unexpected exits
+# so containers don't leak between scenarios.
+trap 'cleanup 2>/dev/null || true' EXIT
+
 # ── Config ────────────────────────────────────────────────────
 
 E2E_IMAGE="${E2E_IMAGE:-syfrah-e2e-test}"
@@ -145,7 +150,7 @@ join_mesh() {
 # Leave the mesh. Args: <container>
 leave_mesh() {
     local container="$1"
-    docker exec "$container" syfrah fabric leave 2>&1 || true
+    docker exec "$container" syfrah fabric leave --yes 2>&1 || true
 }
 
 # Stop the daemon. Args: <container>

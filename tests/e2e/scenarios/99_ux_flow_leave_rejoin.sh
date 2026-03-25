@@ -24,7 +24,7 @@ assert_peer_count "e2e-flow-lr-2" 1
 
 # Step 1: Server 2 leaves
 info "Step 1: Server 2 leaves..."
-output_leave=$(docker exec "e2e-flow-lr-2" syfrah fabric leave 2>&1 || true)
+output_leave=$(docker exec "e2e-flow-lr-2" syfrah fabric leave --yes 2>&1 || true)
 if echo "$output_leave" | grep -qi "clear\|removed\|left\|clean"; then
     pass "leave: clean message"
 else
