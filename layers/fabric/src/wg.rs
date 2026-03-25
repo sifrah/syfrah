@@ -131,7 +131,10 @@ pub fn apply_peers(self_pubkey: &Key, peers: &[PeerRecord]) -> Result<(), WgErro
 ///
 /// **Note:** Because the caller reads these values before calling this function,
 /// there is a TOCTOU window: concurrent upserts may both pass the limit check.
-/// The peer cap is therefore a soft limit, not a hard guarantee.
+/// The WG-level peer cap is therefore a soft limit, not a hard guarantee.
+/// The *store's* `upsert_peer_bounded` remains the hard enforcement point: it
+/// performs an atomic exists-check + count + insert within a single DB transaction,
+/// so the store will never persist more than `max_peers` entries even under races.
 pub fn upsert_peer_bounded(
     self_pubkey: &Key,
     peer: &PeerRecord,
