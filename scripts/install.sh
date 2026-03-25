@@ -6,59 +6,150 @@ REPO="sifrah/syfrah"
 BIN="syfrah"
 INSTALL_DIR="/usr/local/bin"
 
-# --- Detect OS ---
+# --- UX helpers -----------------------------------------------------------
+
+# Unicode symbols for step feedback
+CHECK="\342\234\223"   # ✓
+CROSS="\342\234\227"   # ✗
+ARROW="\342\206\223"   # ↓
+
+# Spinner characters (braille dots — renders in virtually every modern terminal)
+SPINNER_CHARS='|/-\'
+
+step_ok() {
+  printf "  %b %s\n" "$CHECK" "$1"
+}
+
+step_fail() {
+  printf "  %b %s\n" "$CROSS" "$1" >&2
+}
+
+# Start a background spinner. Usage: start_spinner "message"
+# Sets SPINNER_PID for later use by stop_spinner.
+SPINNER_PID=""
+start_spinner() {
+  _msg="$1"
+  (
+    i=0
+    while true; do
+      c=$(printf '%s' "$SPINNER_CHARS" | cut -c$(( (i % 4) + 1 )))
+      printf "\r  %s %s" "$c" "$_msg"
+      i=$(( i + 1 ))
+      sleep 0.15 2>/dev/null || sleep 1
+    done
+  ) &
+  SPINNER_PID=$!
+}
+
+# Stop the spinner and print a final status line.
+# Usage: stop_spinner "done message" [ok|fail]
+stop_spinner() {
+  _final_msg="$1"
+  _status="${2:-ok}"
+  if [ -n "$SPINNER_PID" ]; then
+    kill "$SPINNER_PID" 2>/dev/null || true
+    wait "$SPINNER_PID" 2>/dev/null || true
+    SPINNER_PID=""
+  fi
+  # Clear the spinner line
+  printf "\r                                                                \r"
+  if [ "$_status" = "ok" ]; then
+    step_ok "$_final_msg"
+  else
+    step_fail "$_final_msg"
+  fi
+}
+
+# Ensure spinner is cleaned up on exit
+cleanup() {
+  if [ -n "$SPINNER_PID" ]; then
+    kill "$SPINNER_PID" 2>/dev/null || true
+    wait "$SPINNER_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+# --- Detect OS -------------------------------------------------------------
+
 OS="$(uname -s)"
 case "$OS" in
   Linux)  OS="unknown-linux-musl" ;;
   Darwin) OS="apple-darwin" ;;
-  *)      echo "Error: unsupported operating system: $OS" >&2; exit 1 ;;
+  *)
+    step_fail "Unsupported operating system: $OS"
+    exit 1
+    ;;
 esac
 
-# --- Detect architecture ---
+# --- Detect architecture ---------------------------------------------------
+
 ARCH="$(uname -m)"
 case "$ARCH" in
   x86_64)             ARCH="x86_64" ;;
   aarch64|arm64)      ARCH="aarch64" ;;
-  *)                  echo "Error: unsupported architecture: $ARCH" >&2; exit 1 ;;
+  *)
+    step_fail "Unsupported architecture: $ARCH"
+    exit 1
+    ;;
 esac
 
 TARGET="${ARCH}-${OS}"
 
-# --- Fetch latest release tag ---
-echo "Fetching latest release version..."
+# --- Fetch latest release tag ----------------------------------------------
+
+start_spinner "Fetching latest release version..."
 VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-  | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//')"
+  | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//')" || true
 
 if [ -z "$VERSION" ]; then
-  echo "Error: could not determine latest release version" >&2
+  stop_spinner "Could not determine latest release version" fail
   exit 1
 fi
 
-echo "Latest version: ${VERSION}"
+stop_spinner "Latest version: ${VERSION}"
 
-# --- Download archive ---
+# --- Download archive -------------------------------------------------------
+
 ARCHIVE="${BIN}-${VERSION}-${TARGET}.tar.gz"
 URL="https://github.com/${REPO}/releases/download/${VERSION}/${ARCHIVE}"
 
 TMPDIR="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR"' EXIT
+# Override the cleanup trap to also remove TMPDIR
+trap 'cleanup; rm -rf "$TMPDIR"' EXIT
 
-echo "Downloading ${URL}..."
-curl -fSL -o "${TMPDIR}/${ARCHIVE}" "$URL"
-
-# --- Verify checksum ---
-CHECKSUMS_URL="https://github.com/${REPO}/releases/download/${VERSION}/SHA256SUMS.txt"
-echo "Downloading checksums from ${CHECKSUMS_URL}..."
-if ! curl -fSL -o "${TMPDIR}/SHA256SUMS.txt" "$CHECKSUMS_URL"; then
-  echo "Error: could not download SHA256SUMS.txt from ${CHECKSUMS_URL}" >&2
-  echo "The release may not include a checksum file. Verify the release manually." >&2
+start_spinner "Downloading ${BIN} ${VERSION}..."
+if curl -fsSL -o "${TMPDIR}/${ARCHIVE}" "$URL"; then
+  # Get file size for display
+  if [ -f "${TMPDIR}/${ARCHIVE}" ]; then
+    SIZE=$(wc -c < "${TMPDIR}/${ARCHIVE}" | tr -d ' ')
+    SIZE_MB=$(( SIZE / 1048576 ))
+    if [ "$SIZE_MB" -gt 0 ]; then
+      stop_spinner "Downloaded ${BIN} ${VERSION} (${SIZE_MB} MB)"
+    else
+      SIZE_KB=$(( SIZE / 1024 ))
+      stop_spinner "Downloaded ${BIN} ${VERSION} (${SIZE_KB} KB)"
+    fi
+  else
+    stop_spinner "Downloaded ${BIN} ${VERSION}"
+  fi
+else
+  stop_spinner "Failed to download ${URL}" fail
   exit 1
 fi
 
-echo "Verifying checksum..."
+# --- Verify checksum -------------------------------------------------------
+
+CHECKSUMS_URL="https://github.com/${REPO}/releases/download/${VERSION}/SHA256SUMS.txt"
+start_spinner "Verifying checksum..."
+
+if ! curl -fsSL -o "${TMPDIR}/SHA256SUMS.txt" "$CHECKSUMS_URL"; then
+  stop_spinner "Could not download SHA256SUMS.txt — verify the release manually" fail
+  exit 1
+fi
+
 EXPECTED="$(grep -F "${ARCHIVE}" "${TMPDIR}/SHA256SUMS.txt" | head -1 | awk '{print $1}')"
 if [ -z "$EXPECTED" ]; then
-  echo "Error: no checksum found for ${ARCHIVE} in SHA256SUMS.txt" >&2
+  stop_spinner "No checksum found for ${ARCHIVE} in SHA256SUMS.txt" fail
   exit 1
 fi
 
@@ -67,37 +158,59 @@ if command -v sha256sum > /dev/null 2>&1; then
 elif command -v shasum > /dev/null 2>&1; then
   ACTUAL="$(shasum -a 256 "${TMPDIR}/${ARCHIVE}" | awk '{print $1}')"
 else
-  echo "Error: no sha256sum or shasum command found" >&2
+  stop_spinner "No sha256sum or shasum command found" fail
   exit 1
 fi
 
 if [ "$EXPECTED" != "$ACTUAL" ]; then
-  echo "Error: checksum mismatch for ${ARCHIVE}" >&2
-  echo "  expected: ${EXPECTED}" >&2
-  echo "  actual:   ${ACTUAL}" >&2
+  stop_spinner "Checksum mismatch for ${ARCHIVE}" fail
+  printf "    expected: %s\n" "$EXPECTED" >&2
+  printf "    actual:   %s\n" "$ACTUAL" >&2
   exit 1
 fi
-echo "Checksum verified."
 
-# --- Extract and install ---
-echo "Extracting ${ARCHIVE}..."
-tar xzf "${TMPDIR}/${ARCHIVE}" -C "$TMPDIR"
+stop_spinner "Checksum verified"
 
-echo "Installing ${BIN} to ${INSTALL_DIR}..."
-install -m 755 "${TMPDIR}/${BIN}" "${INSTALL_DIR}/${BIN}"
+# --- Extract and install ----------------------------------------------------
 
-# --- Verify ---
-echo "Verifying installation..."
+start_spinner "Extracting binary..."
+if tar xzf "${TMPDIR}/${ARCHIVE}" -C "$TMPDIR"; then
+  stop_spinner "Extracted binary"
+else
+  stop_spinner "Failed to extract ${ARCHIVE}" fail
+  exit 1
+fi
+
+start_spinner "Installing to ${INSTALL_DIR}/${BIN}..."
+if install -m 755 "${TMPDIR}/${BIN}" "${INSTALL_DIR}/${BIN}"; then
+  stop_spinner "Installed to ${INSTALL_DIR}/${BIN}"
+else
+  stop_spinner "Failed to install ${BIN} to ${INSTALL_DIR} (are you root?)" fail
+  exit 1
+fi
+
+# --- Verify -----------------------------------------------------------------
+
 EXPECTED_VERSION="${VERSION#v}"
+
 if command -v "$BIN" > /dev/null 2>&1; then
-  ACTUAL_VERSION=$("$BIN" --version | awk '{print $2}')
-  if [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
-    echo "ERROR: version mismatch — expected ${EXPECTED_VERSION}, got ${ACTUAL_VERSION}" >&2
+  start_spinner "Verifying installation (this may take a moment)..."
+  ACTUAL_VERSION=$("$BIN" --version 2>/dev/null | awk '{print $2}') || true
+  if [ -z "$ACTUAL_VERSION" ]; then
+    stop_spinner "Could not read version from ${BIN} --version" fail
     exit 1
   fi
-  echo "${BIN} ${ACTUAL_VERSION}"
-  echo "Installation complete."
+  if [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
+    stop_spinner "Version mismatch: expected ${EXPECTED_VERSION}, got ${ACTUAL_VERSION}" fail
+    exit 1
+  fi
+  stop_spinner "Verified: ${BIN} ${ACTUAL_VERSION}"
 else
-  echo "Warning: ${BIN} was installed to ${INSTALL_DIR} but is not on PATH." >&2
-  echo "Add ${INSTALL_DIR} to your PATH, then run: ${BIN} --version" >&2
+  step_fail "${BIN} was installed to ${INSTALL_DIR} but is not on PATH"
+  printf "    Add %s to your PATH, then run: %s --version\n" "$INSTALL_DIR" "$BIN" >&2
+  exit 1
 fi
+
+# --- Done -------------------------------------------------------------------
+
+printf "\n%s v%s installed successfully.\n" "$BIN" "$EXPECTED_VERSION"
