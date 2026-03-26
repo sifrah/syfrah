@@ -228,6 +228,12 @@ enum FabricCommand {
         #[command(subcommand)]
         action: ZoneAction,
     },
+    /// Print /etc/hosts entries for all mesh peers
+    Hosts {
+        /// Write entries directly to /etc/hosts (requires root)
+        #[arg(long)]
+        apply: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -844,6 +850,10 @@ async fn run() -> Result<()> {
                     ZoneAction::Undrain { zone_path } => cli::zone::undrain(&zone_path).await,
                     ZoneAction::Status { json } => cli::zone::status(json).await,
                 }
+            }
+            FabricCommand::Hosts { apply } => {
+                setup_logging(false);
+                cli::hosts::run(cli::hosts::HostsOpts { apply }).await
             }
             FabricCommand::Peering { action } => {
                 setup_logging(false);
