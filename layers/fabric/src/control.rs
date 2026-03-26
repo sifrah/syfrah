@@ -36,6 +36,9 @@ pub enum ControlRequest {
         name_or_key: String,
         endpoint: std::net::SocketAddr,
     },
+    /// Rotate the mesh secret: generate a new secret, re-derive keys,
+    /// broadcast to all peers, and re-encrypt subsequent announces.
+    RotateSecret,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -63,6 +66,13 @@ pub enum ControlResponse {
     ConfigReloaded {
         changes: Vec<String>,
         skipped: Vec<String>,
+    },
+    /// Secret rotation completed: returns the new secret and broadcast stats.
+    SecretRotated {
+        new_secret: String,
+        new_ipv6: String,
+        peers_notified: usize,
+        peers_failed: usize,
     },
 }
 

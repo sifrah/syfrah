@@ -324,6 +324,10 @@ pub struct AutoAcceptConfig {
 /// Callback type invoked when a peer is accepted (either manually or via PIN).
 pub type OnAccepted = Arc<dyn Fn(PeerRecord) + Send + Sync>;
 
+/// Callback type invoked when a secret rotation message is received from a peer.
+/// The argument is the new mesh secret string.
+pub type OnSecretRotation = Arc<dyn Fn(String) + Send + Sync>;
+
 /// Manages peering state: pending join requests, listener lifecycle.
 pub struct PeeringState {
     pending: Arc<RwLock<HashMap<String, PendingJoin>>>,
@@ -443,6 +447,7 @@ impl PeeringState {
         on_announce: Arc<dyn Fn(PeerRecord) + Send + Sync>,
         on_accepted: OnAccepted,
         tls_config: Option<Arc<rustls::ServerConfig>>,
+        on_secret_rotation: Option<OnSecretRotation>,
     ) -> Result<(), PeeringError> {
         self.set_active(true).await;
         let addr: SocketAddr = format!("0.0.0.0:{port}").parse().unwrap();
@@ -498,6 +503,7 @@ impl PeeringState {
             let max_pending = self.max_pending_joins;
             let replay_guard = self.replay_guard.clone();
             let tls_acceptor = tls_acceptor.clone();
+            let on_rotation = on_secret_rotation.clone();
 
             tokio::spawn(async move {
                 let _permit = permit; // held until this task ends
@@ -516,6 +522,7 @@ impl PeeringState {
                                 rate_limiter,
                                 max_pending,
                                 replay_guard,
+                                on_rotation,
                             )
                             .await
                         }
@@ -540,6 +547,7 @@ impl PeeringState {
                         rate_limiter,
                         max_pending,
                         replay_guard,
+                        on_rotation,
                     )
                     .await
                 };
@@ -568,6 +576,7 @@ async fn handle_incoming<S: AsyncRead + AsyncWrite + Unpin>(
     rate_limiter: Arc<Mutex<PinRateLimiter>>,
     max_pending_joins: usize,
     replay_guard: Arc<ReplayGuard>,
+    on_secret_rotation: Option<OnSecretRotation>,
 ) -> Result<(), PeeringError> {
     // Apply read timeout to protect against slowloris attacks.
     let msg = tokio::time::timeout(EXCHANGE_TIMEOUT, read_message(&mut stream))
@@ -927,6 +936,30 @@ async fn handle_incoming<S: AsyncRead + AsyncWrite + Unpin>(
             on_announce(record);
         }
 
+        PeeringMessage::SecretRotation(ciphertext) => {
+            let enc_key =
+                encryption_key.ok_or_else(|| PeeringError::Protocol("no encryption key".into()))?;
+
+            let new_secret_str =
+                syfrah_core::mesh::decrypt_secret(&ciphertext, &enc_key).map_err(|e| {
+                    PeeringError::Protocol(format!("failed to decrypt rotated secret: {e}"))
+                })?;
+
+            info!(
+                from = %peer_addr,
+                "secret rotation received from peer"
+            );
+
+            if let Some(ref cb) = on_secret_rotation {
+                cb(new_secret_str);
+            } else {
+                warn!(
+                    from = %peer_addr,
+                    "secret rotation received but no handler registered"
+                );
+            }
+        }
+
         PeeringMessage::JoinResponse(_) => {
             return Err(PeeringError::Protocol("unexpected JoinResponse".into()));
         }
@@ -1261,6 +1294,80 @@ pub async fn announce_peer_to_mesh(
         }
     }
     (succeeded, failed)
+}
+
+/// Broadcast a secret rotation message to all active peers.
+///
+/// The new secret is encrypted with the OLD encryption key so that all peers
+/// holding the current secret can decrypt and apply the rotation. This is a
+/// full broadcast (not gossip) because secret rotation is a rare, high-priority
+/// operation that must reach every peer reliably.
+///
+/// Returns (succeeded, failed) counts.
+pub async fn broadcast_secret_rotation(
+    encrypted_secret: &[u8],
+    peers: &[PeerRecord],
+    peering_port: u16,
+    tls_config: Option<Arc<rustls::ClientConfig>>,
+) -> (usize, usize) {
+    let mut succeeded = 0;
+    let mut failed = 0;
+
+    for peer in peers.iter().filter(|p| p.status == PeerStatus::Active) {
+        let target = SocketAddr::new(peer.endpoint.ip(), peering_port);
+        let msg = PeeringMessage::SecretRotation(encrypted_secret.to_vec());
+
+        let mut last_err = None;
+        let mut ok = false;
+        for attempt in 0..ANNOUNCE_MAX_RETRIES {
+            if attempt > 0 {
+                let delay = Duration::from_secs(1 << (attempt - 1));
+                tokio::time::sleep(delay).await;
+            }
+            match try_send_message(&target, &msg, tls_config.clone()).await {
+                Ok(()) => {
+                    ok = true;
+                    break;
+                }
+                Err(e) => {
+                    debug!(
+                        "rotation broadcast attempt {}/{} to {target} failed: {e}",
+                        attempt + 1,
+                        ANNOUNCE_MAX_RETRIES
+                    );
+                    last_err = Some(e);
+                }
+            }
+        }
+        if ok {
+            debug!(target_peer = %sanitize(&peer.name), "secret rotation broadcast succeeded");
+            succeeded += 1;
+        } else {
+            warn!(
+                target_peer = %sanitize(&peer.name),
+                error = %last_err.unwrap(),
+                "secret rotation broadcast failed after retries"
+            );
+            failed += 1;
+        }
+    }
+
+    (succeeded, failed)
+}
+
+/// Send a single peering message to a target address (with optional TLS).
+async fn try_send_message(
+    target: &SocketAddr,
+    msg: &PeeringMessage,
+    tls_config: Option<Arc<rustls::ClientConfig>>,
+) -> Result<(), PeeringError> {
+    let tcp_stream = tokio::time::timeout(EXCHANGE_TIMEOUT, TcpStream::connect(target))
+        .await
+        .map_err(|_| PeeringError::Timeout)??;
+
+    let mut stream = maybe_upgrade_tls(tcp_stream, tls_config, target).await?;
+    write_message(&mut stream, msg).await?;
+    Ok(())
 }
 
 /// Announce a peer to the mesh using topology-aware waves.
@@ -1644,6 +1751,7 @@ mod tests {
             Arc::new(Mutex::new(PinRateLimiter::new())),
             100,
             Arc::new(ReplayGuard::new()),
+            None,
         )
         .await;
 

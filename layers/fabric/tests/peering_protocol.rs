@@ -123,6 +123,7 @@ async fn join_with_pin_auto_accept() {
                 on_announce,
                 on_accepted,
                 None,
+                None,
             )
             .await
             .ok();
@@ -243,6 +244,7 @@ async fn join_with_wrong_pin_falls_to_pending() {
                 on_announce,
                 on_accepted,
                 None,
+                None,
             )
             .await
             .ok();
@@ -348,6 +350,7 @@ async fn join_without_pin_goes_to_pending() {
                 Some(encryption_key),
                 on_announce,
                 on_accepted,
+                None,
                 None,
             )
             .await
@@ -495,6 +498,7 @@ async fn rate_limited_ip_gets_rejection() {
                 Some(encryption_key),
                 on_announce,
                 on_accepted,
+                None,
                 None,
             )
             .await
