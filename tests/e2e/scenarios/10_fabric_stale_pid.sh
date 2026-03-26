@@ -14,8 +14,10 @@ init_mesh "e2e-pid-1" "172.20.0.10" "node-1"
 start_peering "e2e-pid-1"
 join_mesh "e2e-pid-2" "172.20.0.10" "172.20.0.11" "node-2"
 
-sleep 3
-assert_peer_count "e2e-pid-1" 1
+# Wait for peer announcement to propagate (self-announce runs every 10s)
+if ! wait_for_convergence "e2e-pid-" 2 1 30; then
+    fail "e2e-pid-1 did not see 1 peer within 30s"
+fi
 
 # SIGKILL the daemon (no cleanup)
 info "Killing node-1 daemon with SIGKILL..."
@@ -53,8 +55,8 @@ fi
 assert_daemon_running "e2e-pid-1"
 assert_interface_exists "e2e-pid-1"
 
-# Connectivity restored
-sleep 3
+# Connectivity restored — wait for peer to converge after restart
+wait_for_convergence "e2e-pid-" 2 1 30 || true
 ipv6_2=$(get_mesh_ipv6 "e2e-pid-2")
 assert_can_ping "e2e-pid-1" "$ipv6_2"
 
