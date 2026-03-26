@@ -669,4 +669,180 @@ mod tests {
         assert!(!cfg.enabled);
         assert_eq!(cfg.listen.to_string(), "0.0.0.0:8443");
     }
+
+    // ----- Phase 2.4: additional coverage -----
+
+    #[tokio::test]
+    async fn list_peering_requests_returns_json_array() {
+        let app = router(test_handler());
+        let (status, body) = send_request(app, "GET", "/v1/fabric/peering/requests", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(v.is_object(), "top-level response should be a JSON object");
+        let requests = &v["requests"];
+        assert!(requests.is_array(), "requests field should be a JSON array");
+    }
+
+    #[tokio::test]
+    async fn status_returns_json_object() {
+        let app = router(test_handler());
+        let (status, body) = send_request(app, "GET", "/v1/fabric/status", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(v.is_object(), "status response should be a JSON object");
+    }
+
+    #[tokio::test]
+    async fn proto_field_names_match_status_response() {
+        let app = router(test_handler());
+        let (_, body) = send_request(app, "GET", "/v1/fabric/status", None).await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let obj = v.as_object().unwrap();
+        assert!(obj.contains_key("status"), "missing proto field: status");
+    }
+
+    #[tokio::test]
+    async fn proto_field_names_match_accept_peering_response() {
+        let app = router(test_handler());
+        let (_, body) = send_request(
+            app,
+            "POST",
+            "/v1/fabric/peering/accept",
+            Some(serde_json::json!({"request_id": "x"})),
+        )
+        .await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let obj = v.as_object().unwrap();
+        assert!(
+            obj.contains_key("peer_name"),
+            "missing proto field: peer_name"
+        );
+    }
+
+    #[tokio::test]
+    async fn proto_field_names_match_remove_peer_response() {
+        let app = router(test_handler());
+        let (_, body) = send_request(
+            app,
+            "POST",
+            "/v1/fabric/peers/remove",
+            Some(serde_json::json!({"name_or_key": "n"})),
+        )
+        .await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let obj = v.as_object().unwrap();
+        assert!(
+            obj.contains_key("peer_name"),
+            "missing proto field: peer_name"
+        );
+        assert!(
+            obj.contains_key("announced_to"),
+            "missing proto field: announced_to"
+        );
+    }
+
+    #[tokio::test]
+    async fn proto_field_names_match_update_endpoint_response() {
+        let app = router(test_handler());
+        let (_, body) = send_request(
+            app,
+            "POST",
+            "/v1/fabric/peers/update-endpoint",
+            Some(serde_json::json!({"name_or_key": "n", "endpoint": "1.2.3.4:51820"})),
+        )
+        .await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let obj = v.as_object().unwrap();
+        assert!(
+            obj.contains_key("peer_name"),
+            "missing proto field: peer_name"
+        );
+        assert!(
+            obj.contains_key("old_endpoint"),
+            "missing proto field: old_endpoint"
+        );
+        assert!(
+            obj.contains_key("new_endpoint"),
+            "missing proto field: new_endpoint"
+        );
+    }
+
+    #[tokio::test]
+    async fn proto_field_names_match_reload_response() {
+        let app = router(test_handler());
+        let (_, body) = send_request(app, "POST", "/v1/fabric/reload", None).await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let obj = v.as_object().unwrap();
+        assert!(obj.contains_key("changes"), "missing proto field: changes");
+        assert!(obj.contains_key("skipped"), "missing proto field: skipped");
+    }
+
+    #[tokio::test]
+    async fn proto_field_names_match_rotate_secret_response() {
+        let app = router(test_handler());
+        let (_, body) = send_request(app, "POST", "/v1/fabric/rotate-secret", None).await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let obj = v.as_object().unwrap();
+        assert!(
+            obj.contains_key("new_secret"),
+            "missing proto field: new_secret"
+        );
+        assert!(
+            obj.contains_key("new_ipv6"),
+            "missing proto field: new_ipv6"
+        );
+        assert!(
+            obj.contains_key("peers_notified"),
+            "missing proto field: peers_notified"
+        );
+        assert!(
+            obj.contains_key("peers_failed"),
+            "missing proto field: peers_failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_endpoint_returns_404() {
+        let app = router(test_handler());
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/fabric/nonexistent")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn post_without_json_content_type_is_rejected() {
+        let app = router(test_handler());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/fabric/peering/start")
+            .header("content-type", "text/plain")
+            .body(Body::from(r#"{"port":7946}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        // Axum rejects non-JSON content-type with 415 Unsupported Media Type
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "non-JSON content-type should be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn health_status_always_returns_200() {
+        // Call the status endpoint multiple times to confirm it always returns 200.
+        for _ in 0..3 {
+            let app = router(test_handler());
+            let req = Request::builder()
+                .method("GET")
+                .uri("/v1/fabric/status")
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
+    }
 }
