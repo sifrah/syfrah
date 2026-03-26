@@ -1522,6 +1522,58 @@ impl ControlHandler for DaemonControlHandler {
                     },
                 }
             }
+            ControlRequest::UpdatePeerEndpoint {
+                name_or_key,
+                endpoint,
+            } => {
+                let state = match store::load() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return ControlResponse::Error {
+                            message: format!("{e}"),
+                        }
+                    }
+                };
+
+                match store::update_peer_endpoint(&name_or_key, endpoint) {
+                    Ok(Some((old_endpoint, updated_peer))) => {
+                        // Apply to WireGuard
+                        if let Ok(self_key) = Key::from_base64(&state.wg_public_key) {
+                            let tuning = config::load_tuning().unwrap_or_default();
+                            let _ = wg::upsert_peer(
+                                &self_key,
+                                &updated_peer,
+                                tuning.keepalive_interval,
+                            );
+                        }
+
+                        let peer_name = sanitize(&updated_peer.name);
+
+                        events::emit(
+                            EventType::PeerUpdated,
+                            Some(&peer_name),
+                            Some(&format!("{} -> {}", old_endpoint, endpoint)),
+                            None,
+                            Some(self.max_events),
+                        );
+
+                        ControlResponse::PeerEndpointUpdated {
+                            peer_name: updated_peer.name.clone(),
+                            old_endpoint: old_endpoint.to_string(),
+                            new_endpoint: endpoint.to_string(),
+                        }
+                    }
+                    Ok(None) => ControlResponse::Error {
+                        message: format!(
+                            "No peer named '{}'. Run 'syfrah fabric peers' to list peers.",
+                            name_or_key
+                        ),
+                    },
+                    Err(e) => ControlResponse::Error {
+                        message: format!("Failed to update peer endpoint: {e}"),
+                    },
+                }
+            }
         }
     }
 }
