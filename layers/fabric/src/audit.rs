@@ -140,8 +140,7 @@ fn emit_inner(
         let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
     }
 
-    let mut line = serde_json::to_string(&entry)
-        .map_err(std::io::Error::other)?;
+    let mut line = serde_json::to_string(&entry).map_err(std::io::Error::other)?;
     line.push('\n');
     file.write_all(line.as_bytes())?;
     Ok(())
