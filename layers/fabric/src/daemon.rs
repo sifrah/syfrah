@@ -1288,6 +1288,7 @@ pub async fn run_daemon(
     let persist_reconcile_failures = metrics_reconcile_failures.clone();
     let persist_store_failures = metrics_store_failures.clone();
     let persist_peering_state = peering_state.clone();
+    let gc_threshold_secs = tuning.gc_removed_threshold.as_secs();
     let persist = async {
         let mut interval = tokio::time::interval(tuning.persist_interval);
         loop {
@@ -1337,6 +1338,18 @@ pub async fn run_daemon(
                 persist_store_failures.load(Ordering::Relaxed),
             ) {
                 debug!(error = %e, "failed to persist store_failures metric");
+            }
+
+            // Garbage-collect peers that have been Removed for longer than
+            // the configured threshold (default 24 h).
+            match store::gc_removed_peers(gc_threshold_secs) {
+                Ok(n) if n > 0 => {
+                    info!(count = n, "garbage-collected removed peers");
+                }
+                Err(e) => {
+                    debug!(error = %e, "failed to gc removed peers");
+                }
+                _ => {}
             }
 
             // Flush JSON export so state.json stays in sync with redb
