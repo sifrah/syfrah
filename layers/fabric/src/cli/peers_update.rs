@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use crate::control::{send_control_request, ControlRequest, ControlResponse};
+use crate::control::{send_control_request, FabricRequest, FabricResponse};
 use crate::{no_mesh_error, store, ui};
 use anyhow::Result;
 
@@ -22,7 +22,7 @@ pub async fn run(name_or_key: String, endpoint: SocketAddr) -> Result<()> {
 
     let resp = send_control_request(
         &socket_path,
-        &ControlRequest::UpdatePeerEndpoint {
+        &FabricRequest::UpdatePeerEndpoint {
             name_or_key: name_or_key.clone(),
             endpoint,
         },
@@ -31,7 +31,7 @@ pub async fn run(name_or_key: String, endpoint: SocketAddr) -> Result<()> {
     .map_err(|e| anyhow::anyhow!("failed to communicate with daemon: {e}"))?;
 
     match resp {
-        ControlResponse::PeerEndpointUpdated {
+        FabricResponse::PeerEndpointUpdated {
             peer_name,
             old_endpoint,
             new_endpoint,
@@ -45,7 +45,7 @@ pub async fn run(name_or_key: String, endpoint: SocketAddr) -> Result<()> {
             );
             Ok(())
         }
-        ControlResponse::Error { message } => {
+        FabricResponse::Error { message } => {
             ui::step_fail(&sp, &message);
             anyhow::bail!("{message}");
         }

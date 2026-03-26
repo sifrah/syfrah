@@ -3,13 +3,14 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use syfrah_api::transport;
+use syfrah_api::{LayerHandler, LayerRequest, LayerResponse, LayerRouter};
 use tokio::net::UnixStream;
 use tracing::debug;
 
 use crate::peering::JoinRequestInfo;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub enum ControlRequest {
+pub enum FabricRequest {
     PeeringStart {
         port: u16,
         pin: Option<String>,
@@ -38,7 +39,7 @@ pub enum ControlRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub enum ControlResponse {
+pub enum FabricResponse {
     Ok,
     PeeringList {
         requests: Vec<JoinRequestInfo>,
@@ -72,16 +73,45 @@ pub enum ControlResponse {
     },
 }
 
-/// Handler trait for processing control commands. Implemented by the daemon.
+/// Handler trait for processing fabric commands. Implemented by the daemon.
 #[async_trait::async_trait]
-pub trait ControlHandler: Send + Sync {
-    async fn handle(&self, req: ControlRequest) -> ControlResponse;
+pub trait FabricHandler: Send + Sync {
+    async fn handle(&self, req: FabricRequest) -> FabricResponse;
 }
 
-/// Start the Unix domain socket control listener.
-pub async fn start_control_listener(socket_path: &Path, handler: Arc<dyn ControlHandler>) {
+/// Adapter that wraps a [`FabricHandler`] as a [`LayerHandler`], bridging the
+/// typed fabric request/response to the opaque byte-level handler interface.
+pub struct FabricLayerHandler<H: FabricHandler> {
+    inner: H,
+}
+
+impl<H: FabricHandler> FabricLayerHandler<H> {
+    pub fn new(inner: H) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait::async_trait]
+impl<H: FabricHandler + 'static> LayerHandler for FabricLayerHandler<H> {
+    async fn handle(&self, request: Vec<u8>) -> Vec<u8> {
+        let req: FabricRequest = match serde_json::from_slice(&request) {
+            std::result::Result::Ok(r) => r,
+            Err(e) => {
+                let resp = FabricResponse::Error {
+                    message: format!("invalid fabric request: {e}"),
+                };
+                return serde_json::to_vec(&resp).unwrap_or_default();
+            }
+        };
+        let resp = self.inner.handle(req).await;
+        serde_json::to_vec(&resp).unwrap_or_default()
+    }
+}
+
+/// Start the Unix domain socket control listener with a [`LayerRouter`].
+pub async fn start_control_listener(socket_path: &Path, router: Arc<LayerRouter>) {
     let listener = match transport::bind_unix_listener(socket_path) {
-        Ok(l) => l,
+        std::result::Result::Ok(l) => l,
         Err(_) => return,
     };
 
@@ -89,10 +119,10 @@ pub async fn start_control_listener(socket_path: &Path, handler: Arc<dyn Control
 
     loop {
         match listener.accept().await {
-            Ok((stream, _)) => {
-                let handler = handler.clone();
+            std::result::Result::Ok((stream, _)) => {
+                let router = router.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_control_connection(stream, handler).await {
+                    if let Err(e) = handle_control_connection(stream, router).await {
                         debug!("control connection error: {e}");
                     }
                 });
@@ -106,15 +136,15 @@ pub async fn start_control_listener(socket_path: &Path, handler: Arc<dyn Control
 
 async fn handle_control_connection(
     mut stream: UnixStream,
-    handler: Arc<dyn ControlHandler>,
+    router: Arc<LayerRouter>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let req = match tokio::time::timeout(
+    let req: LayerRequest = match tokio::time::timeout(
         transport::READ_TIMEOUT,
         transport::read_message(&mut stream),
     )
     .await
     {
-        Ok(result) => result?,
+        std::result::Result::Ok(result) => result?,
         Err(_) => {
             tracing::warn!(
                 "control client timed out after {:?}, dropping connection",
@@ -123,21 +153,37 @@ async fn handle_control_connection(
             return Err("control read timed out".into());
         }
     };
-    let resp = handler.handle(req).await;
+    let resp = router.dispatch(req).await;
     transport::write_message(&mut stream, &resp).await?;
     Ok(())
 }
 
-/// Send a control request to the daemon (CLI client side).
-pub async fn send_control_request(
+/// Send a fabric request to the daemon (CLI client side).
+///
+/// Wraps the [`FabricRequest`] in a [`LayerRequest::Fabric`] envelope before
+/// sending and unwraps the [`LayerResponse::Fabric`] on the way back.
+pub async fn send_fabric_request(
     socket_path: &Path,
-    req: &ControlRequest,
-) -> Result<ControlResponse, Box<dyn std::error::Error>> {
+    req: &FabricRequest,
+) -> Result<FabricResponse, Box<dyn std::error::Error>> {
+    let payload = serde_json::to_vec(req)?;
+    let envelope = LayerRequest::Fabric(payload);
+
     let mut stream = UnixStream::connect(socket_path).await?;
-    transport::write_message(&mut stream, req).await?;
-    let resp = transport::read_message(&mut stream).await?;
-    Ok(resp)
+    transport::write_message(&mut stream, &envelope).await?;
+    let resp: LayerResponse = transport::read_message(&mut stream).await?;
+
+    match resp {
+        LayerResponse::Fabric(data) => {
+            let fabric_resp: FabricResponse = serde_json::from_slice(&data)?;
+            Ok(fabric_resp)
+        }
+        LayerResponse::UnknownLayer(name) => Err(format!("unknown layer: {name}").into()),
+    }
 }
+
+// Keep the old name as an alias for backward compatibility during migration.
+pub use send_fabric_request as send_control_request;
 
 #[cfg(test)]
 mod tests {
@@ -145,23 +191,32 @@ mod tests {
     use tokio::io::duplex;
 
     #[tokio::test]
-    async fn control_roundtrip() {
+    async fn fabric_request_roundtrip() {
         let (mut client, mut server) = duplex(4096);
 
-        let req = ControlRequest::PeeringStart {
+        let req = FabricRequest::PeeringStart {
             port: 7946,
             pin: Some("1234".into()),
         };
-        transport::write_message(&mut client, &req).await.unwrap();
+        let payload = serde_json::to_vec(&req).unwrap();
+        let envelope = LayerRequest::Fabric(payload);
+        transport::write_message(&mut client, &envelope)
+            .await
+            .unwrap();
         drop(client);
 
-        let read_req: ControlRequest = transport::read_message(&mut server).await.unwrap();
-        match read_req {
-            ControlRequest::PeeringStart { port, pin } => {
-                assert_eq!(port, 7946);
-                assert_eq!(pin.as_deref(), Some("1234"));
+        let read_envelope: LayerRequest = transport::read_message(&mut server).await.unwrap();
+        match read_envelope {
+            LayerRequest::Fabric(data) => {
+                let read_req: FabricRequest = serde_json::from_slice(&data).unwrap();
+                match read_req {
+                    FabricRequest::PeeringStart { port, pin } => {
+                        assert_eq!(port, 7946);
+                        assert_eq!(pin.as_deref(), Some("1234"));
+                    }
+                    other => panic!("unexpected request: {other:?}"),
+                }
             }
-            other => panic!("unexpected request: {other:?}"),
         }
     }
 
@@ -175,7 +230,7 @@ mod tests {
             .unwrap();
         drop(client);
 
-        let result: Result<ControlRequest, _> = transport::read_message(&mut server).await;
+        let result: Result<LayerRequest, _> = transport::read_message(&mut server).await;
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(
@@ -198,7 +253,7 @@ mod tests {
             .unwrap();
         drop(client);
 
-        let result: Result<ControlRequest, _> = transport::read_message(&mut server).await;
+        let result: Result<LayerRequest, _> = transport::read_message(&mut server).await;
         assert!(result.is_err());
     }
 
@@ -207,7 +262,7 @@ mod tests {
         let (_client, mut server) = duplex(4096);
         drop(_client);
 
-        let result: Result<ControlRequest, _> = transport::read_message(&mut server).await;
+        let result: Result<LayerRequest, _> = transport::read_message(&mut server).await;
         assert!(result.is_err());
     }
 
@@ -224,15 +279,15 @@ mod tests {
             .unwrap();
         drop(client);
 
-        let result: Result<ControlRequest, _> = transport::read_message(&mut server).await;
+        let result: Result<LayerRequest, _> = transport::read_message(&mut server).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
-    async fn control_response_roundtrip() {
+    async fn fabric_response_roundtrip() {
         let (mut client, mut server) = duplex(4096);
 
-        let resp = ControlResponse::PeeringList {
+        let resp = FabricResponse::PeeringList {
             requests: vec![JoinRequestInfo {
                 request_id: "req-1".into(),
                 node_name: "node-a".into(),
@@ -244,16 +299,26 @@ mod tests {
                 zone: None,
             }],
         };
-        transport::write_message(&mut client, &resp).await.unwrap();
+        let payload = serde_json::to_vec(&resp).unwrap();
+        let envelope = LayerResponse::Fabric(payload);
+        transport::write_message(&mut client, &envelope)
+            .await
+            .unwrap();
         drop(client);
 
-        let read_resp: ControlResponse = transport::read_message(&mut server).await.unwrap();
-        match read_resp {
-            ControlResponse::PeeringList { requests } => {
-                assert_eq!(requests.len(), 1);
-                assert_eq!(requests[0].node_name, "node-a");
+        let read_envelope: LayerResponse = transport::read_message(&mut server).await.unwrap();
+        match read_envelope {
+            LayerResponse::Fabric(data) => {
+                let read_resp: FabricResponse = serde_json::from_slice(&data).unwrap();
+                match read_resp {
+                    FabricResponse::PeeringList { requests } => {
+                        assert_eq!(requests.len(), 1);
+                        assert_eq!(requests[0].node_name, "node-a");
+                    }
+                    other => panic!("unexpected response: {other:?}"),
+                }
             }
-            other => panic!("unexpected response: {other:?}"),
+            other => panic!("unexpected envelope: {other:?}"),
         }
     }
 
@@ -270,16 +335,19 @@ mod tests {
         let handled = Arc::new(AtomicBool::new(false));
         let handled_clone = handled.clone();
 
-        struct NoOpHandler(Arc<AtomicBool>);
+        struct NoOpFabricHandler(Arc<AtomicBool>);
         #[async_trait::async_trait]
-        impl ControlHandler for NoOpHandler {
-            async fn handle(&self, _req: ControlRequest) -> ControlResponse {
+        impl FabricHandler for NoOpFabricHandler {
+            async fn handle(&self, _req: FabricRequest) -> FabricResponse {
                 self.0.store(true, Ordering::SeqCst);
-                ControlResponse::Ok
+                FabricResponse::Ok
             }
         }
 
-        let handler: Arc<dyn ControlHandler> = Arc::new(NoOpHandler(handled_clone));
+        let fabric_handler = FabricLayerHandler::new(NoOpFabricHandler(handled_clone));
+        let mut router = LayerRouter::new();
+        router.register("fabric", Arc::new(fabric_handler));
+        let router = Arc::new(router);
 
         let listener = UnixListener::bind(&sock).unwrap();
 
@@ -288,7 +356,7 @@ mod tests {
         let (stream, _) = listener.accept().await.unwrap();
         let result = tokio::time::timeout(
             transport::READ_TIMEOUT + std::time::Duration::from_secs(1),
-            handle_control_connection(stream, handler),
+            handle_control_connection(stream, router),
         )
         .await
         .expect("server should complete before outer timeout");
@@ -302,5 +370,26 @@ mod tests {
             !handled.load(Ordering::SeqCst),
             "handler must not be invoked for timed-out client"
         );
+    }
+
+    #[tokio::test]
+    async fn fabric_layer_handler_dispatches() {
+        struct EchoFabric;
+        #[async_trait::async_trait]
+        impl FabricHandler for EchoFabric {
+            async fn handle(&self, _req: FabricRequest) -> FabricResponse {
+                FabricResponse::Ok
+            }
+        }
+
+        let adapter = FabricLayerHandler::new(EchoFabric);
+        let req = FabricRequest::PeeringStop;
+        let payload = serde_json::to_vec(&req).unwrap();
+        let result = LayerHandler::handle(&adapter, payload).await;
+        let resp: FabricResponse = serde_json::from_slice(&result).unwrap();
+        match resp {
+            FabricResponse::Ok => {}
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 }
