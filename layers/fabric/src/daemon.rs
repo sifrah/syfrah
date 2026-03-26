@@ -693,6 +693,10 @@ pub async fn run_daemon(
     mesh_secret: MeshSecret,
     peering_port: u16,
 ) -> anyhow::Result<()> {
+    // Ensure ring is installed as the global CryptoProvider. This is needed
+    // because rustls 0.23 no longer auto-selects a provider at runtime.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let tuning = config::load_tuning().unwrap_or_else(|e| {
         warn!("failed to load config.toml: {e}, using defaults");
         Tuning::default()
