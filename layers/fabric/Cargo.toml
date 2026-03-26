@@ -34,6 +34,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rustls-pemfile = "2"
 rcgen = "0.13"
 sd-notify = "0.4"
+tokio-util = "0.7"
 axum = "0.8"
 
 [dev-dependencies]
