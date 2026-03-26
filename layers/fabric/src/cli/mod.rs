@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod diagnose;
 pub mod events;
 pub mod init;
