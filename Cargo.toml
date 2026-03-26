@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "layers/api",
     "layers/core",
     "layers/state",
     "layers/fabric",
