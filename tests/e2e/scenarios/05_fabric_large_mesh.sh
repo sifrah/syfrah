@@ -31,12 +31,16 @@ join_mesh "e2e-large-4" "172.20.0.10" "172.20.0.13" "node-4"
 sleep 1
 join_mesh "e2e-large-5" "172.20.0.10" "172.20.0.14" "node-5"
 
-# Wait for all peer announcements to propagate
-sleep 8
-
-for i in 1 2 3 4 5; do
-    assert_peer_count "e2e-large-$i" 4
-done
+# Wait for all peer announcements to propagate (self-announce runs every 15s)
+if wait_for_convergence "e2e-large-" 5 4 45; then
+    pass "all 5 nodes converged to 4 peers"
+else
+    fail "convergence timed out"
+    for i in 1 2 3 4 5; do
+        count=$(docker exec "e2e-large-$i" syfrah fabric peers 2>&1 | grep -c "active" || echo "0")
+        debug "e2e-large-$i sees $count peers"
+    done
+fi
 
 # Spot check connectivity (node-1 ↔ node-5)
 ipv6_5=$(get_mesh_ipv6 "e2e-large-5")
