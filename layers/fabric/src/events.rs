@@ -56,6 +56,7 @@ pub enum EventType {
     ZoneCritical,
     ZoneFailed,
     ZoneRecovered,
+    SecretRotated,
 }
 
 impl std::fmt::Display for EventType {
@@ -87,6 +88,7 @@ impl std::fmt::Display for EventType {
             EventType::ZoneCritical => "zone-critical",
             EventType::ZoneFailed => "zone-failed",
             EventType::ZoneRecovered => "zone-recovered",
+            EventType::SecretRotated => "secret-rotated",
         };
         write!(f, "{s}")
     }

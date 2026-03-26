@@ -274,6 +274,9 @@ pub enum PeeringMessage {
     JoinResponse(JoinResponse),
     /// Encrypted PeerRecord announcement (ciphertext, uses mesh secret).
     PeerAnnounce(Vec<u8>),
+    /// Secret rotation: carries the new secret encrypted with the OLD encryption key.
+    /// Payload is nonce (12 bytes) || AES-256-GCM ciphertext of the new secret string.
+    SecretRotation(Vec<u8>),
 }
 
 // --- Validation constants ---
@@ -618,6 +621,41 @@ pub fn decrypt_record(data: &[u8], encryption_key: &[u8; 32]) -> Result<PeerReco
         .map_err(|_| MeshError::DecryptionFailed)?;
     let record: PeerRecord = serde_json::from_slice(&plaintext)?;
     Ok(record)
+}
+
+/// Encrypt a new secret string with the current encryption key for broadcast
+/// during secret rotation. Returns nonce (12 bytes) || ciphertext.
+pub fn encrypt_secret(
+    new_secret_str: &str,
+    current_encryption_key: &[u8; 32],
+) -> Result<Vec<u8>, MeshError> {
+    let plaintext = new_secret_str.as_bytes();
+    let cipher = Aes256Gcm::new_from_slice(current_encryption_key)
+        .map_err(|_| MeshError::EncryptionFailed)?;
+    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let ciphertext = cipher
+        .encrypt(&nonce, plaintext)
+        .map_err(|_| MeshError::EncryptionFailed)?;
+
+    let mut out = Vec::with_capacity(12 + ciphertext.len());
+    out.extend_from_slice(&nonce);
+    out.extend(ciphertext);
+    Ok(out)
+}
+
+/// Decrypt a secret string from nonce || ciphertext using the current encryption key.
+pub fn decrypt_secret(data: &[u8], current_encryption_key: &[u8; 32]) -> Result<String, MeshError> {
+    if data.len() < 12 {
+        return Err(MeshError::PayloadTooShort);
+    }
+    let (nonce_bytes, ciphertext) = data.split_at(12);
+    let nonce = Nonce::from_slice(nonce_bytes);
+    let cipher = Aes256Gcm::new_from_slice(current_encryption_key)
+        .map_err(|_| MeshError::DecryptionFailed)?;
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|_| MeshError::DecryptionFailed)?;
+    String::from_utf8(plaintext).map_err(|_| MeshError::DecryptionFailed)
 }
 
 #[cfg(test)]
@@ -1326,5 +1364,36 @@ mod tests {
     fn topology_from_strings_returns_none_on_invalid() {
         // Uppercase is invalid
         assert!(Topology::from_strings(Some("EU-WEST"), Some("zone-a")).is_none());
+    }
+
+    #[test]
+    fn encrypt_decrypt_secret_roundtrip() {
+        let current_secret = MeshSecret::generate();
+        let enc_key = current_secret.encryption_key();
+        let new_secret = MeshSecret::generate();
+        let new_secret_str = new_secret.to_string();
+
+        let encrypted = encrypt_secret(&new_secret_str, &enc_key).unwrap();
+        let decrypted = decrypt_secret(&encrypted, &enc_key).unwrap();
+
+        assert_eq!(decrypted, new_secret_str);
+    }
+
+    #[test]
+    fn decrypt_secret_wrong_key_fails() {
+        let secret_a = MeshSecret::generate();
+        let secret_b = MeshSecret::generate();
+        let new_secret_str = "syf_sk_test123";
+
+        let encrypted = encrypt_secret(new_secret_str, &secret_a.encryption_key()).unwrap();
+        let result = decrypt_secret(&encrypted, &secret_b.encryption_key());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decrypt_secret_too_short_fails() {
+        let key = [0u8; 32];
+        let result = decrypt_secret(&[0u8; 5], &key);
+        assert!(matches!(result, Err(MeshError::PayloadTooShort)));
     }
 }

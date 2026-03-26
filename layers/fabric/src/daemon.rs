@@ -941,15 +941,21 @@ pub async fn run_daemon(
         });
     });
 
+    // Shared mutable state for secret rotation: these are wrapped in RwLock so
+    // that the control handler and the on_secret_rotation callback can swap in
+    // new values when the mesh secret is rotated at runtime.
+    let shared_mesh_secret = Arc::new(tokio::sync::RwLock::new(mesh_secret.clone()));
+    let shared_tls_client = Arc::new(tokio::sync::RwLock::new(tls_client_config.clone()));
+
     // Control handler
     let ctrl_handler = Arc::new(DaemonControlHandler {
         peering_state: peering_state.clone(),
-        mesh_secret: mesh_secret.clone(),
+        mesh_secret: shared_mesh_secret.clone(),
         my_record: my_record.clone(),
         wg_pubkey: wg_pubkey.clone(),
         peering_port,
         on_accepted: on_accepted.clone(),
-        tls_client_config: tls_client_config.clone(),
+        tls_client_config: shared_tls_client.clone(),
         max_events: tuning.max_events,
         max_peers,
     });
@@ -1165,6 +1171,76 @@ pub async fn run_daemon(
         });
     });
 
+    // on_secret_rotation callback: when a SecretRotation message arrives from
+    // a peer, apply the new secret locally — re-derive encryption keys, update
+    // the store, and rebuild TLS config so subsequent announces use the new key.
+    let rotation_shared_secret = shared_mesh_secret.clone();
+    let rotation_shared_tls = shared_tls_client.clone();
+    let rotation_wg_pubkey = wg_pubkey.clone();
+    let rotation_max_events = tuning.max_events;
+    let on_secret_rotation: peering::OnSecretRotation = Arc::new(move |new_secret_str| {
+        let shared_secret = rotation_shared_secret.clone();
+        let shared_tls = rotation_shared_tls.clone();
+        let wg_pub = rotation_wg_pubkey.clone();
+        let max_ev = rotation_max_events;
+        let secret_str = new_secret_str;
+        tokio::spawn(async move {
+            let new_secret: MeshSecret = match secret_str.parse() {
+                Ok(s) => s,
+                Err(e) => {
+                    error!(error = %e, "on_secret_rotation: failed to parse new secret");
+                    return;
+                }
+            };
+
+            // Normalize to V1 derivation (same as daemon startup).
+            let new_secret = MeshSecret::from_bytes(*new_secret.as_bytes());
+            let new_prefix = derive_prefix_from_secret(&new_secret);
+            let new_ipv6 = addressing::derive_node_address(&new_prefix, wg_pub.as_bytes());
+
+            // Update persisted state.
+            match store::load() {
+                Ok(mut state) => {
+                    state.mesh_secret = secret_str.clone();
+                    state.mesh_prefix = new_prefix;
+                    state.mesh_ipv6 = new_ipv6;
+                    if let Err(e) = store::save(&state) {
+                        error!(error = %e, "on_secret_rotation: failed to save state");
+                        return;
+                    }
+                }
+                Err(e) => {
+                    error!(error = %e, "on_secret_rotation: failed to load state");
+                    return;
+                }
+            }
+
+            // Rebuild TLS client config from new secret.
+            let mesh_secret_bytes: [u8; 32] = *new_secret.as_bytes();
+            match peering::build_tls_client_config(&mesh_secret_bytes) {
+                Ok(new_tls) => {
+                    *shared_tls.write().await = new_tls;
+                }
+                Err(e) => {
+                    error!(error = %e, "on_secret_rotation: failed to rebuild TLS config");
+                }
+            }
+
+            // Swap in the new mesh secret (changes encryption_key() for future announces).
+            *shared_secret.write().await = new_secret;
+
+            audit_log::emit(AuditEventType::SecretRotated, None, None, None);
+            events::emit(
+                EventType::SecretRotated,
+                None,
+                None,
+                Some("received rotation from peer"),
+                Some(max_ev),
+            );
+            info!("secret rotation applied from peer broadcast");
+        });
+    });
+
     // Peering listener
     let listener_state = peering_state.clone();
     let peering_task = tokio::spawn(async move {
@@ -1175,6 +1251,7 @@ pub async fn run_daemon(
                 on_announce,
                 on_accepted,
                 Some(tls_server_config),
+                Some(on_secret_rotation),
             )
             .await
         {
@@ -1717,12 +1794,12 @@ pub async fn run_daemon(
 /// Control handler for the daemon.
 struct DaemonControlHandler {
     peering_state: Arc<PeeringState>,
-    mesh_secret: MeshSecret,
+    mesh_secret: Arc<tokio::sync::RwLock<MeshSecret>>,
     my_record: PeerRecord,
     wg_pubkey: Key,
     peering_port: u16,
     on_accepted: peering::OnAccepted,
-    tls_client_config: Arc<rustls::ClientConfig>,
+    tls_client_config: Arc<tokio::sync::RwLock<Arc<rustls::ClientConfig>>>,
     max_events: u64,
     max_peers: usize,
 }
@@ -1749,7 +1826,7 @@ impl ControlHandler for DaemonControlHandler {
                             mesh_prefix: state.mesh_prefix,
                             my_record: self.my_record.clone(),
                             wg_pubkey: self.wg_pubkey.clone(),
-                            encryption_key: self.mesh_secret.encryption_key(),
+                            encryption_key: self.mesh_secret.read().await.encryption_key(),
                             peering_port: self.peering_port,
                             max_peers: self.max_peers,
                         }))
@@ -1921,13 +1998,14 @@ impl ControlHandler for DaemonControlHandler {
                             .filter(|p| p.status != PeerStatus::Removed)
                             .cloned()
                             .collect();
-                        let encryption_key = self.mesh_secret.encryption_key();
+                        let encryption_key = self.mesh_secret.read().await.encryption_key();
+                        let tls_cfg = self.tls_client_config.read().await.clone();
                         let (announced, _failed) = peering::announce_peer_to_mesh(
                             &removed_peer,
                             &active_peers,
                             &encryption_key,
                             self.peering_port,
-                            Some(self.tls_client_config.clone()),
+                            Some(tls_cfg),
                         )
                         .await;
 
@@ -1997,6 +2075,98 @@ impl ControlHandler for DaemonControlHandler {
                     Err(e) => ControlResponse::Error {
                         message: format!("Failed to update peer endpoint: {e}"),
                     },
+                }
+            }
+            ControlRequest::RotateSecret => {
+                // 1. Read current secret for encrypting the rotation broadcast.
+                let old_secret = self.mesh_secret.read().await.clone();
+                let old_enc_key = old_secret.encryption_key();
+
+                // 2. Generate new secret and derive new addressing.
+                let new_secret = MeshSecret::generate();
+                let new_secret_str = new_secret.to_string();
+                // Normalize to V1 (same as daemon startup / peer parsing).
+                let new_secret = MeshSecret::from_bytes(*new_secret.as_bytes());
+                let new_prefix = derive_prefix_from_secret(&new_secret);
+                let new_ipv6 =
+                    addressing::derive_node_address(&new_prefix, self.wg_pubkey.as_bytes());
+
+                // 3. Encrypt the new secret string with the OLD key for broadcast.
+                let encrypted_secret =
+                    match syfrah_core::mesh::encrypt_secret(&new_secret_str, &old_enc_key) {
+                        Ok(ct) => ct,
+                        Err(e) => {
+                            return ControlResponse::Error {
+                                message: format!("failed to encrypt new secret: {e}"),
+                            }
+                        }
+                    };
+
+                // 4. Broadcast the rotation to all active peers (using old TLS config).
+                let peers = store::get_peers().unwrap_or_default();
+                let tls_cfg = self.tls_client_config.read().await.clone();
+                let (notified, failed) = peering::broadcast_secret_rotation(
+                    &encrypted_secret,
+                    &peers,
+                    self.peering_port,
+                    Some(tls_cfg),
+                )
+                .await;
+
+                // 5. Update local state with new secret.
+                match store::load() {
+                    Ok(mut state) => {
+                        state.mesh_secret = new_secret_str.clone();
+                        state.mesh_prefix = new_prefix;
+                        state.mesh_ipv6 = new_ipv6;
+                        if let Err(e) = store::save(&state) {
+                            return ControlResponse::Error {
+                                message: format!("secret broadcast succeeded but save failed: {e}"),
+                            };
+                        }
+                    }
+                    Err(e) => {
+                        return ControlResponse::Error {
+                            message: format!(
+                                "secret broadcast succeeded but state load failed: {e}"
+                            ),
+                        };
+                    }
+                }
+
+                // 6. Rebuild TLS client config from new secret.
+                let new_secret_bytes: [u8; 32] = *new_secret.as_bytes();
+                match peering::build_tls_client_config(&new_secret_bytes) {
+                    Ok(new_tls) => {
+                        *self.tls_client_config.write().await = new_tls;
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "RotateSecret: failed to rebuild TLS config");
+                    }
+                }
+
+                // 7. Swap in the new mesh secret for future encryption_key() calls.
+                *self.mesh_secret.write().await = new_secret;
+
+                audit_log::emit(AuditEventType::SecretRotated, None, None, None);
+                events::emit(
+                    EventType::SecretRotated,
+                    None,
+                    None,
+                    Some(&format!("notified={notified} failed={failed}")),
+                    Some(self.max_events),
+                );
+                info!(
+                    notified = notified,
+                    failed = failed,
+                    "secret rotation completed"
+                );
+
+                ControlResponse::SecretRotated {
+                    new_secret: new_secret_str,
+                    new_ipv6: new_ipv6.to_string(),
+                    peers_notified: notified,
+                    peers_failed: failed,
                 }
             }
         }
