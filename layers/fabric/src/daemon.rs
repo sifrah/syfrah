@@ -1416,6 +1416,21 @@ pub async fn run_daemon(
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
 
+    // SIGHUP handler: reload config without restart.
+    let sighup_max_events = tuning.max_events;
+    #[cfg(unix)]
+    let sighup_reload = async {
+        let mut sig = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+            .expect("failed to register SIGHUP handler");
+        loop {
+            sig.recv().await;
+            info!("received SIGHUP, reloading configuration");
+            handle_reload(sighup_max_events);
+        }
+    };
+    #[cfg(not(unix))]
+    let sighup_reload = std::future::pending::<()>();
+
     tokio::select! {
         _ = control_task => {}
         _ = peering_task => {}
@@ -1423,6 +1438,7 @@ pub async fn run_daemon(
         _ = persist => {}
         _ = health_check => {}
         _ = reconcile => {}
+        _ = sighup_reload => {}
         _ = tokio::signal::ctrl_c() => {
             info!("received SIGINT, shutting down");
         }
@@ -1607,6 +1623,7 @@ impl ControlHandler for DaemonControlHandler {
                     },
                 }
             }
+            ControlRequest::Reload => handle_reload(self.max_events),
             ControlRequest::RemovePeer { name_or_key } => {
                 let state = match store::load() {
                     Ok(s) => s,
@@ -1731,6 +1748,70 @@ impl ControlHandler for DaemonControlHandler {
                         message: format!("Failed to update peer endpoint: {e}"),
                     },
                 }
+            }
+        }
+    }
+}
+
+/// Handle a config reload request: re-read config.toml, diff with current,
+/// apply hot-reloadable changes, and report results.
+fn handle_reload(max_events: u64) -> ControlResponse {
+    let current = config::load_tuning().unwrap_or_default();
+    match config::load_tuning() {
+        Ok(new_tuning) => {
+            let (changes, skipped) = config::diff_tuning(&current, &new_tuning);
+
+            let change_strs: Vec<String> = changes
+                .iter()
+                .map(|c| format!("{} {} -> {}", c.name, c.old_value, c.new_value))
+                .collect();
+            let skip_strs: Vec<String> = skipped
+                .iter()
+                .map(|c| {
+                    format!(
+                        "{} {} -> {} (requires restart)",
+                        c.name, c.old_value, c.new_value
+                    )
+                })
+                .collect();
+
+            let detail = if change_strs.is_empty() && skip_strs.is_empty() {
+                "no changes".to_string()
+            } else {
+                change_strs
+                    .iter()
+                    .chain(skip_strs.iter())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+
+            info!("config reloaded: {detail}");
+            events::emit(
+                EventType::ConfigReloaded,
+                None,
+                None,
+                Some(&detail),
+                Some(max_events),
+            );
+            audit_log::emit(AuditEventType::ConfigReloaded, None, None, Some(&detail));
+
+            ControlResponse::ConfigReloaded {
+                changes: change_strs,
+                skipped: skip_strs,
+            }
+        }
+        Err(e) => {
+            warn!("config reload failed: {e}");
+            events::emit(
+                EventType::ConfigReloadFailed,
+                None,
+                None,
+                Some(&e),
+                Some(max_events),
+            );
+            ControlResponse::Error {
+                message: format!("Config reload failed: {e}. Keeping current configuration."),
             }
         }
     }

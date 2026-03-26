@@ -50,6 +50,8 @@ pub enum EventType {
     AnnounceQueued,
     AnnounceQueueFull,
     PeerLimitReached,
+    ConfigReloaded,
+    ConfigReloadFailed,
 }
 
 impl std::fmt::Display for EventType {
@@ -75,6 +77,8 @@ impl std::fmt::Display for EventType {
             EventType::AnnounceQueued => "announce-queued",
             EventType::AnnounceQueueFull => "announce-queue-full",
             EventType::PeerLimitReached => "peer-limit-reached",
+            EventType::ConfigReloaded => "config-reloaded",
+            EventType::ConfigReloadFailed => "config-reload-failed",
         };
         write!(f, "{s}")
     }

@@ -9,6 +9,7 @@ pub mod peering;
 pub mod peers;
 pub mod peers_remove;
 pub mod peers_update;
+pub mod reload;
 pub mod rotate;
 pub mod service;
 pub mod start;

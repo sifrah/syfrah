@@ -33,6 +33,8 @@ pub enum AuditEventType {
     DaemonStarted,
     /// The daemon was stopped.
     DaemonStopped,
+    /// Configuration was reloaded at runtime.
+    ConfigReloaded,
 }
 
 impl std::fmt::Display for AuditEventType {
@@ -47,6 +49,7 @@ impl std::fmt::Display for AuditEventType {
             AuditEventType::SecretRotated => "secret.rotated",
             AuditEventType::DaemonStarted => "daemon.started",
             AuditEventType::DaemonStopped => "daemon.stopped",
+            AuditEventType::ConfigReloaded => "config.reloaded",
         };
         write!(f, "{s}")
     }
@@ -65,6 +68,7 @@ impl AuditEventType {
             "secret.rotated" => Some(Self::SecretRotated),
             "daemon.started" => Some(Self::DaemonStarted),
             "daemon.stopped" => Some(Self::DaemonStopped),
+            "config.reloaded" => Some(Self::ConfigReloaded),
             _ => None,
         }
     }
@@ -209,6 +213,7 @@ mod tests {
             (AuditEventType::SecretRotated, "secret.rotated"),
             (AuditEventType::DaemonStarted, "daemon.started"),
             (AuditEventType::DaemonStopped, "daemon.stopped"),
+            (AuditEventType::ConfigReloaded, "config.reloaded"),
         ];
         for (variant, expected) in &cases {
             assert_eq!(variant.to_string(), *expected);
