@@ -277,7 +277,7 @@ mod tests {
         // Manually compute expected legacy derivation for encryption_key (domain "encrypt:")
         let mut hasher = Sha256::new();
         hasher.update(b"encrypt:");
-        hasher.update(&bytes);
+        hasher.update(bytes);
         let expected: [u8; 32] = hasher.finalize().into();
         assert_eq!(secret_v1.encryption_key(), expected);
     }
@@ -291,7 +291,7 @@ mod tests {
         // V2 must NOT match legacy derivation
         let mut hasher = Sha256::new();
         hasher.update(b"encrypt:");
-        hasher.update(&bytes);
+        hasher.update(bytes);
         let legacy: [u8; 32] = hasher.finalize().into();
         assert_ne!(secret_v2.encryption_key(), legacy);
     }
