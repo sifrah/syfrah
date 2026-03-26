@@ -163,6 +163,16 @@ pub struct Topology {
     pub zone: Zone,
 }
 
+impl Topology {
+    /// Try to build a `Topology` from raw region/zone strings.
+    /// Returns `None` if either string is missing or fails validation.
+    pub fn from_strings(region: Option<&str>, zone: Option<&str>) -> Option<Topology> {
+        let r = region.and_then(Region::new)?;
+        let z = zone.and_then(Zone::new)?;
+        Some(Topology { region: r, zone: z })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PeerStatus {
     Active,
@@ -185,8 +195,29 @@ pub struct PeerRecord {
     pub zone: Option<String>,
     /// Typed topology (region + zone). Coexists with the legacy `region`/`zone`
     /// string fields during the migration period.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub topology: Option<Topology>,
+}
+
+impl PeerRecord {
+    /// Fill in `topology` from legacy `region`/`zone` strings when it is absent.
+    /// This is the lazy-migration path: old records get a typed topology the
+    /// first time they are loaded.
+    pub fn ensure_topology(&mut self) {
+        if self.topology.is_some() {
+            return;
+        }
+        self.topology = Topology::from_strings(self.region.as_deref(), self.zone.as_deref());
+    }
+
+    /// Copy `topology` values back into the legacy `region`/`zone` string
+    /// fields so that old nodes can still read the data.
+    pub fn sync_legacy_fields(&mut self) {
+        if let Some(ref topo) = self.topology {
+            self.region = Some(topo.region.to_string());
+            self.zone = Some(topo.zone.to_string());
+        }
+    }
 }
 
 // --- Peering protocol types ---
@@ -1202,9 +1233,98 @@ mod tests {
     }
 
     #[test]
-    fn peer_record_topology_none_omitted_from_json() {
+    fn peer_record_topology_null_present_in_json() {
+        // topology is always serialized (even as null) for forward-compat
         let record = valid_record();
         let json = serde_json::to_string(&record).unwrap();
-        assert!(!json.contains("topology"));
+        assert!(json.contains("\"topology\":null"));
+    }
+
+    #[test]
+    fn ensure_topology_fills_from_legacy_fields() {
+        let mut record = valid_record();
+        record.region = Some("eu-west".into());
+        record.zone = Some("zone-a".into());
+        assert!(record.topology.is_none());
+        record.ensure_topology();
+        let topo = record.topology.as_ref().unwrap();
+        assert_eq!(topo.region.as_str(), "eu-west");
+        assert_eq!(topo.zone.as_str(), "zone-a");
+    }
+
+    #[test]
+    fn ensure_topology_noop_when_already_set() {
+        let mut record = valid_record();
+        record.topology = Some(Topology {
+            region: Region::new("us-east").unwrap(),
+            zone: Zone::new("zone-b").unwrap(),
+        });
+        record.region = Some("eu-west".into());
+        record.zone = Some("zone-a".into());
+        record.ensure_topology();
+        // Should keep the existing topology, not overwrite from legacy fields
+        let topo = record.topology.as_ref().unwrap();
+        assert_eq!(topo.region.as_str(), "us-east");
+        assert_eq!(topo.zone.as_str(), "zone-b");
+    }
+
+    #[test]
+    fn ensure_topology_none_when_legacy_missing() {
+        let mut record = valid_record();
+        record.region = None;
+        record.zone = None;
+        record.ensure_topology();
+        assert!(record.topology.is_none());
+    }
+
+    #[test]
+    fn sync_legacy_fields_from_topology() {
+        let mut record = valid_record();
+        record.topology = Some(Topology {
+            region: Region::new("ap-south").unwrap(),
+            zone: Zone::new("zone-1").unwrap(),
+        });
+        record.region = None;
+        record.zone = None;
+        record.sync_legacy_fields();
+        assert_eq!(record.region.as_deref(), Some("ap-south"));
+        assert_eq!(record.zone.as_deref(), Some("zone-1"));
+    }
+
+    #[test]
+    fn serialize_new_record_contains_both_formats() {
+        let mut record = valid_record();
+        record.region = Some("eu-west".into());
+        record.zone = Some("zone-1".into());
+        record.topology = Some(Topology {
+            region: Region::new("eu-west").unwrap(),
+            zone: Zone::new("zone-1").unwrap(),
+        });
+        let json = serde_json::to_string(&record).unwrap();
+        // Legacy fields present for old nodes
+        assert!(json.contains("\"region\":\"eu-west\""));
+        assert!(json.contains("\"zone\":\"zone-1\""));
+        // New typed topology also present
+        assert!(json.contains("\"topology\":{"));
+    }
+
+    #[test]
+    fn topology_from_strings_valid() {
+        let topo = Topology::from_strings(Some("eu-west"), Some("zone-a")).unwrap();
+        assert_eq!(topo.region.as_str(), "eu-west");
+        assert_eq!(topo.zone.as_str(), "zone-a");
+    }
+
+    #[test]
+    fn topology_from_strings_returns_none_on_missing() {
+        assert!(Topology::from_strings(None, Some("zone-a")).is_none());
+        assert!(Topology::from_strings(Some("eu-west"), None).is_none());
+        assert!(Topology::from_strings(None, None).is_none());
+    }
+
+    #[test]
+    fn topology_from_strings_returns_none_on_invalid() {
+        // Uppercase is invalid
+        assert!(Topology::from_strings(Some("EU-WEST"), Some("zone-a")).is_none());
     }
 }

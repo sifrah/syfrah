@@ -1738,6 +1738,8 @@ impl ControlHandler for DaemonControlHandler {
                             info.zone.as_deref(),
                             &state.peers,
                         );
+                        let topology =
+                            syfrah_core::mesh::Topology::from_strings(Some(&region), Some(&zone));
                         let new_record = PeerRecord {
                             name: info.node_name.clone(),
                             wg_public_key: info.wg_public_key,
@@ -1747,7 +1749,7 @@ impl ControlHandler for DaemonControlHandler {
                             status: PeerStatus::Active,
                             region: Some(region),
                             zone: Some(zone),
-                            topology: None,
+                            topology,
                         };
                         events::emit(
                             EventType::JoinManuallyAccepted,
@@ -1997,6 +1999,8 @@ fn build_record(
     region: Option<&str>,
     zone: Option<&str>,
 ) -> PeerRecord {
+    use syfrah_core::mesh::Topology;
+    let topology = Topology::from_strings(region, zone);
     PeerRecord {
         name: name.to_string(),
         wg_public_key: wg_keypair.public.to_base64(),
@@ -2006,7 +2010,7 @@ fn build_record(
         status: PeerStatus::Active,
         region: region.map(|s| s.to_string()),
         zone: zone.map(|s| s.to_string()),
-        topology: None,
+        topology,
     }
 }
 

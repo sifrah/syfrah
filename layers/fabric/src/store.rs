@@ -235,7 +235,13 @@ fn load_from_redb_with(db: &LayerDb) -> Result<NodeState, StoreError> {
     let zone: Option<String> = db.get("config", "zone")?.unwrap_or(None);
 
     let peer_entries: Vec<(String, PeerRecord)> = db.list("peers")?;
-    let peers: Vec<PeerRecord> = peer_entries.into_iter().map(|(_, p)| p).collect();
+    let peers: Vec<PeerRecord> = peer_entries
+        .into_iter()
+        .map(|(_, mut p)| {
+            p.ensure_topology();
+            p
+        })
+        .collect();
 
     let metrics = Metrics {
         peers_discovered: db.get_metric("peers_discovered")?,
