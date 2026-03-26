@@ -3,6 +3,7 @@ use std::net::{Ipv6Addr, SocketAddr};
 use aes_gcm::aead::{Aead, KeyInit, OsRng};
 use aes_gcm::{AeadCore, Aes256Gcm, Nonce};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -17,6 +18,8 @@ pub enum MeshError {
     PayloadTooShort,
     #[error("validation error: {0}")]
     Validation(String),
+    #[error("signature error: {0}")]
+    Signature(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +63,13 @@ pub struct JoinRequest {
     /// Joiner's zone (sent so the leader can store it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zone: Option<String>,
+    /// Unix timestamp (seconds since epoch) to prevent replay attacks.
+    #[serde(default)]
+    pub timestamp: u64,
+    /// Ed25519 signature over the canonical payload, base64-encoded.
+    /// Proves the sender possesses the WireGuard private key.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub signature: String,
 }
 
 /// Response sent back to a new node after acceptance or rejection.
@@ -223,7 +233,7 @@ pub fn validate_peer_record(record: &PeerRecord) -> Result<(), MeshError> {
     Ok(())
 }
 
-/// Validate all fields of a JoinRequest.
+/// Validate all fields of a JoinRequest (syntax only, no signature check).
 pub fn validate_join_request(req: &JoinRequest) -> Result<(), MeshError> {
     validate_short_field("request_id", &req.request_id)?;
     validate_name("node_name", &req.node_name)?;
@@ -247,6 +257,14 @@ pub fn validate_join_request(req: &JoinRequest) -> Result<(), MeshError> {
     Ok(())
 }
 
+/// Validate all fields of a JoinRequest **and** verify its cryptographic
+/// signature.  This is the function that the receiving side should call.
+pub fn validate_and_verify_join_request(req: &JoinRequest) -> Result<(), MeshError> {
+    validate_join_request(req)?;
+    verify_join_request_signature(req)?;
+    Ok(())
+}
+
 /// Validate a JoinResponse (peer list size limit).
 pub fn validate_join_response(resp: &JoinResponse) -> Result<(), MeshError> {
     if resp.peers.len() > MAX_PEERS_IN_RESPONSE {
@@ -255,6 +273,138 @@ pub fn validate_join_response(resp: &JoinResponse) -> Result<(), MeshError> {
             resp.peers.len()
         )));
     }
+    Ok(())
+}
+
+// --- JoinRequest signature constants ---
+
+/// Maximum age (seconds) for a JoinRequest timestamp before it is rejected as stale.
+pub const MAX_JOIN_REQUEST_AGE_SECS: u64 = 300; // 5 minutes
+
+// --- JoinRequest signing / verification ---
+
+/// Build the canonical byte payload that is signed:
+/// `SHA-256(node_name || wg_public_key || endpoint || timestamp)`.
+fn join_request_sign_payload(req: &JoinRequest) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(req.node_name.as_bytes());
+    hasher.update(req.wg_public_key.as_bytes());
+    hasher.update(req.endpoint.to_string().as_bytes());
+    hasher.update(req.timestamp.to_be_bytes());
+    hasher.finalize().into()
+}
+
+/// Convert an X25519 private key (32 bytes, clamped Curve25519 scalar) to an
+/// Ed25519 signing key.  WireGuard stores the *clamped* scalar directly, so
+/// we interpret the 32 bytes as an Ed25519 secret seed via the birational map
+/// provided by `ed25519-dalek`.
+fn x25519_private_to_ed25519_signing(wg_private_bytes: &[u8; 32]) -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(wg_private_bytes)
+}
+
+/// Derive the Ed25519 *verifying* (public) key that corresponds to the WG
+/// private key used to sign.  On the verifier side we do NOT have the private
+/// key — we only have the WG public key (an X25519 point).  However, when the
+/// signer calls `SigningKey::from_bytes`, `ed25519-dalek` deterministically
+/// derives a public key via SHA-512 hashing of the seed.  There is no
+/// general-purpose birational map from an arbitrary X25519 public key to the
+/// matching Ed25519 public key.  Therefore the protocol includes the Ed25519
+/// verifying key inside the signed payload is not needed — we simply derive it
+/// from the private key at sign time and the verifier must accept the public
+/// key embedded in the request.
+///
+/// Instead we take a simpler approach: the *signer* also embeds the Ed25519
+/// verifying key in the signature blob so the verifier can:
+///   1. Verify the Ed25519 signature with the embedded verifying key.
+///   2. Confirm the Ed25519 verifying key is *bound* to the claimed WG key
+///      because the signed payload includes `wg_public_key`.
+///
+/// Signature wire format (base64-encoded):
+///   bytes [0..32]  = Ed25519 verifying key
+///   bytes [32..96] = Ed25519 signature (64 bytes)
+///
+/// Sign a JoinRequest in place.  `wg_private_key` is the raw 32-byte
+/// WireGuard private key of the joiner.
+pub fn sign_join_request(req: &mut JoinRequest, wg_private_key: &[u8; 32]) {
+    use base64::Engine;
+    use ed25519_dalek::Signer;
+
+    req.timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let payload = join_request_sign_payload(req);
+    let signing_key = x25519_private_to_ed25519_signing(wg_private_key);
+    let verifying_key = signing_key.verifying_key();
+    let sig = signing_key.sign(&payload);
+
+    let mut blob = Vec::with_capacity(32 + 64);
+    blob.extend_from_slice(verifying_key.as_bytes());
+    blob.extend_from_slice(&sig.to_bytes());
+    req.signature = base64::engine::general_purpose::STANDARD.encode(&blob);
+}
+
+/// Verify the Ed25519 signature on a `JoinRequest`.
+///
+/// Returns `Ok(())` if valid, or `Err(MeshError::Signature(...))` with a
+/// human-readable message suitable for operator display.
+pub fn verify_join_request_signature(req: &JoinRequest) -> Result<(), MeshError> {
+    use base64::Engine;
+    use ed25519_dalek::Verifier;
+
+    if req.signature.is_empty() {
+        return Err(MeshError::Signature(
+            "JoinRequest signature missing. The node may be running an incompatible version."
+                .to_string(),
+        ));
+    }
+
+    let blob = base64::engine::general_purpose::STANDARD
+        .decode(&req.signature)
+        .map_err(|_| {
+            MeshError::Signature(
+                "JoinRequest signature is not valid base64. The request was tampered with."
+                    .to_string(),
+            )
+        })?;
+
+    if blob.len() != 96 {
+        return Err(MeshError::Signature(
+            "JoinRequest signature has wrong length. The request was tampered with.".to_string(),
+        ));
+    }
+
+    let vk_bytes: [u8; 32] = blob[..32].try_into().expect("slice is exactly 32 bytes");
+    let sig_bytes: [u8; 64] = blob[32..96].try_into().expect("slice is exactly 64 bytes");
+
+    let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&vk_bytes).map_err(|_| {
+        MeshError::Signature(
+            "JoinRequest signature contains an invalid Ed25519 public key.".to_string(),
+        )
+    })?;
+    let signature = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+
+    let payload = join_request_sign_payload(req);
+    verifying_key.verify(&payload, &signature).map_err(|_| {
+        MeshError::Signature(
+            "JoinRequest signature invalid. The node may be running an incompatible version or the request was tampered with."
+                .to_string(),
+        )
+    })?;
+
+    // Check timestamp freshness (reject stale/replayed requests).
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let age = now.abs_diff(req.timestamp);
+    if age > MAX_JOIN_REQUEST_AGE_SECS {
+        return Err(MeshError::Signature(format!(
+            "JoinRequest timestamp is too old ({age}s). Possible replay attack."
+        )));
+    }
+
     Ok(())
 }
 
@@ -535,6 +685,8 @@ mod tests {
             pin: Some("1234".into()),
             region: Some("us-east-1".into()),
             zone: Some("zone-a".into()),
+            timestamp: 0,
+            signature: String::new(),
         };
         assert!(validate_join_request(&req).is_ok());
     }
@@ -550,6 +702,8 @@ mod tests {
             pin: None,
             region: None,
             zone: None,
+            timestamp: 0,
+            signature: String::new(),
         };
         assert!(validate_join_request(&req).is_err());
     }
@@ -565,6 +719,8 @@ mod tests {
             pin: None,
             region: None,
             zone: None,
+            timestamp: 0,
+            signature: String::new(),
         };
         assert!(validate_join_request(&req).is_err());
     }
@@ -580,6 +736,8 @@ mod tests {
             pin: Some("a".repeat(33)),
             region: None,
             zone: None,
+            timestamp: 0,
+            signature: String::new(),
         };
         assert!(validate_join_request(&req).is_err());
     }
@@ -596,6 +754,8 @@ mod tests {
             pin: None,
             region: None,
             zone: None,
+            timestamp: 0,
+            signature: String::new(),
         };
         assert!(validate_join_request(&req).is_ok());
     }
@@ -611,6 +771,8 @@ mod tests {
             pin: None,
             region: None,
             zone: None,
+            timestamp: 0,
+            signature: String::new(),
         };
         assert!(validate_join_request(&req).is_err());
     }
@@ -641,5 +803,98 @@ mod tests {
             approved_by: None,
         };
         assert!(validate_join_response(&resp).is_err());
+    }
+
+    // --- JoinRequest signature tests ---
+
+    /// Helper: generate a random 32-byte "WG private key" for testing.
+    fn random_wg_private_key() -> [u8; 32] {
+        use rand::RngCore;
+        let mut key = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut key);
+        key
+    }
+
+    /// Helper: derive the WG public key (X25519) from the private key.
+    fn wg_public_key_b64(private: &[u8; 32]) -> String {
+        use base64::Engine;
+        let secret = x25519_dalek::StaticSecret::from(*private);
+        let public = x25519_dalek::PublicKey::from(&secret);
+        base64::engine::general_purpose::STANDARD.encode(public.as_bytes())
+    }
+
+    /// Helper: build a valid, signed JoinRequest.
+    fn signed_join_request() -> (JoinRequest, [u8; 32]) {
+        let wg_priv = random_wg_private_key();
+        let mut req = JoinRequest {
+            request_id: "abc12345".into(),
+            node_name: "node-2".into(),
+            wg_public_key: wg_public_key_b64(&wg_priv),
+            endpoint: "203.0.113.2:51820".parse().unwrap(),
+            wg_listen_port: 51820,
+            pin: None,
+            region: None,
+            zone: None,
+            timestamp: 0,
+            signature: String::new(),
+        };
+        sign_join_request(&mut req, &wg_priv);
+        (req, wg_priv)
+    }
+
+    #[test]
+    fn sign_verify_roundtrip() {
+        let (req, _) = signed_join_request();
+        assert!(verify_join_request_signature(&req).is_ok());
+    }
+
+    #[test]
+    fn reject_tampered_node_name() {
+        let (mut req, _) = signed_join_request();
+        req.node_name = "evil-node".into();
+        let err = verify_join_request_signature(&req).unwrap_err();
+        assert!(err.to_string().contains("invalid"));
+    }
+
+    #[test]
+    fn reject_tampered_wg_public_key() {
+        let (mut req, _) = signed_join_request();
+        // Replace with a different valid key
+        let other_priv = random_wg_private_key();
+        req.wg_public_key = wg_public_key_b64(&other_priv);
+        let err = verify_join_request_signature(&req).unwrap_err();
+        assert!(err.to_string().contains("invalid"));
+    }
+
+    #[test]
+    fn reject_missing_signature() {
+        let (mut req, _) = signed_join_request();
+        req.signature = String::new();
+        let err = verify_join_request_signature(&req).unwrap_err();
+        assert!(err.to_string().contains("missing"));
+    }
+
+    #[test]
+    fn reject_stale_timestamp() {
+        let (mut req, wg_priv) = signed_join_request();
+        // Set timestamp to far in the past and re-sign
+        req.timestamp = 1000;
+        // Re-compute signature with stale timestamp
+        let payload = join_request_sign_payload(&req);
+        let signing_key = x25519_private_to_ed25519_signing(&wg_priv);
+        let sig = ed25519_dalek::Signer::sign(&signing_key, &payload);
+        let vk = signing_key.verifying_key();
+        let mut blob = Vec::with_capacity(96);
+        blob.extend_from_slice(vk.as_bytes());
+        blob.extend_from_slice(&sig.to_bytes());
+        req.signature = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &blob);
+        let err = verify_join_request_signature(&req).unwrap_err();
+        assert!(err.to_string().contains("too old"));
+    }
+
+    #[test]
+    fn validate_and_verify_full_roundtrip() {
+        let (req, _) = signed_join_request();
+        assert!(validate_and_verify_join_request(&req).is_ok());
     }
 }

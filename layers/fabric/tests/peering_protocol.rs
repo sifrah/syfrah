@@ -12,12 +12,40 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use syfrah_core::addressing;
-use syfrah_core::mesh::{JoinRequest, PeerRecord, PeerStatus};
+use syfrah_core::mesh::{sign_join_request, JoinRequest, PeerRecord, PeerStatus};
 use syfrah_core::secret::MeshSecret;
 use syfrah_fabric::peering::{
     generate_pin, generate_request_id, send_join_request, AutoAcceptConfig, OnAccepted,
     PeeringState,
 };
+
+/// Build and sign a JoinRequest using the given keypair.
+fn make_signed_join_request(
+    keypair: &wireguard_control::KeyPair,
+    node_name: &str,
+    endpoint: &str,
+    wg_listen_port: u16,
+    pin: Option<String>,
+    region: Option<String>,
+    zone: Option<String>,
+) -> JoinRequest {
+    let mut req = JoinRequest {
+        request_id: generate_request_id(),
+        node_name: node_name.to_string(),
+        wg_public_key: keypair.public.to_base64(),
+        endpoint: endpoint.parse().unwrap(),
+        wg_listen_port,
+        pin,
+        region,
+        zone,
+        timestamp: 0,
+        signature: String::new(),
+    };
+    let mut priv_bytes = [0u8; 32];
+    priv_bytes.copy_from_slice(keypair.private.as_bytes());
+    sign_join_request(&mut req, &priv_bytes);
+    req
+}
 
 /// Find a free TCP port by binding to port 0
 fn free_port() -> u16 {
@@ -100,16 +128,15 @@ async fn join_with_pin_auto_accept() {
 
     let joiner_keypair = syfrah_fabric::wg::generate_keypair();
 
-    let join_request = JoinRequest {
-        request_id: generate_request_id(),
-        node_name: "joiner".to_string(),
-        wg_public_key: joiner_keypair.public.to_base64(),
-        endpoint: "0.0.0.0:51820".parse().unwrap(),
-        wg_listen_port: 51820,
-        pin: Some(pin.clone()),
-        region: Some("us-east".to_string()),
-        zone: Some("zone-1".to_string()),
-    };
+    let join_request = make_signed_join_request(
+        &joiner_keypair,
+        "joiner",
+        "0.0.0.0:51820",
+        51820,
+        Some(pin.clone()),
+        Some("us-east".to_string()),
+        Some("zone-1".to_string()),
+    );
 
     let target: SocketAddr = format!("127.0.0.1:{peering_port}").parse().unwrap();
     let response = send_join_request(target, join_request).await.unwrap();
@@ -213,16 +240,15 @@ async fn join_with_wrong_pin_falls_to_pending() {
 
     let joiner_keypair = syfrah_fabric::wg::generate_keypair();
 
-    let join_request = JoinRequest {
-        request_id: generate_request_id(),
-        node_name: "joiner".to_string(),
-        wg_public_key: joiner_keypair.public.to_base64(),
-        endpoint: "0.0.0.0:51820".parse().unwrap(),
-        wg_listen_port: 51820,
-        pin: Some(wrong_pin),
-        region: Some("us-east".to_string()),
-        zone: Some("zone-1".to_string()),
-    };
+    let join_request = make_signed_join_request(
+        &joiner_keypair,
+        "joiner",
+        "0.0.0.0:51820",
+        51820,
+        Some(wrong_pin),
+        Some("us-east".to_string()),
+        Some("zone-1".to_string()),
+    );
 
     let target: SocketAddr = format!("127.0.0.1:{peering_port}").parse().unwrap();
 
@@ -313,16 +339,15 @@ async fn join_without_pin_goes_to_pending() {
 
     let joiner_keypair = syfrah_fabric::wg::generate_keypair();
 
-    let join_request = JoinRequest {
-        request_id: generate_request_id(),
-        node_name: "no-pin-joiner".to_string(),
-        wg_public_key: joiner_keypair.public.to_base64(),
-        endpoint: "0.0.0.0:51820".parse().unwrap(),
-        wg_listen_port: 51820,
-        pin: None, // No PIN
-        region: Some("us-east".to_string()),
-        zone: Some("zone-1".to_string()),
-    };
+    let join_request = make_signed_join_request(
+        &joiner_keypair,
+        "no-pin-joiner",
+        "0.0.0.0:51820",
+        51820,
+        None, // No PIN
+        Some("us-east".to_string()),
+        Some("zone-1".to_string()),
+    );
 
     let target: SocketAddr = format!("127.0.0.1:{peering_port}").parse().unwrap();
 
@@ -456,16 +481,15 @@ async fn rate_limited_ip_gets_rejection() {
     // requests then fall through to the pending queue (never approved).
     for i in 0..5 {
         let joiner_keypair = syfrah_fabric::wg::generate_keypair();
-        let join_request = JoinRequest {
-            request_id: generate_request_id(),
-            node_name: format!("attacker-{i}"),
-            wg_public_key: joiner_keypair.public.to_base64(),
-            endpoint: "127.0.0.1:51820".parse().unwrap(),
-            wg_listen_port: 51820,
-            pin: Some(format!("WRONG{i}")),
-            region: None,
-            zone: None,
-        };
+        let join_request = make_signed_join_request(
+            &joiner_keypair,
+            &format!("attacker-{i}"),
+            "127.0.0.1:51820",
+            51820,
+            Some(format!("WRONG{i}")),
+            None,
+            None,
+        );
 
         let target: SocketAddr = format!("127.0.0.1:{peering_port}").parse().unwrap();
         // These will go to pending after the 2s delay; just fire and let them timeout
@@ -481,16 +505,15 @@ async fn rate_limited_ip_gets_rejection() {
 
     // ── 6th attempt should get an immediate rejection (rate limited) ──
     let joiner_keypair = syfrah_fabric::wg::generate_keypair();
-    let join_request = JoinRequest {
-        request_id: generate_request_id(),
-        node_name: "attacker-final".to_string(),
-        wg_public_key: joiner_keypair.public.to_base64(),
-        endpoint: "127.0.0.1:51820".parse().unwrap(),
-        wg_listen_port: 51820,
-        pin: Some("WRONGX".to_string()),
-        region: None,
-        zone: None,
-    };
+    let join_request = make_signed_join_request(
+        &joiner_keypair,
+        "attacker-final",
+        "127.0.0.1:51820",
+        51820,
+        Some("WRONGX".to_string()),
+        None,
+        None,
+    );
 
     let target: SocketAddr = format!("127.0.0.1:{peering_port}").parse().unwrap();
     let result = tokio::time::timeout(
