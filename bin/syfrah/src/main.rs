@@ -4,6 +4,7 @@ use anyhow::Result;
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Shell};
 
+use syfrah_core::mesh::{Region, Zone};
 use syfrah_fabric::cli;
 use syfrah_fabric::daemon::{self, DaemonConfig};
 use syfrah_state::cli::StateCommand;
@@ -307,6 +308,74 @@ fn validate_name(label: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Validate and resolve `--region` / `--zone` CLI args using the typed
+/// constructors from `syfrah-core`. Returns actionable error messages when
+/// the input is invalid, and emits a warning when `--region` is omitted.
+fn validate_region(raw: &Option<String>) -> Result<Option<String>> {
+    match raw {
+        None => {
+            eprintln!("Warning: --region not specified. Using 'default'. Set --region for meaningful topology.");
+            Ok(None)
+        }
+        Some(value) => {
+            if Region::new(value).is_some() {
+                Ok(Some(value.clone()))
+            } else {
+                // Produce an actionable suggestion depending on the failure mode.
+                let suggestion = suggest_fix(value);
+                anyhow::bail!("Region name '{value}' is invalid. {suggestion}");
+            }
+        }
+    }
+}
+
+fn validate_zone(raw: &Option<String>) -> Result<Option<String>> {
+    match raw {
+        None => Ok(None),
+        Some(value) => {
+            if Zone::new(value).is_some() {
+                Ok(Some(value.clone()))
+            } else {
+                let suggestion = suggest_fix(value);
+                anyhow::bail!("Zone name '{value}' is invalid. {suggestion}");
+            }
+        }
+    }
+}
+
+/// Generate a human-friendly fix suggestion for an invalid region/zone name.
+fn suggest_fix(value: &str) -> String {
+    use syfrah_core::mesh::MAX_REGION_ZONE_LENGTH;
+
+    if value.len() > MAX_REGION_ZONE_LENGTH {
+        return format!("Name too long (max {MAX_REGION_ZONE_LENGTH} characters).");
+    }
+    if value.is_empty() {
+        return "Name must not be empty.".to_string();
+    }
+    // Check if it just has uppercase — suggest the lowercase version.
+    let lowered = value.to_ascii_lowercase();
+    if Region::new(&lowered).is_some() {
+        return format!("Use lowercase: '{lowered}'.");
+    }
+    // Replace common bad chars with hyphens for a suggestion.
+    let cleaned: String = value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = cleaned.trim_matches('-');
+    if !trimmed.is_empty() && Region::new(trimmed).is_some() {
+        return format!("Use alphanumeric + hyphens: '{trimmed}'.");
+    }
+    "Use lowercase alphanumeric characters and hyphens (e.g. 'eu-west').".to_string()
+}
+
 fn default_node_name() -> String {
     hostname::get()
         .ok()
@@ -524,6 +593,8 @@ async fn run() -> Result<()> {
                 let resolved_node = node_name.unwrap_or_else(default_node_name);
                 validate_name("Node name", &resolved_node)?;
                 let peering_port = validate_ports(port, peering_port)?;
+                let region = validate_region(&region)?;
+                let zone = validate_zone(&zone)?;
                 let config = DaemonConfig {
                     mesh_name: name,
                     node_name: resolved_node,
@@ -560,6 +631,8 @@ async fn run() -> Result<()> {
                 let resolved_node = node_name.unwrap_or_else(default_node_name);
                 validate_name("Node name", &resolved_node)?;
                 let peering_port = validate_ports(port, peering_port)?;
+                let region = validate_region(&region)?;
+                let zone = validate_zone(&zone)?;
                 let config = DaemonConfig {
                     mesh_name: String::new(),
                     node_name: resolved_node,
@@ -787,5 +860,88 @@ mod tests {
         let name = "x".repeat(100);
         let err = validate_name("Node name", &name).unwrap_err();
         assert!(err.to_string().contains("Node name"), "unexpected: {err}");
+    }
+
+    // ── validate_region ───────────────────────────────────────────
+
+    #[test]
+    fn region_none_returns_none_with_warning() {
+        // None region is allowed (falls back to "default")
+        let result = validate_region(&None).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn region_valid_lowercase() {
+        let result = validate_region(&Some("eu-west".to_string())).unwrap();
+        assert_eq!(result, Some("eu-west".to_string()));
+    }
+
+    #[test]
+    fn region_uppercase_rejected_with_suggestion() {
+        let err = validate_region(&Some("EU-WEST".to_string())).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("invalid"), "unexpected: {msg}");
+        assert!(msg.contains("eu-west"), "should suggest lowercase: {msg}");
+    }
+
+    #[test]
+    fn region_too_long_rejected() {
+        let long = "a".repeat(65);
+        let err = validate_region(&Some(long)).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("too long") || msg.contains("max 64"),
+            "unexpected: {msg}"
+        );
+    }
+
+    // ── validate_zone ─────────────────────────────────────────────
+
+    #[test]
+    fn zone_none_returns_none() {
+        let result = validate_zone(&None).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn zone_valid_lowercase() {
+        let result = validate_zone(&Some("par-1".to_string())).unwrap();
+        assert_eq!(result, Some("par-1".to_string()));
+    }
+
+    #[test]
+    fn zone_with_spaces_rejected_with_suggestion() {
+        let err = validate_zone(&Some("par 1".to_string())).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("invalid"), "unexpected: {msg}");
+        assert!(msg.contains("par-1"), "should suggest hyphenated: {msg}");
+    }
+
+    #[test]
+    fn zone_uppercase_rejected() {
+        let err = validate_zone(&Some("ZONE-A".to_string())).unwrap_err();
+        assert!(err.to_string().contains("invalid"), "unexpected: {err}");
+    }
+
+    // ── suggest_fix ───────────────────────────────────────────────
+
+    #[test]
+    fn suggest_fix_uppercase() {
+        let s = suggest_fix("EU-WEST");
+        assert!(s.contains("eu-west"), "unexpected: {s}");
+    }
+
+    #[test]
+    fn suggest_fix_spaces() {
+        let s = suggest_fix("par 1");
+        assert!(s.contains("par-1"), "unexpected: {s}");
+    }
+
+    #[test]
+    fn suggest_fix_too_long() {
+        let long = "a".repeat(65);
+        let s = suggest_fix(&long);
+        assert!(s.contains("max 64"), "unexpected: {s}");
     }
 }
