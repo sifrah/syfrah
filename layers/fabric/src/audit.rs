@@ -281,7 +281,7 @@ mod tests {
         assert!(!old_path.exists());
 
         // Rotation should rename to .old when file exceeds max_bytes.
-        let max_bytes: u64 = 1 * 1024 * 1024; // 1 MB threshold
+        let max_bytes: u64 = 1024 * 1024; // 1 MB threshold
         rotate_if_needed(&log_path, max_bytes);
 
         assert!(
@@ -303,7 +303,7 @@ mod tests {
         // Write a small file.
         std::fs::write(&log_path, b"small").unwrap();
 
-        let max_bytes: u64 = 1 * 1024 * 1024; // 1 MB threshold
+        let max_bytes: u64 = 1024 * 1024; // 1 MB threshold
         rotate_if_needed(&log_path, max_bytes);
 
         assert!(
