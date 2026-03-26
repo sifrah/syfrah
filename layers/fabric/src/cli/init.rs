@@ -1,4 +1,4 @@
-use crate::control::{send_control_request, ControlRequest, ControlResponse};
+use crate::control::{send_control_request, FabricRequest, FabricResponse};
 use crate::daemon::{self, DaemonConfig};
 use crate::peering::generate_pin;
 use crate::store;
@@ -52,7 +52,7 @@ pub async fn wait_and_start_peering(endpoint: Option<SocketAddr>, peering_port: 
 
     let resp = send_control_request(
         &socket_path,
-        &ControlRequest::PeeringStart {
+        &FabricRequest::PeeringStart {
             port: peering_port,
             pin: Some(pin.clone()),
         },
@@ -61,8 +61,8 @@ pub async fn wait_and_start_peering(endpoint: Option<SocketAddr>, peering_port: 
     .map_err(|e| anyhow::anyhow!("failed to start peering via control socket: {e}"))?;
 
     match resp {
-        ControlResponse::Ok => {}
-        ControlResponse::Error { message } => anyhow::bail!("peering start failed: {message}"),
+        FabricResponse::Ok => {}
+        FabricResponse::Error { message } => anyhow::bail!("peering start failed: {message}"),
         _ => anyhow::bail!("unexpected response from daemon"),
     }
 

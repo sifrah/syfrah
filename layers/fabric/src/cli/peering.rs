@@ -1,4 +1,4 @@
-use crate::control::{send_control_request, ControlRequest, ControlResponse};
+use crate::control::{send_control_request, FabricRequest, FabricResponse};
 use crate::sanitize::sanitize;
 use crate::ui;
 use crate::{no_mesh_error, store};
@@ -15,14 +15,14 @@ pub async fn watch(pin: Option<String>, continuous: bool) -> Result<()> {
     let port = state.peering_port;
 
     // Start peering with optional PIN
-    let resp = send_request(ControlRequest::PeeringStart {
+    let resp = send_request(FabricRequest::PeeringStart {
         port,
         pin: pin.clone(),
     })
     .await?;
     match resp {
-        ControlResponse::Ok => {}
-        ControlResponse::Error { message } => anyhow::bail!("{message}"),
+        FabricResponse::Ok => {}
+        FabricResponse::Error { message } => anyhow::bail!("{message}"),
         _ => {}
     }
 
@@ -39,12 +39,12 @@ pub async fn watch(pin: Option<String>, continuous: bool) -> Result<()> {
             _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
         }
 
-        let resp = match send_request(ControlRequest::PeeringList).await {
+        let resp = match send_request(FabricRequest::PeeringList).await {
             Ok(r) => r,
             Err(_) => continue,
         };
 
-        if let ControlResponse::PeeringList { requests } = resp {
+        if let FabricResponse::PeeringList { requests } = resp {
             for req in &requests {
                 if seen.contains(&req.request_id) {
                     continue;
@@ -65,12 +65,12 @@ pub async fn watch(pin: Option<String>, continuous: bool) -> Result<()> {
                 if std::io::stdin().read_line(&mut input).is_ok() {
                     let trimmed = input.trim().to_lowercase();
                     if trimmed.is_empty() || trimmed == "y" || trimmed == "yes" {
-                        match send_request(ControlRequest::PeeringAccept {
+                        match send_request(FabricRequest::PeeringAccept {
                             request_id: req.request_id.clone(),
                         })
                         .await
                         {
-                            Ok(ControlResponse::PeeringAccepted { peer_name }) => {
+                            Ok(FabricResponse::PeeringAccepted { peer_name }) => {
                                 if ui::is_tty() {
                                     let green = console::Style::new().green();
                                     println!(
@@ -85,14 +85,14 @@ pub async fn watch(pin: Option<String>, continuous: bool) -> Result<()> {
                                     );
                                 }
                             }
-                            Ok(ControlResponse::Error { message }) => {
+                            Ok(FabricResponse::Error { message }) => {
                                 ui::warn(&format!("Error: {message}"));
                                 println!();
                             }
                             _ => {}
                         }
                     } else {
-                        match send_request(ControlRequest::PeeringReject {
+                        match send_request(FabricRequest::PeeringReject {
                             request_id: req.request_id.clone(),
                             reason: Some("rejected by operator".into()),
                         })
@@ -118,13 +118,13 @@ pub async fn watch(pin: Option<String>, continuous: bool) -> Result<()> {
 
 pub async fn start(port: u16, pin: Option<String>) -> Result<()> {
     let sp = ui::spinner(&format!("Starting peering on port {port}..."));
-    let resp = send_request(ControlRequest::PeeringStart {
+    let resp = send_request(FabricRequest::PeeringStart {
         port,
         pin: pin.clone(),
     })
     .await?;
     match resp {
-        ControlResponse::Ok => {
+        FabricResponse::Ok => {
             if let Some(ref p) = pin {
                 ui::step_ok(&sp, &format!("Peering started on port {port}"));
                 println!("  Mode: auto-accept with PIN");
@@ -134,7 +134,7 @@ pub async fn start(port: u16, pin: Option<String>) -> Result<()> {
                 println!("  Mode: manual approval (you must accept each join request)");
             }
         }
-        ControlResponse::Error { message } => {
+        FabricResponse::Error { message } => {
             ui::step_fail(&sp, &format!("Failed: {message}"));
             anyhow::bail!("{message}");
         }
@@ -148,10 +148,10 @@ pub async fn start(port: u16, pin: Option<String>) -> Result<()> {
 
 pub async fn stop() -> Result<()> {
     let sp = ui::spinner("Stopping peering...");
-    let resp = send_request(ControlRequest::PeeringStop).await?;
+    let resp = send_request(FabricRequest::PeeringStop).await?;
     match resp {
-        ControlResponse::Ok => ui::step_ok(&sp, "Peering stopped."),
-        ControlResponse::Error { message } => {
+        FabricResponse::Ok => ui::step_ok(&sp, "Peering stopped."),
+        FabricResponse::Error { message } => {
             ui::step_fail(&sp, &format!("Failed: {message}"));
             anyhow::bail!("{message}");
         }
@@ -164,9 +164,9 @@ pub async fn stop() -> Result<()> {
 }
 
 pub async fn list() -> Result<()> {
-    let resp = send_request(ControlRequest::PeeringList).await?;
+    let resp = send_request(FabricRequest::PeeringList).await?;
     match resp {
-        ControlResponse::PeeringList { requests } => {
+        FabricResponse::PeeringList { requests } => {
             if requests.is_empty() {
                 println!("No pending join requests.");
             } else {
@@ -187,7 +187,7 @@ pub async fn list() -> Result<()> {
                 println!("\n{} pending request(s)", requests.len());
             }
         }
-        ControlResponse::Error { message } => anyhow::bail!("{message}"),
+        FabricResponse::Error { message } => anyhow::bail!("{message}"),
         _ => anyhow::bail!("unexpected response"),
     }
     Ok(())
@@ -195,15 +195,15 @@ pub async fn list() -> Result<()> {
 
 pub async fn accept(request_id: &str) -> Result<()> {
     let sp = ui::spinner(&format!("Accepting request {request_id}..."));
-    let resp = send_request(ControlRequest::PeeringAccept {
+    let resp = send_request(FabricRequest::PeeringAccept {
         request_id: request_id.to_string(),
     })
     .await?;
     match resp {
-        ControlResponse::PeeringAccepted { peer_name } => {
+        FabricResponse::PeeringAccepted { peer_name } => {
             ui::step_ok(&sp, &format!("{} joined the mesh.", sanitize(&peer_name)));
         }
-        ControlResponse::Error { message } => {
+        FabricResponse::Error { message } => {
             ui::step_fail(&sp, &format!("Failed: {message}"));
             anyhow::bail!("{message}");
         }
@@ -217,14 +217,14 @@ pub async fn accept(request_id: &str) -> Result<()> {
 
 pub async fn reject(request_id: &str, reason: Option<String>) -> Result<()> {
     let sp = ui::spinner(&format!("Rejecting request {request_id}..."));
-    let resp = send_request(ControlRequest::PeeringReject {
+    let resp = send_request(FabricRequest::PeeringReject {
         request_id: request_id.to_string(),
         reason,
     })
     .await?;
     match resp {
-        ControlResponse::Ok => ui::step_ok(&sp, &format!("Request {request_id} rejected.")),
-        ControlResponse::Error { message } => {
+        FabricResponse::Ok => ui::step_ok(&sp, &format!("Request {request_id} rejected.")),
+        FabricResponse::Error { message } => {
             ui::step_fail(&sp, &format!("Failed: {message}"));
             anyhow::bail!("{message}");
         }
@@ -236,7 +236,7 @@ pub async fn reject(request_id: &str, reason: Option<String>) -> Result<()> {
     Ok(())
 }
 
-async fn send_request(req: ControlRequest) -> Result<ControlResponse> {
+async fn send_request(req: FabricRequest) -> Result<FabricResponse> {
     let path = store::control_socket_path();
     if !path.exists() {
         anyhow::bail!("daemon not running. Start with 'syfrah fabric start' first.");
