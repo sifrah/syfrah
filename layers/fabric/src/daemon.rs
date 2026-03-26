@@ -1323,7 +1323,8 @@ pub async fn run_daemon(
     };
 
     // Health check: unreachable detection + recovery + last_seen update
-    let unreachable_timeout_secs = tuning.unreachable_timeout.as_secs();
+    let health_policy = tuning.health_policy.clone();
+    let health_my_topology = my_record.topology.clone();
     let health_counter = metrics_unreachable.clone();
     let health_recon = metrics_reconciliations.clone();
     let health_max_events = tuning.max_events;
@@ -1363,13 +1364,12 @@ pub async fn run_daemon(
                         .map(|ht| ht.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs())
                 });
 
+                let peer_timeout =
+                    timeout_for_peer(&health_my_topology, &peer.topology, &health_policy);
+
                 let old_status = peer.status;
-                let peer_changed = evaluate_peer_health(
-                    peer,
-                    wg_handshake_epoch,
-                    current,
-                    unreachable_timeout_secs,
-                );
+                let peer_changed =
+                    evaluate_peer_health(peer, wg_handshake_epoch, current, peer_timeout);
 
                 if peer_changed {
                     changed = true;
@@ -1385,13 +1385,13 @@ pub async fn run_daemon(
                         );
                     }
                     if old_status == PeerStatus::Active && peer.status == PeerStatus::Unreachable {
-                        info!(peer = %sanitize(&peer.name), last_seen = peer.last_seen, timeout_secs = unreachable_timeout_secs, "marking peer as unreachable");
+                        info!(peer = %sanitize(&peer.name), last_seen = peer.last_seen, timeout_secs = peer_timeout, "marking peer as unreachable");
                         health_counter.fetch_add(1, Ordering::Relaxed);
                         events::emit(
                             EventType::PeerUnreachable,
                             Some(&sanitize(&peer.name)),
                             Some(&peer.endpoint.to_string()),
-                            Some(&format!("no handshake for {unreachable_timeout_secs}s")),
+                            Some(&format!("no handshake for {peer_timeout}s")),
                             Some(health_max_events),
                         );
                     }
@@ -2042,6 +2042,32 @@ pub fn now() -> u64 {
         .as_secs()
 }
 
+/// Compute the health-check timeout for a specific peer based on topology
+/// proximity to the local node.
+///
+/// - Same zone → `same_zone_timeout`
+/// - Same region, different zone → `same_region_timeout`
+/// - Different region or unknown topology → `cross_region_timeout`
+pub fn timeout_for_peer(
+    my_topo: &Option<syfrah_core::mesh::Topology>,
+    peer_topo: &Option<syfrah_core::mesh::Topology>,
+    policy: &config::HealthPolicy,
+) -> u64 {
+    match (my_topo, peer_topo) {
+        (Some(mine), Some(theirs)) => {
+            if mine.region == theirs.region && mine.zone == theirs.zone {
+                policy.same_zone_timeout.as_secs()
+            } else if mine.region == theirs.region {
+                policy.same_region_timeout.as_secs()
+            } else {
+                policy.cross_region_timeout.as_secs()
+            }
+        }
+        // Unknown topology → safest (longest) timeout
+        _ => policy.cross_region_timeout.as_secs(),
+    }
+}
+
 /// Evaluate a single peer's health state based on handshake data and timeout.
 ///
 /// Updates `peer.last_seen` and `peer.status` as appropriate.
@@ -2098,6 +2124,7 @@ pub fn peers_needing_reconciliation<'a>(
 mod tests {
     use super::*;
     use std::net::{Ipv6Addr, SocketAddr};
+    use syfrah_core::mesh::Topology;
     use wireguard_control::KeyPair;
 
     fn sample_peer(name: &str, status: PeerStatus, last_seen: u64) -> PeerRecord {
@@ -2737,5 +2764,59 @@ mod tests {
             my_endpoint.ip(),
             "peer with different IP should not be flagged"
         );
+    }
+
+    // ── timeout_for_peer tests ──
+
+    fn test_health_policy() -> config::HealthPolicy {
+        config::HealthPolicy {
+            same_zone_timeout: std::time::Duration::from_secs(120),
+            same_region_timeout: std::time::Duration::from_secs(180),
+            cross_region_timeout: std::time::Duration::from_secs(300),
+        }
+    }
+
+    #[test]
+    fn timeout_same_zone() {
+        let topo_a = Topology::from_strings(Some("eu-west"), Some("zone-a"));
+        let topo_b = Topology::from_strings(Some("eu-west"), Some("zone-a"));
+        let policy = test_health_policy();
+        assert_eq!(timeout_for_peer(&topo_a, &topo_b, &policy), 120);
+    }
+
+    #[test]
+    fn timeout_same_region_different_zone() {
+        let topo_a = Topology::from_strings(Some("eu-west"), Some("zone-a"));
+        let topo_b = Topology::from_strings(Some("eu-west"), Some("zone-b"));
+        let policy = test_health_policy();
+        assert_eq!(timeout_for_peer(&topo_a, &topo_b, &policy), 180);
+    }
+
+    #[test]
+    fn timeout_cross_region() {
+        let topo_a = Topology::from_strings(Some("eu-west"), Some("zone-a"));
+        let topo_b = Topology::from_strings(Some("us-east"), Some("zone-a"));
+        let policy = test_health_policy();
+        assert_eq!(timeout_for_peer(&topo_a, &topo_b, &policy), 300);
+    }
+
+    #[test]
+    fn timeout_peer_no_topology_uses_cross_region() {
+        let topo_a = Topology::from_strings(Some("eu-west"), Some("zone-a"));
+        let policy = test_health_policy();
+        assert_eq!(timeout_for_peer(&topo_a, &None, &policy), 300);
+    }
+
+    #[test]
+    fn timeout_self_no_topology_uses_cross_region() {
+        let topo_b = Topology::from_strings(Some("eu-west"), Some("zone-a"));
+        let policy = test_health_policy();
+        assert_eq!(timeout_for_peer(&None, &topo_b, &policy), 300);
+    }
+
+    #[test]
+    fn timeout_both_no_topology_uses_cross_region() {
+        let policy = test_health_policy();
+        assert_eq!(timeout_for_peer(&None, &None, &policy), 300);
     }
 }
