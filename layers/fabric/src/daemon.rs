@@ -731,8 +731,10 @@ pub async fn run_daemon(
     ));
     let enc_key = mesh_secret.encryption_key();
 
-    // Build TLS configuration from the mesh secret for peering connections.
-    let mesh_secret_bytes = mesh_secret.encryption_key(); // 32-byte key
+    // Build TLS configuration from the raw mesh secret for peering connections.
+    // Use as_bytes() (not encryption_key()) so TLS certs are identical regardless
+    // of the derivation version (V1 vs V2) — all nodes share the same raw secret.
+    let mesh_secret_bytes: [u8; 32] = *mesh_secret.as_bytes();
     let tls_server_config = peering::build_tls_server_config(&mesh_secret_bytes)
         .map_err(|e| anyhow::anyhow!("failed to build TLS server config: {e}"))?;
     let tls_client_config = peering::build_tls_client_config(&mesh_secret_bytes)
