@@ -1137,7 +1137,54 @@ async fn try_announce(
     Ok(())
 }
 
-/// Announce a new peer to all known mesh members.
+/// Minimum number of peers to gossip to per round.
+const GOSSIP_MIN_FANOUT: usize = 3;
+
+/// Compute the gossip fan-out for a mesh of `n` eligible peers.
+///
+/// Returns `max(GOSSIP_MIN_FANOUT, ceil(log2(n)))`, capped at `n` so we never
+/// attempt to contact more peers than exist. For very small meshes (n <= 3)
+/// this degrades gracefully to full broadcast.
+pub fn gossip_fanout(n: usize) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    let log2 = (usize::BITS - n.leading_zeros()) as usize; // ceil(log2(n+1)) ≈ ceil(log2(n))
+    GOSSIP_MIN_FANOUT.max(log2).min(n)
+}
+
+/// Select a random subset of `known_peers` (excluding the announced record
+/// itself) to gossip to. The subset size is determined by [`gossip_fanout`].
+pub fn select_gossip_targets<'a>(
+    record: &PeerRecord,
+    known_peers: &'a [PeerRecord],
+) -> Vec<&'a PeerRecord> {
+    use rand::seq::SliceRandom;
+
+    let eligible: Vec<&PeerRecord> = known_peers
+        .iter()
+        .filter(|p| p.wg_public_key != record.wg_public_key)
+        .collect();
+
+    let fanout = gossip_fanout(eligible.len());
+    if fanout >= eligible.len() {
+        return eligible;
+    }
+
+    let mut rng = rand::thread_rng();
+    let mut selected = eligible;
+    selected.shuffle(&mut rng);
+    selected.truncate(fanout);
+    selected
+}
+
+/// Announce a new peer to a random gossip subset of known mesh members.
+///
+/// Instead of broadcasting to every peer (O(n²) total messages), each node
+/// announces to `max(3, ceil(log2(n)))` randomly chosen peers. Receiving
+/// nodes re-gossip on their own, achieving convergence in O(log n) rounds
+/// while the existing replay guard prevents infinite forwarding loops.
+///
 /// Returns (succeeded, failed) counts.
 pub async fn announce_peer_to_mesh(
     record: &PeerRecord,
@@ -1146,12 +1193,24 @@ pub async fn announce_peer_to_mesh(
     peering_port: u16,
     tls_config: Option<Arc<rustls::ClientConfig>>,
 ) -> (usize, usize) {
+    let targets = select_gossip_targets(record, known_peers);
+    let fanout = targets.len();
+    let total_eligible = known_peers
+        .iter()
+        .filter(|p| p.wg_public_key != record.wg_public_key)
+        .count();
+
+    if fanout < total_eligible {
+        debug!(
+            fanout = fanout,
+            eligible = total_eligible,
+            "gossip: announcing to random subset"
+        );
+    }
+
     let mut succeeded = 0;
     let mut failed = 0;
-    for peer in known_peers {
-        if peer.wg_public_key == record.wg_public_key {
-            continue;
-        }
+    for peer in targets {
         if let Err(e) = announce_peer(
             peer.endpoint,
             peering_port,
@@ -1161,7 +1220,7 @@ pub async fn announce_peer_to_mesh(
         )
         .await
         {
-            warn!(target_peer = %sanitize(&peer.name), target_endpoint = %peer.endpoint, error = %e, "announcement failed after retries");
+            warn!(target_peer = %sanitize(&peer.name), target_endpoint = %peer.endpoint, error = %e, "gossip announcement failed after retries");
             events::emit(
                 EventType::PeerAnnounceFailed,
                 Some(&sanitize(&peer.name)),
@@ -1171,7 +1230,7 @@ pub async fn announce_peer_to_mesh(
             );
             failed += 1;
         } else {
-            debug!(target_peer = %sanitize(&peer.name), record = %sanitize(&record.name), "announced peer");
+            debug!(target_peer = %sanitize(&peer.name), record = %sanitize(&record.name), "gossip: announced peer");
             succeeded += 1;
         }
     }
@@ -1397,5 +1456,106 @@ mod tests {
             msg.contains("invalid peer announce"),
             "expected 'invalid peer announce', got: {msg}"
         );
+    }
+
+    // --- Gossip protocol tests ---
+
+    fn make_peer(name: &str, key: &str) -> PeerRecord {
+        PeerRecord {
+            name: name.to_string(),
+            wg_public_key: key.to_string(),
+            endpoint: "203.0.113.1:51820".parse().unwrap(),
+            mesh_ipv6: std::net::Ipv6Addr::new(0xfd12, 0x3456, 0x7800, 0, 0, 0, 0, 1),
+            last_seen: 1700000000,
+            status: syfrah_core::mesh::PeerStatus::Active,
+            region: None,
+            zone: None,
+        }
+    }
+
+    #[test]
+    fn gossip_fanout_zero_peers() {
+        assert_eq!(gossip_fanout(0), 0);
+    }
+
+    #[test]
+    fn gossip_fanout_small_mesh_uses_minimum() {
+        // For 1-3 peers, fanout == n (can't exceed available peers).
+        assert_eq!(gossip_fanout(1), 1);
+        assert_eq!(gossip_fanout(2), 2);
+        assert_eq!(gossip_fanout(3), 3);
+    }
+
+    #[test]
+    fn gossip_fanout_medium_mesh() {
+        // 8 peers: bits needed = 4, fanout = max(3, 4) = 4
+        assert_eq!(gossip_fanout(8), 4);
+        // 16 peers: bits needed = 5, fanout = max(3, 5) = 5
+        assert_eq!(gossip_fanout(16), 5);
+        // Both above minimum and within peer count
+        assert!(gossip_fanout(16) >= GOSSIP_MIN_FANOUT);
+        assert!(gossip_fanout(16) <= 16);
+    }
+
+    #[test]
+    fn gossip_fanout_large_mesh() {
+        // 1000 peers: log2(1000) ≈ 10
+        let f = gossip_fanout(1000);
+        assert!(f >= GOSSIP_MIN_FANOUT);
+        assert!(f <= 15); // should be ~10, definitely not 1000
+        assert!(f < 1000);
+    }
+
+    #[test]
+    fn gossip_fanout_never_exceeds_n() {
+        for n in 0..=100 {
+            assert!(gossip_fanout(n) <= n || n == 0);
+        }
+    }
+
+    #[test]
+    fn select_gossip_targets_excludes_self() {
+        let self_peer = make_peer("self", "key-self");
+        let peers = vec![
+            make_peer("self", "key-self"),
+            make_peer("a", "key-a"),
+            make_peer("b", "key-b"),
+        ];
+        let targets = select_gossip_targets(&self_peer, &peers);
+        assert!(targets.iter().all(|p| p.wg_public_key != "key-self"));
+    }
+
+    #[test]
+    fn select_gossip_targets_small_mesh_returns_all() {
+        let self_peer = make_peer("self", "key-self");
+        let peers = vec![
+            make_peer("self", "key-self"),
+            make_peer("a", "key-a"),
+            make_peer("b", "key-b"),
+        ];
+        // 2 eligible peers, fanout = min(3, 2) = 2 → all returned
+        let targets = select_gossip_targets(&self_peer, &peers);
+        assert_eq!(targets.len(), 2);
+    }
+
+    #[test]
+    fn select_gossip_targets_large_mesh_returns_subset() {
+        let self_peer = make_peer("self", "key-self");
+        let mut peers = vec![make_peer("self", "key-self")];
+        for i in 0..100 {
+            peers.push(make_peer(&format!("node-{i}"), &format!("key-{i}")));
+        }
+        // 100 eligible peers, fanout ≈ 7, definitely < 100
+        let targets = select_gossip_targets(&self_peer, &peers);
+        assert!(targets.len() >= GOSSIP_MIN_FANOUT);
+        assert!(targets.len() < 100);
+    }
+
+    #[test]
+    fn select_gossip_targets_empty_mesh() {
+        let self_peer = make_peer("self", "key-self");
+        let peers: Vec<PeerRecord> = vec![];
+        let targets = select_gossip_targets(&self_peer, &peers);
+        assert!(targets.is_empty());
     }
 }
