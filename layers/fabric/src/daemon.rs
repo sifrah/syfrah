@@ -1799,7 +1799,7 @@ pub async fn run_daemon(
                 _ = shutdown_sighup.cancelled() => break,
                 _ = sig.recv() => {
                     info!("received SIGHUP, reloading configuration");
-                    handle_reload(sighup_max_events);
+                    handle_reload(sighup_max_events, None);
                 }
             }
         }
@@ -1896,7 +1896,7 @@ struct DaemonControlHandler {
 
 #[async_trait::async_trait]
 impl ControlHandler for DaemonControlHandler {
-    async fn handle(&self, req: ControlRequest) -> ControlResponse {
+    async fn handle(&self, req: ControlRequest, caller_uid: Option<u32>) -> ControlResponse {
         match req {
             ControlRequest::PeeringStart { port: _, pin } => {
                 if let Some(pin_val) = pin {
@@ -1923,13 +1923,25 @@ impl ControlHandler for DaemonControlHandler {
                         .await;
                 }
                 self.peering_state.set_active(true).await;
-                audit_log::emit(AuditEventType::PeeringStarted, None, None, None);
+                audit_log::emit_with_uid(
+                    AuditEventType::PeeringStarted,
+                    None,
+                    None,
+                    None,
+                    caller_uid,
+                );
                 ControlResponse::Ok
             }
             ControlRequest::PeeringStop => {
                 self.peering_state.set_active(false).await;
                 self.peering_state.set_auto_accept(None).await;
-                audit_log::emit(AuditEventType::PeeringStopped, None, None, None);
+                audit_log::emit_with_uid(
+                    AuditEventType::PeeringStopped,
+                    None,
+                    None,
+                    None,
+                    caller_uid,
+                );
                 ControlResponse::Ok
             }
             ControlRequest::PeeringList => {
@@ -2001,11 +2013,12 @@ impl ControlHandler for DaemonControlHandler {
                             None,
                             Some(self.max_events),
                         );
-                        audit_log::emit(
+                        audit_log::emit_with_uid(
                             AuditEventType::PeerJoinAccepted,
                             Some(&sanitize(&info.node_name)),
                             Some(&info.endpoint.to_string()),
                             Some("approved_by=manual"),
+                            caller_uid,
                         );
                         (self.on_accepted)(new_record);
                         ControlResponse::PeeringAccepted {
@@ -2027,11 +2040,12 @@ impl ControlHandler for DaemonControlHandler {
                             reason.as_deref(),
                             Some(self.max_events),
                         );
-                        audit_log::emit(
+                        audit_log::emit_with_uid(
                             AuditEventType::PeerJoinRejected,
                             None,
                             None,
                             reason.as_deref(),
+                            caller_uid,
                         );
                         ControlResponse::Ok
                     }
@@ -2040,7 +2054,7 @@ impl ControlHandler for DaemonControlHandler {
                     },
                 }
             }
-            ControlRequest::Reload => handle_reload(self.max_events),
+            ControlRequest::Reload => handle_reload(self.max_events, caller_uid),
             ControlRequest::RemovePeer { name_or_key } => {
                 let state = match store::load() {
                     Ok(s) => s,
@@ -2238,7 +2252,13 @@ impl ControlHandler for DaemonControlHandler {
                 // 7. Swap in the new mesh secret for future encryption_key() calls.
                 *self.mesh_secret.write().await = new_secret;
 
-                audit_log::emit(AuditEventType::SecretRotated, None, None, None);
+                audit_log::emit_with_uid(
+                    AuditEventType::SecretRotated,
+                    None,
+                    None,
+                    None,
+                    caller_uid,
+                );
                 events::emit(
                     EventType::SecretRotated,
                     None,
@@ -2265,7 +2285,7 @@ impl ControlHandler for DaemonControlHandler {
 
 /// Handle a config reload request: re-read config.toml, diff with current,
 /// apply hot-reloadable changes, and report results.
-fn handle_reload(max_events: u64) -> ControlResponse {
+fn handle_reload(max_events: u64, caller_uid: Option<u32>) -> ControlResponse {
     // Dry-run: parse and validate the config file before applying any changes.
     if let Err(e) = config::validate_config_file() {
         warn!("config reload rejected (validation failed): {e}");
@@ -2319,7 +2339,13 @@ fn handle_reload(max_events: u64) -> ControlResponse {
                 Some(&detail),
                 Some(max_events),
             );
-            audit_log::emit(AuditEventType::ConfigReloaded, None, None, Some(&detail));
+            audit_log::emit_with_uid(
+                AuditEventType::ConfigReloaded,
+                None,
+                None,
+                Some(&detail),
+                caller_uid,
+            );
 
             ControlResponse::ConfigReloaded {
                 changes: change_strs,

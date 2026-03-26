@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use syfrah_api::transport;
+use syfrah_api::{auth, transport};
 use tokio::net::UnixStream;
 use tracing::debug;
 
@@ -75,7 +75,7 @@ pub enum ControlResponse {
 /// Handler trait for processing control commands. Implemented by the daemon.
 #[async_trait::async_trait]
 pub trait ControlHandler: Send + Sync {
-    async fn handle(&self, req: ControlRequest) -> ControlResponse;
+    async fn handle(&self, req: ControlRequest, caller_uid: Option<u32>) -> ControlResponse;
 }
 
 /// Start the Unix domain socket control listener.
@@ -90,9 +90,19 @@ pub async fn start_control_listener(socket_path: &Path, handler: Arc<dyn Control
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
+                let peer_uid = auth::get_peer_uid(&stream);
+
+                // Reject unauthorized callers before reading any payload.
+                if let Some(uid) = peer_uid {
+                    if !auth::authorize_local(uid) {
+                        tracing::warn!("rejecting control connection from unauthorized uid {uid}");
+                        continue;
+                    }
+                }
+
                 let handler = handler.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_control_connection(stream, handler).await {
+                    if let Err(e) = handle_control_connection(stream, handler, peer_uid).await {
                         debug!("control connection error: {e}");
                     }
                 });
@@ -107,6 +117,7 @@ pub async fn start_control_listener(socket_path: &Path, handler: Arc<dyn Control
 async fn handle_control_connection(
     mut stream: UnixStream,
     handler: Arc<dyn ControlHandler>,
+    caller_uid: Option<u32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let req = match tokio::time::timeout(
         transport::READ_TIMEOUT,
@@ -123,7 +134,7 @@ async fn handle_control_connection(
             return Err("control read timed out".into());
         }
     };
-    let resp = handler.handle(req).await;
+    let resp = handler.handle(req, caller_uid).await;
     transport::write_message(&mut stream, &resp).await?;
     Ok(())
 }
@@ -273,7 +284,11 @@ mod tests {
         struct NoOpHandler(Arc<AtomicBool>);
         #[async_trait::async_trait]
         impl ControlHandler for NoOpHandler {
-            async fn handle(&self, _req: ControlRequest) -> ControlResponse {
+            async fn handle(
+                &self,
+                _req: ControlRequest,
+                _caller_uid: Option<u32>,
+            ) -> ControlResponse {
                 self.0.store(true, Ordering::SeqCst);
                 ControlResponse::Ok
             }
@@ -288,7 +303,7 @@ mod tests {
         let (stream, _) = listener.accept().await.unwrap();
         let result = tokio::time::timeout(
             transport::READ_TIMEOUT + std::time::Duration::from_secs(1),
-            handle_control_connection(stream, handler),
+            handle_control_connection(stream, handler, None),
         )
         .await
         .expect("server should complete before outer timeout");
