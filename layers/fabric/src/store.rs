@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::net::Ipv6Addr;
 use std::path::PathBuf;
@@ -22,6 +23,10 @@ const JSON_DEBOUNCE_SECS: u64 = 2;
 
 /// Tracks the last time `state.json` was written so we can debounce.
 static LAST_JSON_WRITE: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// In-memory index for O(1) peer lookups by WG public key.
+/// Lazily populated on first access; kept in sync by upsert/remove operations.
+static PEER_INDEX: Mutex<Option<HashMap<String, PeerRecord>>> = Mutex::new(None);
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -162,6 +167,9 @@ pub fn save(state: &NodeState) -> Result<(), StoreError> {
     for peer in &state.peers {
         db.set("peers", &peer.wg_public_key, peer)?;
     }
+
+    // Invalidate the in-memory peer index so it rebuilds from redb
+    invalidate_peer_index();
 
     // Also write legacy JSON for backward compat with E2E tests
     // that inspect state.json directly
@@ -314,7 +322,61 @@ pub fn clear() -> Result<(), StoreError> {
     if dir.exists() {
         fs::remove_dir_all(&dir)?;
     }
+    invalidate_peer_index();
     Ok(())
+}
+
+// ── Peer index helpers ──────────────────────────────────────
+
+/// Ensure the in-memory peer index is populated. Call with the lock held.
+fn ensure_peer_index(index: &mut Option<HashMap<String, PeerRecord>>) {
+    if index.is_none() {
+        let map = if LayerDb::layer_exists(LAYER_NAME) {
+            if let Ok(db) = open_db() {
+                let entries: Vec<(String, PeerRecord)> = db.list("peers").unwrap_or_default();
+                entries.into_iter().collect()
+            } else {
+                HashMap::new()
+            }
+        } else {
+            HashMap::new()
+        };
+        *index = Some(map);
+    }
+}
+
+/// Look up a peer by WG public key in O(1) via the in-memory index.
+pub fn peer_by_key(wg_public_key: &str) -> Option<PeerRecord> {
+    let mut guard = PEER_INDEX.lock().unwrap_or_else(|e| e.into_inner());
+    ensure_peer_index(&mut guard);
+    guard.as_ref().unwrap().get(wg_public_key).cloned()
+}
+
+/// Invalidate the peer index so it is rebuilt on next access.
+/// Used after bulk operations like `save()` or `clear()`.
+fn invalidate_peer_index() {
+    let mut guard = PEER_INDEX.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = None;
+}
+
+/// Insert or update a single entry in the peer index.
+fn index_upsert(peer: &PeerRecord) {
+    let mut guard = PEER_INDEX.lock().unwrap_or_else(|e| e.into_inner());
+    ensure_peer_index(&mut guard);
+    guard
+        .as_mut()
+        .unwrap()
+        .insert(peer.wg_public_key.clone(), peer.clone());
+}
+
+/// Update a peer in the index by key (used after status changes like Remove).
+fn index_update(key: &str, peer: &PeerRecord) {
+    let mut guard = PEER_INDEX.lock().unwrap_or_else(|e| e.into_inner());
+    ensure_peer_index(&mut guard);
+    guard
+        .as_mut()
+        .unwrap()
+        .insert(key.to_string(), peer.clone());
 }
 
 // ── Atomic peer operations (new, fixes race condition) ──────
@@ -327,6 +389,9 @@ pub fn clear() -> Result<(), StoreError> {
 pub fn upsert_peer(peer: &PeerRecord) -> Result<(), StoreError> {
     let db = open_db()?;
     db.set("peers", &peer.wg_public_key, peer)?;
+
+    // Update the in-memory index
+    index_upsert(peer);
 
     // Regenerate JSON from redb only if the debounce window has elapsed.
     // redb is the source of truth; JSON is a best-effort export for
@@ -351,6 +416,7 @@ pub fn upsert_peer_bounded(peer: &PeerRecord, max_peers: usize) -> Result<bool, 
     }
 
     db.set("peers", &peer.wg_public_key, peer)?;
+    index_upsert(peer);
     maybe_write_json(&db);
     Ok(true)
 }
@@ -393,6 +459,7 @@ pub fn purge_stale_peers_by_name(name: &str, except_wg_key: &str) -> Result<usiz
         {
             peer.status = syfrah_core::mesh::PeerStatus::Removed;
             db.set("peers", &key, &peer)?;
+            index_update(&key, &peer);
             purged += 1;
         }
     }
@@ -417,6 +484,7 @@ pub fn remove_peer(name_or_key: &str) -> Result<Option<PeerRecord>, StoreError> 
         Some((key, mut peer)) => {
             peer.status = syfrah_core::mesh::PeerStatus::Removed;
             db.set("peers", &key, &peer)?;
+            index_update(&key, &peer);
             maybe_write_json(&db);
             Ok(Some(peer))
         }
@@ -444,6 +512,7 @@ pub fn update_peer_endpoint(
             let old_endpoint = peer.endpoint;
             peer.endpoint = new_endpoint;
             db.set("peers", &key, &peer)?;
+            index_update(&key, &peer);
             maybe_write_json(&db);
             Ok(Some((old_endpoint, peer)))
         }
@@ -1002,6 +1071,29 @@ mod tests {
             })
             .count();
         assert_eq!(purged, 0);
+    }
+
+    #[test]
+    fn peer_index_upsert_and_lookup() {
+        // Test the in-memory index helpers directly
+        let peer = make_peer("idx-key-1");
+        index_upsert(&peer);
+        let found = peer_by_key("idx-key-1");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().wg_public_key, "idx-key-1");
+
+        // Missing key returns None
+        assert!(peer_by_key("no-such-key").is_none());
+
+        // Update via index_update changes the record
+        let mut updated = make_peer("idx-key-1");
+        updated.status = PeerStatus::Removed;
+        index_update("idx-key-1", &updated);
+        let found = peer_by_key("idx-key-1").unwrap();
+        assert_eq!(found.status, PeerStatus::Removed);
+
+        // Invalidate clears the index
+        invalidate_peer_index();
     }
 
     #[test]
