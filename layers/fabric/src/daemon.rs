@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use wireguard_control::{Key, KeyPair};
 
@@ -956,7 +957,7 @@ pub async fn run_daemon(
 
     let control_path = store::control_socket_path();
     let control_handler: Arc<dyn ControlHandler> = ctrl_handler;
-    let control_task = tokio::spawn(async move {
+    let mut control_task = tokio::spawn(async move {
         control::start_control_listener(&control_path, control_handler).await;
     });
 
@@ -1167,7 +1168,7 @@ pub async fn run_daemon(
 
     // Peering listener
     let listener_state = peering_state.clone();
-    let peering_task = tokio::spawn(async move {
+    let mut peering_task = tokio::spawn(async move {
         if let Err(e) = listener_state
             .run_listener(
                 peering_port,
@@ -1182,6 +1183,10 @@ pub async fn run_daemon(
         }
     });
 
+    // Shutdown coordination: all background loops listen on this token and
+    // exit promptly when it is cancelled so we can await their JoinHandles.
+    let shutdown = CancellationToken::new();
+
     // Background drain task: processes queued announces when semaphore permits become available.
     let drain_sem = announce_semaphore.clone();
     let drain_wg_pubkey = wg_pubkey.clone();
@@ -1192,21 +1197,28 @@ pub async fn run_daemon(
     let drain_store_failures = metrics_store_failures.clone();
     let drain_max_events = tuning.max_events;
     let drain_queue_rx = announce_queue_rx;
-    let drain_task = tokio::spawn(async move {
+    let shutdown_drain = shutdown.clone();
+    let mut drain_task = tokio::spawn(async move {
         loop {
-            // Wait for a record from the queue.
+            // Wait for a record from the queue, or shutdown.
             let record = {
                 let mut rx = drain_queue_rx.lock().await;
-                match rx.recv().await {
-                    Some(r) => r,
-                    None => break, // channel closed
+                tokio::select! {
+                    _ = shutdown_drain.cancelled() => break,
+                    msg = rx.recv() => match msg {
+                        Some(r) => r,
+                        None => break, // channel closed
+                    },
                 }
             };
 
             // Wait for a semaphore permit (blocking — this is the retry).
-            let permit = match drain_sem.clone().acquire_owned().await {
-                Ok(p) => p,
-                Err(_) => break, // semaphore closed
+            let permit = tokio::select! {
+                _ = shutdown_drain.cancelled() => break,
+                res = drain_sem.clone().acquire_owned() => match res {
+                    Ok(p) => p,
+                    Err(_) => break, // semaphore closed
+                },
             };
 
             let pubkey = drain_wg_pubkey.clone();
@@ -1284,10 +1296,14 @@ pub async fn run_daemon(
     let persist_reconcile_failures = metrics_reconcile_failures.clone();
     let persist_store_failures = metrics_store_failures.clone();
     let persist_peering_state = peering_state.clone();
-    let persist = async {
+    let shutdown_persist = shutdown.clone();
+    let persist = async move {
         let mut interval = tokio::time::interval(tuning.persist_interval);
         loop {
-            interval.tick().await;
+            tokio::select! {
+                _ = shutdown_persist.cancelled() => break,
+                _ = interval.tick() => {}
+            }
             let _ = store::set_metric("peers_discovered", persist_recv.load(Ordering::Relaxed));
             let _ = store::set_metric("wg_reconciliations", persist_recon.load(Ordering::Relaxed));
             let _ = store::set_metric(
@@ -1347,10 +1363,14 @@ pub async fn run_daemon(
     let health_recon = metrics_reconciliations.clone();
     let health_max_events = tuning.max_events;
     let health_failures = metrics_health_check_failures.clone();
-    let health_check = async {
+    let shutdown_health = shutdown.clone();
+    let health_check = async move {
         let mut interval = tokio::time::interval(tuning.health_check_interval);
         loop {
-            interval.tick().await;
+            tokio::select! {
+                _ = shutdown_health.cancelled() => break,
+                _ = interval.tick() => {}
+            }
 
             // Get WireGuard handshake data for all peers
             let wg_peers = match wg::interface_summary() {
@@ -1510,10 +1530,14 @@ pub async fn run_daemon(
     let reconcile_max_events = tuning.max_events;
     let reconcile_keepalive = keepalive_interval;
     let reconcile_failures = metrics_reconcile_failures.clone();
-    let reconcile = async {
+    let shutdown_reconcile = shutdown.clone();
+    let reconcile = async move {
         let mut interval = tokio::time::interval(tuning.reconcile_interval);
         loop {
-            interval.tick().await;
+            tokio::select! {
+                _ = shutdown_reconcile.cancelled() => break,
+                _ = interval.tick() => {}
+            }
 
             let stored_peers = match store::get_peers() {
                 Ok(p) => p,
@@ -1596,12 +1620,19 @@ pub async fn run_daemon(
     let self_announce_port = peering_port;
     let self_announce_tls = tls_client_config.clone();
     let self_announce_interval = tuning.self_announce_interval;
+    let shutdown_self_announce = shutdown.clone();
     let self_announce = async move {
         // Stagger initial delay to avoid thundering herd at mesh startup.
-        tokio::time::sleep(self_announce_interval).await;
+        tokio::select! {
+            _ = shutdown_self_announce.cancelled() => return,
+            _ = tokio::time::sleep(self_announce_interval) => {}
+        }
         let mut interval = tokio::time::interval(self_announce_interval);
         loop {
-            interval.tick().await;
+            tokio::select! {
+                _ = shutdown_self_announce.cancelled() => break,
+                _ = interval.tick() => {}
+            }
             let known = match store::get_peers() {
                 Ok(p) => p,
                 Err(e) => {
@@ -1664,23 +1695,35 @@ pub async fn run_daemon(
 
     // SIGHUP handler: reload config without restart.
     let sighup_max_events = tuning.max_events;
+    let shutdown_sighup = shutdown.clone();
     #[cfg(unix)]
-    let sighup_reload = async {
+    let sighup_reload = async move {
         let mut sig = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
             .expect("failed to register SIGHUP handler");
         loop {
-            sig.recv().await;
-            info!("received SIGHUP, reloading configuration");
-            handle_reload(sighup_max_events);
+            tokio::select! {
+                _ = shutdown_sighup.cancelled() => break,
+                _ = sig.recv() => {
+                    info!("received SIGHUP, reloading configuration");
+                    handle_reload(sighup_max_events);
+                }
+            }
         }
     };
     #[cfg(not(unix))]
     let sighup_reload = std::future::pending::<()>();
 
+    // Wait for a shutdown signal (SIGINT or SIGTERM) or an unexpected task exit.
     tokio::select! {
-        _ = control_task => {}
-        _ = peering_task => {}
-        _ = drain_task => {}
+        _ = &mut control_task => {
+            warn!("control_task exited unexpectedly");
+        }
+        _ = &mut peering_task => {
+            warn!("peering_task exited unexpectedly");
+        }
+        _ = &mut drain_task => {
+            warn!("drain_task exited unexpectedly");
+        }
         _ = persist => {}
         _ = health_check => {}
         _ = reconcile => {}
@@ -1694,8 +1737,30 @@ pub async fn run_daemon(
         }
     }
 
+    // Signal all cancellation-aware loops to stop.
+    shutdown.cancel();
+
     // Tell systemd we are shutting down gracefully.
     sd_watchdog::notify_stopping();
+
+    // Abort control and peering tasks (they block on accept loops that
+    // don't have a built-in cancellation path) and await completion so
+    // any in-flight work finishes or is cancelled cleanly.
+    control_task.abort();
+    peering_task.abort();
+
+    // Await spawned tasks so in-flight work completes before we tear down
+    // the WireGuard interface. Use a timeout to avoid hanging forever.
+    let grace = tokio::time::Duration::from_secs(5);
+    let _ = tokio::time::timeout(grace, async {
+        // drain_task listens on the CancellationToken and will exit on its own.
+        let _ = drain_task.await;
+        let _ = control_task.await;
+        let _ = peering_task.await;
+    })
+    .await;
+
+    info!("all async tasks completed (or timed out), proceeding with cleanup");
 
     // Flush any debounced JSON state so the on-disk export is up-to-date.
     let _ = store::flush_json();
