@@ -85,7 +85,10 @@ fn generate_mesh_cert(
 
     let mut params = CertificateParams::new(vec!["syfrah-mesh.internal".to_string()])
         .map_err(|e| PeeringError::Tls(format!("cert params: {e}")))?;
-    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    // Do NOT set is_ca = Ca here. Using a CA certificate as an end-entity
+    // certificate causes rustls to reject it with CaUsedAsEndEntity. The
+    // default NoCa omits the basicConstraints extension entirely, which is
+    // correct for a self-signed cert used as both trust anchor and end-entity.
     // Pin both not_before and not_after so the cert is fully deterministic
     // across nodes (all nodes holding the same mesh secret produce identical DER).
     params.not_before = rcgen::date_time_ymd(2025, 1, 1);
