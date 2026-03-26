@@ -184,6 +184,21 @@ enum FabricCommand {
     },
     /// Reload config.toml without restarting the daemon
     Reload,
+    /// Show mesh topology grouped by region and zone
+    Topology {
+        /// Filter to a single region
+        #[arg(long)]
+        region: Option<String>,
+        /// Filter to a single zone
+        #[arg(long)]
+        zone: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Include per-node endpoint, handshake, and traffic
+        #[arg(long)]
+        verbose: bool,
+    },
     /// Export metrics in Prometheus text format
     Metrics,
     /// Manage the systemd service
@@ -740,6 +755,21 @@ async fn run() -> Result<()> {
             FabricCommand::Reload => {
                 setup_logging(false);
                 cli::reload::run().await
+            }
+            FabricCommand::Topology {
+                region,
+                zone,
+                json,
+                verbose,
+            } => {
+                setup_logging(false);
+                cli::topology::run(cli::topology::TopologyOpts {
+                    region,
+                    zone,
+                    json,
+                    verbose,
+                })
+                .await
             }
             FabricCommand::Metrics => {
                 setup_logging(false);
