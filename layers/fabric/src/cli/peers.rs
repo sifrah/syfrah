@@ -2,16 +2,25 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::sanitize::sanitize;
+use crate::topology::TopologyView;
 use crate::{no_mesh_error, store, ui, wg};
 use anyhow::Result;
 use serde::Serialize;
-use syfrah_core::mesh::{PeerRecord, PeerStatus};
+use syfrah_core::mesh::{PeerRecord, PeerStatus, Region, Zone};
 
-pub async fn run(json: bool) -> Result<()> {
+/// Options for the `peers` command.
+pub struct PeersOpts {
+    pub json: bool,
+    pub topology: bool,
+    pub region: Option<String>,
+    pub zone: Option<String>,
+}
+
+pub async fn run(opts: PeersOpts) -> Result<()> {
     let state = store::load().map_err(|_| no_mesh_error())?;
 
     if state.peers.is_empty() {
-        if json {
+        if opts.json {
             println!("[]");
             return Ok(());
         }
@@ -19,8 +28,13 @@ pub async fn run(json: bool) -> Result<()> {
         return Ok(());
     }
 
-    if json {
-        let peers = dedup_peers(&state.peers);
+    // Dedup peers by WG public key, keeping the entry with the latest last_seen
+    let peers = dedup_peers(&state.peers);
+
+    // Apply region/zone filters
+    let peers = filter_peers(peers, opts.region.as_deref(), opts.zone.as_deref());
+
+    if opts.json {
         let output: Vec<PeerJson> = peers
             .iter()
             .map(|p| PeerJson {
@@ -42,10 +56,11 @@ pub async fn run(json: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Dedup peers by WG public key, keeping the entry with the latest last_seen
-    let peers = dedup_peers(&state.peers);
+    if opts.topology {
+        return print_topology(&peers);
+    }
 
-    // Try to get live WG stats
+    // Default flat table output
     let wg_summary = wg::interface_summary().ok();
 
     ui::heading(&format!(
@@ -62,63 +77,149 @@ pub async fn run(json: bool) -> Result<()> {
     ));
 
     for peer in &peers {
-        let status = match peer.status {
-            PeerStatus::Active => "active",
-            PeerStatus::Unreachable => "unreach",
-            PeerStatus::Removed => "removed",
-        };
-
-        // Find live WG stats for this peer
-        let (handshake_str, traffic_str) = if let Some(ref summary) = wg_summary {
-            match summary
-                .peers
-                .iter()
-                .find(|p| p.public_key == peer.wg_public_key)
-            {
-                Some(wg_peer) => {
-                    let hs = wg_peer
-                        .last_handshake
-                        .map(format_ago)
-                        .unwrap_or_else(|| "never".into());
-                    let traffic = format_traffic(wg_peer.rx_bytes, wg_peer.tx_bytes);
-                    (hs, traffic)
-                }
-                None => ("n/a".into(), "-".into()),
-            }
-        } else {
-            ("-".into(), "-".into())
-        };
-
-        let region = peer
-            .region
-            .as_deref()
-            .map(sanitize)
-            .unwrap_or_else(|| "-".into());
-        let zone = peer
-            .zone
-            .as_deref()
-            .map(sanitize)
-            .unwrap_or_else(|| "-".into());
-
-        let since_str = format_since(peer.last_seen);
-
-        let mesh_ipv6 = peer.mesh_ipv6.to_string();
-
-        println!(
-            "{:<18} {:<12} {:<14} {:<40} {:<24} {:>8} {:<14} {:>12} {:>14}",
-            truncate(&sanitize(&peer.name), 17),
-            truncate(&region, 11),
-            truncate(&zone, 13),
-            truncate(&mesh_ipv6, 39),
-            peer.endpoint,
-            status,
-            since_str,
-            handshake_str,
-            traffic_str,
-        );
+        print_peer_row(peer, &wg_summary);
     }
 
     Ok(())
+}
+
+/// Print topology-grouped output (tree view by region/zone).
+fn print_topology(peers: &[PeerRecord]) -> Result<()> {
+    let view = TopologyView::from_peers(peers);
+    let wg_summary = wg::interface_summary().ok();
+
+    let mut regions: Vec<&Region> = view.regions();
+    regions.sort();
+
+    for region in &regions {
+        let region_peers = view.peers_in_region(region);
+        println!("{} ({} nodes)", region.as_str(), region_peers.len());
+
+        let mut zones: Vec<&Zone> = view.zones_in_region(region);
+        zones.sort();
+
+        for zone in &zones {
+            let zone_peers = view.peers_in_zone(zone);
+            println!("  {} ({})", zone.as_str(), zone_peers.len());
+
+            let mut sorted_peers: Vec<&PeerRecord> = zone_peers.iter().collect();
+            sorted_peers.sort_by(|a, b| a.name.cmp(&b.name));
+
+            for peer in sorted_peers {
+                let status = match peer.status {
+                    PeerStatus::Active => "active",
+                    PeerStatus::Unreachable => "unreach",
+                    PeerStatus::Removed => "removed",
+                };
+
+                let traffic_str = if let Some(ref summary) = wg_summary {
+                    match summary
+                        .peers
+                        .iter()
+                        .find(|p| p.public_key == peer.wg_public_key)
+                    {
+                        Some(wg_peer) => format_traffic(wg_peer.rx_bytes, wg_peer.tx_bytes),
+                        None => "-".into(),
+                    }
+                } else {
+                    "-".into()
+                };
+
+                println!(
+                    "    {:<18} {:<10} {:<24} {}",
+                    truncate(&sanitize(&peer.name), 17),
+                    status,
+                    peer.endpoint,
+                    traffic_str,
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Filter peers by region and/or zone string filters.
+fn filter_peers(
+    peers: Vec<PeerRecord>,
+    region: Option<&str>,
+    zone: Option<&str>,
+) -> Vec<PeerRecord> {
+    let region_filter = region.and_then(Region::new);
+    let zone_filter = zone.and_then(Zone::new);
+
+    if region_filter.is_none() && zone_filter.is_none() {
+        return peers;
+    }
+
+    let view = TopologyView::from_peers(&peers);
+
+    // Zone filter is more specific; if both given, zone wins.
+    if let Some(ref z) = zone_filter {
+        return view.peers_in_zone(z).to_vec();
+    }
+
+    if let Some(ref r) = region_filter {
+        return view.peers_in_region(r).to_vec();
+    }
+
+    peers
+}
+
+/// Print a single peer row in the flat table format.
+fn print_peer_row(peer: &PeerRecord, wg_summary: &Option<wg::InterfaceSummary>) {
+    let status = match peer.status {
+        PeerStatus::Active => "active",
+        PeerStatus::Unreachable => "unreach",
+        PeerStatus::Removed => "removed",
+    };
+
+    let (handshake_str, traffic_str) = if let Some(ref summary) = wg_summary {
+        match summary
+            .peers
+            .iter()
+            .find(|p| p.public_key == peer.wg_public_key)
+        {
+            Some(wg_peer) => {
+                let hs = wg_peer
+                    .last_handshake
+                    .map(format_ago)
+                    .unwrap_or_else(|| "never".into());
+                let traffic = format_traffic(wg_peer.rx_bytes, wg_peer.tx_bytes);
+                (hs, traffic)
+            }
+            None => ("n/a".into(), "-".into()),
+        }
+    } else {
+        ("-".into(), "-".into())
+    };
+
+    let region = peer
+        .region
+        .as_deref()
+        .map(sanitize)
+        .unwrap_or_else(|| "-".into());
+    let zone = peer
+        .zone
+        .as_deref()
+        .map(sanitize)
+        .unwrap_or_else(|| "-".into());
+
+    let since_str = format_since(peer.last_seen);
+    let mesh_ipv6 = peer.mesh_ipv6.to_string();
+
+    println!(
+        "{:<18} {:<12} {:<14} {:<40} {:<24} {:>8} {:<14} {:>12} {:>14}",
+        truncate(&sanitize(&peer.name), 17),
+        truncate(&region, 11),
+        truncate(&zone, 13),
+        truncate(&mesh_ipv6, 39),
+        peer.endpoint,
+        status,
+        since_str,
+        handshake_str,
+        traffic_str,
+    );
 }
 
 /// Deduplicate peers by WireGuard public key, keeping the entry with the
@@ -333,5 +434,78 @@ mod tests {
     #[test]
     fn format_traffic_nonzero() {
         assert_eq!(format_traffic(1200, 3400), "1K↓ 3K↑");
+    }
+
+    fn make_peer_with_region(name: &str, key: &str, region: &str, zone: &str) -> PeerRecord {
+        use syfrah_core::mesh::Topology;
+        PeerRecord {
+            name: name.into(),
+            wg_public_key: key.into(),
+            endpoint: "127.0.0.1:51820".parse().unwrap(),
+            mesh_ipv6: Ipv6Addr::new(0xfd12, 0, 0, 0, 0, 0, 0, 1),
+            last_seen: 100,
+            status: PeerStatus::Active,
+            region: Some(region.into()),
+            zone: Some(zone.into()),
+            topology: Some(Topology {
+                region: Region::new(region).unwrap(),
+                zone: Zone::new(zone).unwrap(),
+            }),
+        }
+    }
+
+    #[test]
+    fn filter_peers_no_filter_returns_all() {
+        let peers = vec![
+            make_peer_with_region("n1", "k1", "eu-west", "par-ovh"),
+            make_peer_with_region("n2", "k2", "us-east", "nyc-1"),
+        ];
+        let result = filter_peers(peers.clone(), None, None);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn filter_peers_by_region() {
+        let peers = vec![
+            make_peer_with_region("n1", "k1", "eu-west", "par-ovh"),
+            make_peer_with_region("n2", "k2", "eu-west", "par-scw"),
+            make_peer_with_region("n3", "k3", "us-east", "nyc-1"),
+        ];
+        let result = filter_peers(peers, Some("eu-west"), None);
+        assert_eq!(result.len(), 2);
+        assert!(result
+            .iter()
+            .all(|p| p.region.as_deref() == Some("eu-west")));
+    }
+
+    #[test]
+    fn filter_peers_by_zone() {
+        let peers = vec![
+            make_peer_with_region("n1", "k1", "eu-west", "par-ovh"),
+            make_peer_with_region("n2", "k2", "eu-west", "par-scw"),
+            make_peer_with_region("n3", "k3", "us-east", "nyc-1"),
+        ];
+        let result = filter_peers(peers, None, Some("par-ovh"));
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "n1");
+    }
+
+    #[test]
+    fn filter_peers_zone_takes_precedence() {
+        let peers = vec![
+            make_peer_with_region("n1", "k1", "eu-west", "par-ovh"),
+            make_peer_with_region("n2", "k2", "eu-west", "par-scw"),
+        ];
+        // When both region and zone are given, zone wins
+        let result = filter_peers(peers, Some("eu-west"), Some("par-ovh"));
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "n1");
+    }
+
+    #[test]
+    fn filter_peers_invalid_region_returns_empty() {
+        let peers = vec![make_peer_with_region("n1", "k1", "eu-west", "par-ovh")];
+        let result = filter_peers(peers, Some("nonexistent"), None);
+        assert!(result.is_empty());
     }
 }
