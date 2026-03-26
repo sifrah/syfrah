@@ -17,6 +17,7 @@ use crate::control::{self, ControlHandler, ControlRequest, ControlResponse};
 use crate::events::{self, EventType};
 use crate::peering::{self, AutoAcceptConfig, PeeringState};
 use crate::sanitize::sanitize;
+use crate::sd_watchdog;
 use crate::store::{self, NodeState};
 use crate::ui;
 use crate::wg;
@@ -1061,6 +1062,12 @@ pub async fn run_daemon(
         }
     });
 
+    // Notify systemd that the daemon is ready (Type=notify).
+    // At this point the WireGuard interface is up, the control socket is
+    // listening, and the peering listener is accepting connections.
+    sd_watchdog::notify_ready();
+    sd_watchdog::notify_status("Mesh daemon running");
+
     // Persist metrics (atomic — no load+modify+save)
     let persist_recv = metrics_received.clone();
     let persist_recon = metrics_reconciliations.clone();
@@ -1217,6 +1224,11 @@ pub async fn run_daemon(
                 Some(&format!("peers_checked={}", peers.len())),
                 Some(health_max_events),
             );
+
+            // Ping systemd watchdog after each successful health check cycle.
+            // With WatchdogSec=60 and the default health_check_interval of 30s,
+            // this keeps the watchdog fed as long as the health loop is running.
+            sd_watchdog::notify_watchdog();
         }
     };
 
@@ -1291,6 +1303,9 @@ pub async fn run_daemon(
             info!("received SIGTERM, shutting down");
         }
     }
+
+    // Tell systemd we are shutting down gracefully.
+    sd_watchdog::notify_stopping();
 
     // Flush any debounced JSON state so the on-disk export is up-to-date.
     let _ = store::flush_json();
@@ -1535,6 +1550,58 @@ impl ControlHandler for DaemonControlHandler {
                     },
                     Err(e) => ControlResponse::Error {
                         message: format!("Failed to remove peer: {e}"),
+                    },
+                }
+            }
+            ControlRequest::UpdatePeerEndpoint {
+                name_or_key,
+                endpoint,
+            } => {
+                let state = match store::load() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return ControlResponse::Error {
+                            message: format!("{e}"),
+                        }
+                    }
+                };
+
+                match store::update_peer_endpoint(&name_or_key, endpoint) {
+                    Ok(Some((old_endpoint, updated_peer))) => {
+                        // Apply to WireGuard
+                        if let Ok(self_key) = Key::from_base64(&state.wg_public_key) {
+                            let tuning = config::load_tuning().unwrap_or_default();
+                            let _ = wg::upsert_peer(
+                                &self_key,
+                                &updated_peer,
+                                tuning.keepalive_interval,
+                            );
+                        }
+
+                        let peer_name = sanitize(&updated_peer.name);
+
+                        events::emit(
+                            EventType::PeerUpdated,
+                            Some(&peer_name),
+                            Some(&format!("{} -> {}", old_endpoint, endpoint)),
+                            None,
+                            Some(self.max_events),
+                        );
+
+                        ControlResponse::PeerEndpointUpdated {
+                            peer_name: updated_peer.name.clone(),
+                            old_endpoint: old_endpoint.to_string(),
+                            new_endpoint: endpoint.to_string(),
+                        }
+                    }
+                    Ok(None) => ControlResponse::Error {
+                        message: format!(
+                            "No peer named '{}'. Run 'syfrah fabric peers' to list peers.",
+                            name_or_key
+                        ),
+                    },
+                    Err(e) => ControlResponse::Error {
+                        message: format!("Failed to update peer endpoint: {e}"),
                     },
                 }
             }

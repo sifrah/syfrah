@@ -237,6 +237,14 @@ enum PeersAction {
         #[arg(long, short)]
         yes: bool,
     },
+    /// Update a peer's endpoint without rejoin
+    Update {
+        /// Peer node name or WireGuard public key
+        name: String,
+        /// New endpoint address (ip:port)
+        #[arg(long)]
+        endpoint: SocketAddr,
+    },
 }
 
 #[derive(Subcommand)]
@@ -632,6 +640,9 @@ async fn run() -> Result<()> {
                     None => cli::peers::run(json).await,
                     Some(PeersAction::Remove { name_or_key, yes }) => {
                         cli::peers_remove::run(name_or_key, yes).await
+                    }
+                    Some(PeersAction::Update { name, endpoint }) => {
+                        cli::peers_update::run(name, endpoint).await
                     }
                 }
             }

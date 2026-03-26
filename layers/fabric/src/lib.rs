@@ -7,6 +7,7 @@ pub mod events;
 pub mod metrics;
 pub mod peering;
 pub mod sanitize;
+pub mod sd_watchdog;
 pub mod store;
 pub mod ui;
 pub mod wg;
