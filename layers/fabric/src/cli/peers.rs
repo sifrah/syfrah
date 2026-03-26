@@ -252,6 +252,7 @@ mod tests {
             status: PeerStatus::Active,
             region: None,
             zone: None,
+            topology: None,
         }
     }
 

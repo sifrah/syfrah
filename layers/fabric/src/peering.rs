@@ -971,6 +971,7 @@ fn build_auto_accept_response(
         status: syfrah_core::mesh::PeerStatus::Active,
         region: Some(region),
         zone: Some(zone),
+        topology: None,
     };
 
     let response = JoinResponse {
@@ -1437,6 +1438,7 @@ mod tests {
             status: PeerStatus::Active,
             region: None,
             zone: None,
+            topology: None,
         };
 
         let enc_key = [0xABu8; 32];
@@ -1495,6 +1497,7 @@ mod tests {
             status: syfrah_core::mesh::PeerStatus::Active,
             region: None,
             zone: None,
+            topology: None,
         }
     }
 

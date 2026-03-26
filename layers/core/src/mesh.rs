@@ -1,4 +1,6 @@
+use std::fmt;
 use std::net::{Ipv6Addr, SocketAddr};
+use std::str::FromStr;
 
 use aes_gcm::aead::{Aead, KeyInit, OsRng};
 use aes_gcm::{AeadCore, Aes256Gcm, Nonce};
@@ -22,6 +24,145 @@ pub enum MeshError {
     Signature(String),
 }
 
+// --- Typed Region / Zone ---
+
+/// Maximum length for Region and Zone identifiers.
+pub const MAX_REGION_ZONE_LENGTH: usize = 64;
+
+/// Validate a region/zone string: 1-64 chars, `[a-z0-9-]`, no leading/trailing dash.
+fn is_valid_region_zone(s: &str) -> bool {
+    if s.is_empty() || s.len() > MAX_REGION_ZONE_LENGTH {
+        return false;
+    }
+    if s.starts_with('-') || s.ends_with('-') {
+        return false;
+    }
+    s.bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// A validated cloud region identifier (e.g. `"eu-west"`, `"us-east-1"`).
+///
+/// Invariants:
+/// - 1-64 characters
+/// - Only lowercase ASCII letters, digits, and hyphens (`[a-z0-9-]`)
+/// - No leading or trailing hyphen
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Region(String);
+
+impl Region {
+    /// Create a new `Region` if the input passes validation. Returns `None` on
+    /// invalid input.
+    pub fn new(s: &str) -> Option<Region> {
+        if is_valid_region_zone(s) {
+            Some(Region(s.to_owned()))
+        } else {
+            None
+        }
+    }
+
+    /// Borrow the inner string.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Region {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl FromStr for Region {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Region::new(s).ok_or_else(|| format!("invalid region: {s:?}"))
+    }
+}
+
+impl TryFrom<String> for Region {
+    type Error = String;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        if is_valid_region_zone(&s) {
+            Ok(Region(s))
+        } else {
+            Err(format!("invalid region: {s:?}"))
+        }
+    }
+}
+
+impl From<Region> for String {
+    fn from(r: Region) -> String {
+        r.0
+    }
+}
+
+/// A validated availability-zone identifier (e.g. `"us-east-1a"`, `"zone-a"`).
+///
+/// Same invariants as [`Region`].
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Zone(String);
+
+impl Zone {
+    /// Create a new `Zone` if the input passes validation. Returns `None` on
+    /// invalid input.
+    pub fn new(s: &str) -> Option<Zone> {
+        if is_valid_region_zone(s) {
+            Some(Zone(s.to_owned()))
+        } else {
+            None
+        }
+    }
+
+    /// Borrow the inner string.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Zone {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl FromStr for Zone {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Zone::new(s).ok_or_else(|| format!("invalid zone: {s:?}"))
+    }
+}
+
+impl TryFrom<String> for Zone {
+    type Error = String;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        if is_valid_region_zone(&s) {
+            Ok(Zone(s))
+        } else {
+            Err(format!("invalid zone: {s:?}"))
+        }
+    }
+}
+
+impl From<Zone> for String {
+    fn from(z: Zone) -> String {
+        z.0
+    }
+}
+
+/// Topology information for a mesh peer: which region and zone it belongs to.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Topology {
+    pub region: Region,
+    pub zone: Zone,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PeerStatus {
     Active,
@@ -42,6 +183,10 @@ pub struct PeerRecord {
     pub region: Option<String>,
     #[serde(default)]
     pub zone: Option<String>,
+    /// Typed topology (region + zone). Coexists with the legacy `region`/`zone`
+    /// string fields during the migration period.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topology: Option<Topology>,
 }
 
 // --- Peering protocol types ---
@@ -460,6 +605,7 @@ mod tests {
             status: PeerStatus::Active,
             region: None,
             zone: None,
+            topology: None,
         }
     }
 
@@ -533,6 +679,7 @@ mod tests {
             status: PeerStatus::Active,
             region: Some("us-east-1".into()),
             zone: Some("zone-a".into()),
+            topology: None,
         }
     }
 
@@ -896,5 +1043,168 @@ mod tests {
     fn validate_and_verify_full_roundtrip() {
         let (req, _) = signed_join_request();
         assert!(validate_and_verify_join_request(&req).is_ok());
+    }
+
+    // --- Region / Zone / Topology tests ---
+
+    #[test]
+    fn region_new_accepts_valid() {
+        assert!(Region::new("eu-west").is_some());
+        assert!(Region::new("us-east-1").is_some());
+        assert!(Region::new("a").is_some());
+        assert!(Region::new("abc123").is_some());
+        assert!(Region::new(&"a".repeat(64)).is_some());
+    }
+
+    #[test]
+    fn region_new_rejects_uppercase() {
+        assert!(Region::new("EU-WEST").is_none());
+        assert!(Region::new("Us-East").is_none());
+    }
+
+    #[test]
+    fn region_new_rejects_empty() {
+        assert!(Region::new("").is_none());
+    }
+
+    #[test]
+    fn region_new_rejects_leading_dash() {
+        assert!(Region::new("-bad").is_none());
+    }
+
+    #[test]
+    fn region_new_rejects_trailing_dash() {
+        assert!(Region::new("bad-").is_none());
+    }
+
+    #[test]
+    fn region_new_rejects_too_long() {
+        assert!(Region::new(&"a".repeat(65)).is_none());
+    }
+
+    #[test]
+    fn region_new_rejects_invalid_chars() {
+        assert!(Region::new("eu west").is_none());
+        assert!(Region::new("eu_west").is_none());
+        assert!(Region::new("eu.west").is_none());
+        assert!(Region::new("eu@west").is_none());
+    }
+
+    #[test]
+    fn region_display_and_as_str() {
+        let r = Region::new("eu-west").unwrap();
+        assert_eq!(r.as_str(), "eu-west");
+        assert_eq!(r.to_string(), "eu-west");
+    }
+
+    #[test]
+    fn region_from_str() {
+        let r: Region = "eu-west".parse().unwrap();
+        assert_eq!(r.as_str(), "eu-west");
+        assert!("EU-WEST".parse::<Region>().is_err());
+    }
+
+    #[test]
+    fn zone_new_accepts_valid() {
+        assert!(Zone::new("zone-a").is_some());
+        assert!(Zone::new("us-east-1a").is_some());
+        assert!(Zone::new("z").is_some());
+    }
+
+    #[test]
+    fn zone_new_rejects_uppercase() {
+        assert!(Zone::new("ZONE-A").is_none());
+    }
+
+    #[test]
+    fn zone_new_rejects_empty() {
+        assert!(Zone::new("").is_none());
+    }
+
+    #[test]
+    fn zone_new_rejects_leading_trailing_dash() {
+        assert!(Zone::new("-zone").is_none());
+        assert!(Zone::new("zone-").is_none());
+    }
+
+    #[test]
+    fn zone_new_rejects_too_long() {
+        assert!(Zone::new(&"a".repeat(65)).is_none());
+    }
+
+    #[test]
+    fn topology_serde_roundtrip() {
+        let topo = Topology {
+            region: Region::new("eu-west").unwrap(),
+            zone: Zone::new("eu-west-1a").unwrap(),
+        };
+        let json = serde_json::to_string(&topo).unwrap();
+        let parsed: Topology = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.region, topo.region);
+        assert_eq!(parsed.zone, topo.zone);
+    }
+
+    #[test]
+    fn region_serde_roundtrip() {
+        let r = Region::new("us-east-1").unwrap();
+        let json = serde_json::to_string(&r).unwrap();
+        assert_eq!(json, "\"us-east-1\"");
+        let parsed: Region = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, r);
+    }
+
+    #[test]
+    fn region_serde_rejects_invalid() {
+        let result = serde_json::from_str::<Region>("\"EU-WEST\"");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn zone_serde_roundtrip() {
+        let z = Zone::new("zone-a").unwrap();
+        let json = serde_json::to_string(&z).unwrap();
+        assert_eq!(json, "\"zone-a\"");
+        let parsed: Zone = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, z);
+    }
+
+    #[test]
+    fn peer_record_without_topology_deserializes() {
+        // Simulate old state.json that has no topology field
+        let json = serde_json::json!({
+            "name": "node-1",
+            "wg_public_key": VALID_WG_KEY,
+            "endpoint": "203.0.113.1:51820",
+            "mesh_ipv6": "fd12:3456:7800::1",
+            "last_seen": 1700000000,
+            "status": "Active",
+            "region": "us-east-1",
+            "zone": "zone-a"
+        });
+        let record: PeerRecord = serde_json::from_value(json).unwrap();
+        assert_eq!(record.region.as_deref(), Some("us-east-1"));
+        assert_eq!(record.zone.as_deref(), Some("zone-a"));
+        assert!(record.topology.is_none());
+    }
+
+    #[test]
+    fn peer_record_with_topology_roundtrip() {
+        let mut record = valid_record();
+        record.topology = Some(Topology {
+            region: Region::new("eu-west").unwrap(),
+            zone: Zone::new("eu-west-1a").unwrap(),
+        });
+        let json = serde_json::to_string(&record).unwrap();
+        let parsed: PeerRecord = serde_json::from_str(&json).unwrap();
+        let topo = parsed.topology.unwrap();
+        assert_eq!(topo.region.as_str(), "eu-west");
+        assert_eq!(topo.zone.as_str(), "eu-west-1a");
+    }
+
+    #[test]
+    fn peer_record_topology_none_omitted_from_json() {
+        let record = valid_record();
+        let json = serde_json::to_string(&record).unwrap();
+        assert!(!json.contains("topology"));
     }
 }

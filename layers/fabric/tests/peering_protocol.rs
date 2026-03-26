@@ -78,6 +78,7 @@ async fn join_with_pin_auto_accept() {
         status: PeerStatus::Active,
         region: None,
         zone: None,
+        topology: None,
     };
 
     // ── Start peering listener with PIN auto-accept ──
@@ -211,6 +212,7 @@ async fn join_with_wrong_pin_falls_to_pending() {
         status: PeerStatus::Active,
         region: None,
         zone: None,
+        topology: None,
     };
 
     let peering_state = Arc::new(PeeringState::new());
@@ -314,6 +316,7 @@ async fn join_without_pin_goes_to_pending() {
         status: PeerStatus::Active,
         region: None,
         zone: None,
+        topology: None,
     };
 
     let peering_state = Arc::new(PeeringState::new());
@@ -462,6 +465,7 @@ async fn rate_limited_ip_gets_rejection() {
         status: PeerStatus::Active,
         region: None,
         zone: None,
+        topology: None,
     };
 
     let peering_state = Arc::new(PeeringState::new());

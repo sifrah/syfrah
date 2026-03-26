@@ -588,6 +588,7 @@ mod tests {
             status,
             region: None,
             zone: None,
+            topology: None,
         }
     }
 
@@ -956,6 +957,7 @@ mod tests {
             status: syfrah_core::mesh::PeerStatus::Active,
             region: None,
             zone: None,
+            topology: None,
         };
 
         apply_peers(&kp.public, &[peer], 25).unwrap();
