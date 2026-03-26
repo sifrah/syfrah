@@ -461,6 +461,36 @@ pub fn get_peers() -> Result<Vec<PeerRecord>, StoreError> {
     Ok(entries.into_iter().map(|(_, p)| p).collect())
 }
 
+/// Garbage-collect peers that have been in `Removed` status for longer than
+/// `threshold_secs`. Returns the number of peers deleted.
+pub fn gc_removed_peers(threshold_secs: u64) -> Result<usize, StoreError> {
+    if threshold_secs == 0 {
+        return Ok(0);
+    }
+    if !LayerDb::layer_exists(LAYER_NAME) {
+        return Ok(0);
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let db = open_db()?;
+    let entries: Vec<(String, PeerRecord)> = db.list("peers")?;
+    let mut removed = 0usize;
+    for (key, peer) in &entries {
+        if peer.status == syfrah_core::mesh::PeerStatus::Removed
+            && now.saturating_sub(peer.last_seen) >= threshold_secs
+        {
+            db.delete("peers", key)?;
+            removed += 1;
+        }
+    }
+    if removed > 0 {
+        maybe_write_json(&db);
+    }
+    Ok(removed)
+}
+
 // ── Zone health persistence ─────────────────────────────────
 
 /// Persist the health status for a zone.

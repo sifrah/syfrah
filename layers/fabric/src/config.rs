@@ -70,6 +70,10 @@ pub struct Tuning {
     pub self_announce_interval: Duration,
     /// Wave-based announce propagation settings.
     pub announcements: AnnouncementConfig,
+    /// How long a peer must remain in `Removed` status before it is garbage-
+    /// collected (permanently deleted from the store). Default 24 h (86400 s).
+    /// Set to 0 to disable GC.
+    pub gc_removed_threshold: Duration,
 }
 
 /// Configuration for topology-aware wave-based announce propagation.
@@ -127,6 +131,7 @@ impl Default for Tuning {
             log_max_size_mb: 10,
             self_announce_interval: Duration::from_secs(10),
             announcements: AnnouncementConfig::default(),
+            gc_removed_threshold: Duration::from_secs(86400),
         }
     }
 }
@@ -164,6 +169,7 @@ struct DaemonSection {
     unreachable_timeout: Option<u64>,
     log_max_size_mb: Option<u64>,
     self_announce_interval: Option<u64>,
+    gc_removed_threshold: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -266,6 +272,7 @@ pub fn diff_tuning(old: &Tuning, new: &Tuning) -> (Vec<TuningChange>, Vec<Tuning
     cmp_val!(interface_name);
     cmp_val!(log_max_size_mb);
     cmp_dur!(self_announce_interval);
+    cmp_dur!(gc_removed_threshold);
 
     // HealthPolicy fields (nested, compare manually)
     macro_rules! cmp_health {
@@ -391,6 +398,11 @@ pub fn load_tuning() -> Result<Tuning, String> {
             .self_announce_interval
             .map(Duration::from_secs)
             .unwrap_or(defaults.self_announce_interval),
+        gc_removed_threshold: config
+            .daemon
+            .gc_removed_threshold
+            .map(Duration::from_secs)
+            .unwrap_or(defaults.gc_removed_threshold),
         health_policy: HealthPolicy {
             same_zone_timeout: config
                 .health
