@@ -9,6 +9,51 @@ fn syfrah_dir() -> PathBuf {
         .join(".syfrah")
 }
 
+/// Per-topology-tier persistent keepalive intervals (seconds).
+///
+/// Same-zone peers benefit from aggressive keepalive to maintain low-latency
+/// NAT traversal, while cross-region peers can use a longer interval to
+/// reduce overhead on expensive links. All values are in seconds; 0 disables
+/// persistent keepalive for that tier.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeepalivePolicy {
+    /// Keepalive for peers in the same zone (default 20s).
+    pub same_zone_keepalive: u16,
+    /// Keepalive for peers in the same region but different zone (default 25s).
+    pub same_region_keepalive: u16,
+    /// Keepalive for peers in a different region (default 30s).
+    pub cross_region_keepalive: u16,
+}
+
+impl Default for KeepalivePolicy {
+    fn default() -> Self {
+        Self {
+            same_zone_keepalive: 20,
+            same_region_keepalive: 25,
+            cross_region_keepalive: 30,
+        }
+    }
+}
+
+/// Topology tier of a peer relative to the local node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopologyTier {
+    SameZone,
+    SameRegion,
+    CrossRegion,
+}
+
+impl KeepalivePolicy {
+    /// Return the keepalive interval (seconds) for the given topology tier.
+    pub fn for_tier(&self, tier: TopologyTier) -> u16 {
+        match tier {
+            TopologyTier::SameZone => self.same_zone_keepalive,
+            TopologyTier::SameRegion => self.same_region_keepalive,
+            TopologyTier::CrossRegion => self.cross_region_keepalive,
+        }
+    }
+}
+
 /// Per-tier health check timeout policy based on topology proximity.
 ///
 /// Peers in the same zone are expected to respond faster, so they get a
@@ -45,6 +90,10 @@ pub struct Tuning {
     /// global `unreachable_timeout` for peers with known topology.
     pub health_policy: HealthPolicy,
     pub keepalive_interval: u16,
+    /// Per-topology-tier persistent keepalive overrides. When set, these
+    /// replace the global `keepalive_interval` for peers whose topology tier
+    /// is known.
+    pub keepalive_policy: KeepalivePolicy,
     pub join_timeout: Duration,
     pub exchange_timeout: Duration,
     /// Maximum number of events to keep in the event log ring buffer.
@@ -121,6 +170,7 @@ impl Default for Tuning {
             unreachable_timeout: Duration::from_secs(300),
             health_policy: HealthPolicy::default(),
             keepalive_interval: 25,
+            keepalive_policy: KeepalivePolicy::default(),
             join_timeout: Duration::from_secs(10),
             exchange_timeout: Duration::from_secs(10),
             max_events: 100,
@@ -179,6 +229,9 @@ struct DaemonSection {
 #[derive(Debug, Deserialize, Default)]
 struct WireguardSection {
     keepalive_interval: Option<u16>,
+    same_zone_keepalive: Option<u16>,
+    same_region_keepalive: Option<u16>,
+    cross_region_keepalive: Option<u16>,
     interface_name: Option<String>,
 }
 
@@ -213,7 +266,13 @@ struct AnnouncementsSection {
 }
 
 /// Parameters that cannot be changed without a daemon restart.
-const NON_HOT_RELOADABLE: &[&str] = &["interface_name", "keepalive_interval"];
+const NON_HOT_RELOADABLE: &[&str] = &[
+    "interface_name",
+    "keepalive_interval",
+    "keepalive_policy.same_zone_keepalive",
+    "keepalive_policy.same_region_keepalive",
+    "keepalive_policy.cross_region_keepalive",
+];
 
 /// A single changed parameter.
 pub struct TuningChange {
@@ -307,6 +366,29 @@ pub fn diff_tuning(old: &Tuning, new: &Tuning) -> (Vec<TuningChange>, Vec<Tuning
             }
         };
     }
+
+    // KeepalivePolicy fields (nested, non-hot-reloadable)
+    macro_rules! cmp_keepalive {
+        ($field:ident) => {
+            if old.keepalive_policy.$field != new.keepalive_policy.$field {
+                let name = format!("keepalive_policy.{}", stringify!($field));
+                let c = TuningChange {
+                    name: name.clone(),
+                    old_value: format!("{}", old.keepalive_policy.$field),
+                    new_value: format!("{}", new.keepalive_policy.$field),
+                };
+                if NON_HOT_RELOADABLE.contains(&name.as_str()) {
+                    skipped.push(c);
+                } else {
+                    changes.push(c);
+                }
+            }
+        };
+    }
+
+    cmp_keepalive!(same_zone_keepalive);
+    cmp_keepalive!(same_region_keepalive);
+    cmp_keepalive!(cross_region_keepalive);
 
     cmp_health!(same_zone_timeout);
     cmp_health!(same_region_timeout);
@@ -475,6 +557,20 @@ pub fn load_tuning() -> Result<Tuning, String> {
             .wireguard
             .keepalive_interval
             .unwrap_or(defaults.keepalive_interval),
+        keepalive_policy: KeepalivePolicy {
+            same_zone_keepalive: config
+                .wireguard
+                .same_zone_keepalive
+                .unwrap_or(defaults.keepalive_policy.same_zone_keepalive),
+            same_region_keepalive: config
+                .wireguard
+                .same_region_keepalive
+                .unwrap_or(defaults.keepalive_policy.same_region_keepalive),
+            cross_region_keepalive: config
+                .wireguard
+                .cross_region_keepalive
+                .unwrap_or(defaults.keepalive_policy.cross_region_keepalive),
+        },
         join_timeout: config
             .peering
             .join_timeout
@@ -635,6 +731,40 @@ mod tests {
     }
 
     #[test]
+    fn keepalive_policy_defaults() {
+        let kp = KeepalivePolicy::default();
+        assert_eq!(kp.same_zone_keepalive, 20);
+        assert_eq!(kp.same_region_keepalive, 25);
+        assert_eq!(kp.cross_region_keepalive, 30);
+    }
+
+    #[test]
+    fn diff_tuning_keepalive_policy_skipped() {
+        let a = Tuning::default();
+        let b = Tuning {
+            keepalive_policy: KeepalivePolicy {
+                same_zone_keepalive: 10,
+                same_region_keepalive: 20,
+                cross_region_keepalive: 40,
+            },
+            ..Tuning::default()
+        };
+
+        let (changes, skipped) = diff_tuning(&a, &b);
+        assert!(changes.is_empty());
+        assert_eq!(skipped.len(), 3);
+        assert!(skipped
+            .iter()
+            .any(|s| s.name == "keepalive_policy.same_zone_keepalive"));
+        assert!(skipped
+            .iter()
+            .any(|s| s.name == "keepalive_policy.same_region_keepalive"));
+        assert!(skipped
+            .iter()
+            .any(|s| s.name == "keepalive_policy.cross_region_keepalive"));
+    }
+
+    #[test]
     fn announcement_config_defaults() {
         let cfg = AnnouncementConfig::default();
         assert_eq!(cfg.same_zone_concurrency, 50);
@@ -695,6 +825,9 @@ self_announce_interval = 20
 
 [wireguard]
 keepalive_interval = 25
+same_zone_keepalive = 15
+same_region_keepalive = 25
+cross_region_keepalive = 35
 interface_name = "syfrah0"
 
 [peering]
@@ -886,6 +1019,13 @@ max_peers = 0
     fn validate_wireguard_keepalive_zero_allowed() {
         // keepalive_interval = 0 disables persistent keepalive; that is valid.
         let toml = "[wireguard]\nkeepalive_interval = 0\n";
+        assert!(validate_toml(toml).is_ok());
+    }
+
+    #[test]
+    fn validate_per_tier_keepalive_zero_allowed() {
+        // Per-tier keepalive of 0 disables keepalive for that tier; valid.
+        let toml = "[wireguard]\nsame_zone_keepalive = 0\nsame_region_keepalive = 0\ncross_region_keepalive = 0\n";
         assert!(validate_toml(toml).is_ok());
     }
 }
