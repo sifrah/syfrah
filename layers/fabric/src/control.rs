@@ -30,6 +30,10 @@ pub enum ControlRequest {
     RemovePeer {
         name_or_key: String,
     },
+    UpdatePeerEndpoint {
+        name_or_key: String,
+        endpoint: std::net::SocketAddr,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -44,6 +48,11 @@ pub enum ControlResponse {
     PeerRemoved {
         peer_name: String,
         announced_to: usize,
+    },
+    PeerEndpointUpdated {
+        peer_name: String,
+        old_endpoint: String,
+        new_endpoint: String,
     },
     Error {
         message: String,
