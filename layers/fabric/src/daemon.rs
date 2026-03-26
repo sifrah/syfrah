@@ -1679,6 +1679,7 @@ impl ControlHandler for DaemonControlHandler {
                             status: PeerStatus::Active,
                             region: Some(region),
                             zone: Some(zone),
+                            topology: None,
                         };
                         events::emit(
                             EventType::JoinManuallyAccepted,
@@ -1937,6 +1938,7 @@ fn build_record(
         status: PeerStatus::Active,
         region: region.map(|s| s.to_string()),
         zone: zone.map(|s| s.to_string()),
+        topology: None,
     }
 }
 
@@ -2036,6 +2038,7 @@ mod tests {
             status,
             region: None,
             zone: None,
+            topology: None,
         }
     }
 
@@ -2411,6 +2414,7 @@ mod tests {
             status: PeerStatus::Active,
             region: Some("default".into()),
             zone: Some("zone-1".into()),
+            topology: None,
         }];
         let (region, zone) = super::resolve_region_zone(None, None, &peers);
         assert_eq!(region, "default");

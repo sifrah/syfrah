@@ -13,6 +13,7 @@ fn make_peer(name: &str, region: Option<&str>, zone: Option<&str>) -> PeerRecord
         status: PeerStatus::Active,
         region: region.map(|s| s.to_string()),
         zone: zone.map(|s| s.to_string()),
+        topology: None,
     }
 }
 

@@ -35,6 +35,7 @@ fn make_test_peer(name: &str, index: usize) -> PeerRecord {
         status: PeerStatus::Active,
         region: Some("us-east-1".into()),
         zone: Some(format!("us-east-1-zone-{index}")),
+        topology: None,
     }
 }
 
