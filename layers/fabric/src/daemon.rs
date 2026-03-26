@@ -1805,7 +1805,7 @@ pub async fn run_daemon(
                 _ = shutdown_sighup.cancelled() => break,
                 _ = sig.recv() => {
                     info!("received SIGHUP, reloading configuration");
-                    handle_reload(sighup_max_events);
+                    handle_reload(sighup_max_events, None);
                 }
             }
         }
@@ -1902,7 +1902,7 @@ struct DaemonFabricHandler {
 
 #[async_trait::async_trait]
 impl FabricHandler for DaemonFabricHandler {
-    async fn handle(&self, req: FabricRequest) -> FabricResponse {
+    async fn handle(&self, req: FabricRequest, caller_uid: Option<u32>) -> FabricResponse {
         match req {
             FabricRequest::PeeringStart { port: _, pin } => {
                 if let Some(pin_val) = pin {
@@ -1929,13 +1929,25 @@ impl FabricHandler for DaemonFabricHandler {
                         .await;
                 }
                 self.peering_state.set_active(true).await;
-                audit_log::emit(AuditEventType::PeeringStarted, None, None, None);
+                audit_log::emit_with_uid(
+                    AuditEventType::PeeringStarted,
+                    None,
+                    None,
+                    None,
+                    caller_uid,
+                );
                 FabricResponse::Ok
             }
             FabricRequest::PeeringStop => {
                 self.peering_state.set_active(false).await;
                 self.peering_state.set_auto_accept(None).await;
-                audit_log::emit(AuditEventType::PeeringStopped, None, None, None);
+                audit_log::emit_with_uid(
+                    AuditEventType::PeeringStopped,
+                    None,
+                    None,
+                    None,
+                    caller_uid,
+                );
                 FabricResponse::Ok
             }
             FabricRequest::PeeringList => {
@@ -2007,11 +2019,12 @@ impl FabricHandler for DaemonFabricHandler {
                             None,
                             Some(self.max_events),
                         );
-                        audit_log::emit(
+                        audit_log::emit_with_uid(
                             AuditEventType::PeerJoinAccepted,
                             Some(&sanitize(&info.node_name)),
                             Some(&info.endpoint.to_string()),
                             Some("approved_by=manual"),
+                            caller_uid,
                         );
                         (self.on_accepted)(new_record);
                         FabricResponse::PeeringAccepted {
@@ -2033,11 +2046,12 @@ impl FabricHandler for DaemonFabricHandler {
                             reason.as_deref(),
                             Some(self.max_events),
                         );
-                        audit_log::emit(
+                        audit_log::emit_with_uid(
                             AuditEventType::PeerJoinRejected,
                             None,
                             None,
                             reason.as_deref(),
+                            caller_uid,
                         );
                         FabricResponse::Ok
                     }
@@ -2046,7 +2060,7 @@ impl FabricHandler for DaemonFabricHandler {
                     },
                 }
             }
-            FabricRequest::Reload => handle_reload(self.max_events),
+            FabricRequest::Reload => handle_reload(self.max_events, caller_uid),
             FabricRequest::RemovePeer { name_or_key } => {
                 let state = match store::load() {
                     Ok(s) => s,
@@ -2244,7 +2258,13 @@ impl FabricHandler for DaemonFabricHandler {
                 // 7. Swap in the new mesh secret for future encryption_key() calls.
                 *self.mesh_secret.write().await = new_secret;
 
-                audit_log::emit(AuditEventType::SecretRotated, None, None, None);
+                audit_log::emit_with_uid(
+                    AuditEventType::SecretRotated,
+                    None,
+                    None,
+                    None,
+                    caller_uid,
+                );
                 events::emit(
                     EventType::SecretRotated,
                     None,
@@ -2271,7 +2291,7 @@ impl FabricHandler for DaemonFabricHandler {
 
 /// Handle a config reload request: re-read config.toml, diff with current,
 /// apply hot-reloadable changes, and report results.
-fn handle_reload(max_events: u64) -> FabricResponse {
+fn handle_reload(max_events: u64, caller_uid: Option<u32>) -> FabricResponse {
     // Dry-run: parse and validate the config file before applying any changes.
     if let Err(e) = config::validate_config_file() {
         warn!("config reload rejected (validation failed): {e}");
@@ -2325,7 +2345,13 @@ fn handle_reload(max_events: u64) -> FabricResponse {
                 Some(&detail),
                 Some(max_events),
             );
-            audit_log::emit(AuditEventType::ConfigReloaded, None, None, Some(&detail));
+            audit_log::emit_with_uid(
+                AuditEventType::ConfigReloaded,
+                None,
+                None,
+                Some(&detail),
+                caller_uid,
+            );
 
             FabricResponse::ConfigReloaded {
                 changes: change_strs,

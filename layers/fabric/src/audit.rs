@@ -90,6 +90,9 @@ pub struct AuditEntry {
     /// Free-form details.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<String>,
+    /// UID of the Unix peer that issued the control command (via SO_PEERCRED).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller_uid: Option<u32>,
 }
 
 /// Path to the audit log file.
@@ -107,7 +110,20 @@ pub fn emit(
     peer_endpoint: Option<&str>,
     details: Option<&str>,
 ) {
-    if let Err(e) = emit_inner(event_type, peer_name, peer_endpoint, details) {
+    if let Err(e) = emit_inner(event_type, peer_name, peer_endpoint, details, None) {
+        warn!("failed to write audit log: {e}");
+    }
+}
+
+/// Emit an audit event with the caller's UID attached.
+pub fn emit_with_uid(
+    event_type: AuditEventType,
+    peer_name: Option<&str>,
+    peer_endpoint: Option<&str>,
+    details: Option<&str>,
+    caller_uid: Option<u32>,
+) {
+    if let Err(e) = emit_inner(event_type, peer_name, peer_endpoint, details, caller_uid) {
         warn!("failed to write audit log: {e}");
     }
 }
@@ -117,6 +133,7 @@ fn emit_inner(
     peer_name: Option<&str>,
     peer_endpoint: Option<&str>,
     details: Option<&str>,
+    caller_uid: Option<u32>,
 ) -> std::io::Result<()> {
     let entry = AuditEntry {
         timestamp: now(),
@@ -124,6 +141,7 @@ fn emit_inner(
         peer_name: peer_name.map(String::from),
         peer_endpoint: peer_endpoint.map(String::from),
         details: details.map(String::from),
+        caller_uid,
     };
 
     let path = audit_log_path();
@@ -214,6 +232,7 @@ mod tests {
             peer_name: Some("node-1".into()),
             peer_endpoint: Some("10.0.0.1:51820".into()),
             details: Some("pin-matched".into()),
+            caller_uid: Some(1000),
         };
         let json = serde_json::to_string(&entry).unwrap();
         let parsed: AuditEntry = serde_json::from_str(&json).unwrap();
@@ -324,6 +343,7 @@ mod tests {
             peer_name: None,
             peer_endpoint: None,
             details: None,
+            caller_uid: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(!json.contains("peer_name"));

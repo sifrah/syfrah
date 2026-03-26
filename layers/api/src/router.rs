@@ -50,11 +50,13 @@ impl LayerRouter {
 
     /// Route a [`LayerRequest`] to the appropriate handler and return a
     /// [`LayerResponse`].
-    pub async fn dispatch(&self, request: LayerRequest) -> LayerResponse {
+    ///
+    /// `caller_uid` is forwarded to the layer handler for audit logging.
+    pub async fn dispatch(&self, request: LayerRequest, caller_uid: Option<u32>) -> LayerResponse {
         match request {
             LayerRequest::Fabric(payload) => {
                 if let Some(handler) = self.handlers.get("fabric") {
-                    LayerResponse::Fabric(handler.handle(payload).await)
+                    LayerResponse::Fabric(handler.handle(payload, caller_uid).await)
                 } else {
                     LayerResponse::UnknownLayer("fabric".into())
                 }
@@ -78,7 +80,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl LayerHandler for UpperHandler {
-        async fn handle(&self, request: Vec<u8>) -> Vec<u8> {
+        async fn handle(&self, request: Vec<u8>, _caller_uid: Option<u32>) -> Vec<u8> {
             request.iter().map(|b| b.to_ascii_uppercase()).collect()
         }
     }
@@ -89,7 +91,7 @@ mod tests {
         router.register("fabric", Arc::new(UpperHandler));
 
         let req = LayerRequest::Fabric(b"hello".to_vec());
-        let resp = router.dispatch(req).await;
+        let resp = router.dispatch(req, None).await;
 
         match resp {
             LayerResponse::Fabric(data) => assert_eq!(data, b"HELLO"),
@@ -102,7 +104,7 @@ mod tests {
         let router = LayerRouter::new(); // no handlers registered
 
         let req = LayerRequest::Fabric(b"test".to_vec());
-        let resp = router.dispatch(req).await;
+        let resp = router.dispatch(req, None).await;
 
         match resp {
             LayerResponse::UnknownLayer(name) => assert_eq!(name, "fabric"),

@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use syfrah_api::transport;
+use syfrah_api::{auth, transport};
 use syfrah_api::{LayerHandler, LayerRequest, LayerResponse, LayerRouter};
 use tokio::net::UnixStream;
 use tracing::debug;
@@ -76,7 +76,7 @@ pub enum FabricResponse {
 /// Handler trait for processing fabric commands. Implemented by the daemon.
 #[async_trait::async_trait]
 pub trait FabricHandler: Send + Sync {
-    async fn handle(&self, req: FabricRequest) -> FabricResponse;
+    async fn handle(&self, req: FabricRequest, caller_uid: Option<u32>) -> FabricResponse;
 }
 
 /// Adapter that wraps a [`FabricHandler`] as a [`LayerHandler`], bridging the
@@ -93,7 +93,7 @@ impl<H: FabricHandler> FabricLayerHandler<H> {
 
 #[async_trait::async_trait]
 impl<H: FabricHandler + 'static> LayerHandler for FabricLayerHandler<H> {
-    async fn handle(&self, request: Vec<u8>) -> Vec<u8> {
+    async fn handle(&self, request: Vec<u8>, caller_uid: Option<u32>) -> Vec<u8> {
         let req: FabricRequest = match serde_json::from_slice(&request) {
             std::result::Result::Ok(r) => r,
             Err(e) => {
@@ -103,7 +103,7 @@ impl<H: FabricHandler + 'static> LayerHandler for FabricLayerHandler<H> {
                 return serde_json::to_vec(&resp).unwrap_or_default();
             }
         };
-        let resp = self.inner.handle(req).await;
+        let resp = self.inner.handle(req, caller_uid).await;
         serde_json::to_vec(&resp).unwrap_or_default()
     }
 }
@@ -120,9 +120,19 @@ pub async fn start_control_listener(socket_path: &Path, router: Arc<LayerRouter>
     loop {
         match listener.accept().await {
             std::result::Result::Ok((stream, _)) => {
+                let peer_uid = auth::get_peer_uid(&stream);
+
+                // Reject unauthorized callers before reading any payload.
+                if let Some(uid) = peer_uid {
+                    if !auth::authorize_local(uid) {
+                        tracing::warn!("rejecting control connection from unauthorized uid {uid}");
+                        continue;
+                    }
+                }
+
                 let router = router.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_control_connection(stream, router).await {
+                    if let Err(e) = handle_control_connection(stream, router, peer_uid).await {
                         debug!("control connection error: {e}");
                     }
                 });
@@ -137,6 +147,7 @@ pub async fn start_control_listener(socket_path: &Path, router: Arc<LayerRouter>
 async fn handle_control_connection(
     mut stream: UnixStream,
     router: Arc<LayerRouter>,
+    caller_uid: Option<u32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let req: LayerRequest = match tokio::time::timeout(
         transport::READ_TIMEOUT,
@@ -153,7 +164,7 @@ async fn handle_control_connection(
             return Err("control read timed out".into());
         }
     };
-    let resp = router.dispatch(req).await;
+    let resp = router.dispatch(req, caller_uid).await;
     transport::write_message(&mut stream, &resp).await?;
     Ok(())
 }
@@ -338,7 +349,11 @@ mod tests {
         struct NoOpFabricHandler(Arc<AtomicBool>);
         #[async_trait::async_trait]
         impl FabricHandler for NoOpFabricHandler {
-            async fn handle(&self, _req: FabricRequest) -> FabricResponse {
+            async fn handle(
+                &self,
+                _req: FabricRequest,
+                _caller_uid: Option<u32>,
+            ) -> FabricResponse {
                 self.0.store(true, Ordering::SeqCst);
                 FabricResponse::Ok
             }
@@ -356,7 +371,7 @@ mod tests {
         let (stream, _) = listener.accept().await.unwrap();
         let result = tokio::time::timeout(
             transport::READ_TIMEOUT + std::time::Duration::from_secs(1),
-            handle_control_connection(stream, router),
+            handle_control_connection(stream, router, None),
         )
         .await
         .expect("server should complete before outer timeout");
@@ -377,7 +392,11 @@ mod tests {
         struct EchoFabric;
         #[async_trait::async_trait]
         impl FabricHandler for EchoFabric {
-            async fn handle(&self, _req: FabricRequest) -> FabricResponse {
+            async fn handle(
+                &self,
+                _req: FabricRequest,
+                _caller_uid: Option<u32>,
+            ) -> FabricResponse {
                 FabricResponse::Ok
             }
         }
@@ -385,7 +404,7 @@ mod tests {
         let adapter = FabricLayerHandler::new(EchoFabric);
         let req = FabricRequest::PeeringStop;
         let payload = serde_json::to_vec(&req).unwrap();
-        let result = LayerHandler::handle(&adapter, payload).await;
+        let result = LayerHandler::handle(&adapter, payload, None).await;
         let resp: FabricResponse = serde_json::from_slice(&result).unwrap();
         match resp {
             FabricResponse::Ok => {}
