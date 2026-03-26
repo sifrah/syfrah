@@ -190,6 +190,9 @@ enum FabricCommand {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Filter diagnostics to a specific zone (e.g. eu-west/par-ovh)
+        #[arg(long)]
+        zone: Option<String>,
     },
     /// Reload config.toml without restarting the daemon
     Reload,
@@ -771,9 +774,9 @@ async fn run() -> Result<()> {
                 setup_logging(false);
                 cli::leave::run(yes).await
             }
-            FabricCommand::Diagnose { json } => {
+            FabricCommand::Diagnose { json, zone } => {
                 setup_logging(false);
-                cli::diagnose::run(json).await
+                cli::diagnose::run(json, zone).await
             }
             FabricCommand::Reload => {
                 setup_logging(false);
