@@ -286,15 +286,23 @@ just test
 # Unit tests for one layer
 cargo test -p syfrah-fabric
 
-# E2E tests (requires Docker)
+# E2E tests — full Docker rebuild (same as CI)
 just e2e
 
-# Run a specific E2E scenario
+# E2E tests — local mode (volume-mounted binary, no rebuild)
+cargo build --release --target x86_64-unknown-linux-musl
+just e2e-local              # all scenarios
+just e2e-local fabric       # only fabric scenarios
+just e2e-local 01_fabric    # single scenario
+
+# Run a specific E2E scenario (CI mode)
 ./tests/e2e/run.sh 01_mesh
 
 # Everything (unit + E2E)
 just ci && just e2e
 ```
+
+The `just e2e-local` command uses `dev/e2e.sh`, which volume-mounts a locally-compiled static binary into lightweight containers. This avoids the ~3 min Docker image rebuild, making the edit-build-test cycle much faster. See `handbook/local-dev.md` for details.
 
 ## What we test at each layer
 

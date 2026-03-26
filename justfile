@@ -36,9 +36,13 @@ audit:
 run *ARGS:
     cargo run --bin syfrah -- {{ARGS}}
 
-# Run all E2E tests (requires Docker)
+# Run all E2E tests (requires Docker, rebuilds image from scratch)
 e2e:
     ./tests/e2e/run.sh
+
+# Run E2E tests locally with volume-mounted binary (no Docker rebuild)
+e2e-local FILTER="":
+    ./dev/e2e.sh {{FILTER}}
 
 # Run E2E tests for a specific layer
 e2e-layer LAYER:
