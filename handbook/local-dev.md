@@ -4,7 +4,7 @@ Two Docker containers running syfrah, controlled from the host. Built for iterat
 
 ## How It Works
 
-- **2 containers** (`syfrah-node1`, `syfrah-node2`) on a shared Docker bridge network (IPv4 + IPv6)
+- **4 containers** (`syfrah-node1` through `syfrah-node4`) on a shared Docker bridge network (IPv4 + IPv6)
 - **WireGuard** runs inside each container via the host's kernel module (interfaces are isolated per network namespace)
 - The **syfrah binary** is volume-mounted from `target/debug/syfrah` — no image rebuild needed after code changes
 - You control both nodes from the host via `dev.sh` or `docker exec`
@@ -76,6 +76,8 @@ Host (dev machine)
   |
   +-- syfrah-node1 (172.28.0.2)
   +-- syfrah-node2 (172.28.0.3)
+  +-- syfrah-node3 (172.28.0.4)
+  +-- syfrah-node4 (172.28.0.5)
 ```
 
 Both containers can reach each other on the bridge. WireGuard tunnels are created on top of this network, just like on real servers over the internet.
@@ -156,12 +158,41 @@ The first run builds the base Docker image (~10s). Subsequent runs skip this if 
 | `E2E_BINARY_MOUNT` | (set by e2e.sh) | Used by lib.sh to volume-mount the binary |
 | `SKIP_BUILD` | (set by e2e.sh) | Tells run.sh to skip the Docker image build |
 
+## Topology Testing
+
+The `dev/test-topology.sh` script validates multi-region topology by spinning up all 4 containers and assigning them to 2 regions and 2 zones:
+
+| Node  | Region    | Zone  |
+|-------|-----------|-------|
+| node1 | eu-west   | par-1 |
+| node2 | eu-west   | par-1 |
+| node3 | us-east   | use-1 |
+| node4 | us-east   | use-1 |
+
+```bash
+# Build the binary first
+cargo build
+
+# Run the topology test
+./dev/test-topology.sh
+```
+
+The script:
+1. Starts 4 containers via docker-compose
+2. Inits a mesh on node1 with `--region eu-west --zone par-1 --peering`
+3. Joins node2, node3, node4 with their respective region/zone flags
+4. Verifies `syfrah fabric topology` shows 2 regions, 2 zones, 4 nodes
+5. Verifies `syfrah fabric topology --json` returns correct counts
+6. Verifies `syfrah fabric peers --topology` groups nodes correctly
+7. Tears down containers on exit
+
 ## Files
 
 ```
 dev/
   Dockerfile           # Minimal image: debian + wireguard-tools + iproute2
-  docker-compose.yml   # 2 nodes, bridge network, volume mount
+  docker-compose.yml   # 4 nodes, bridge network, volume mount
   dev.sh               # Helper script for the full workflow
   e2e.sh               # Run E2E tests locally with volume-mounted binary
+  test-topology.sh     # Multi-region topology integration test
 ```

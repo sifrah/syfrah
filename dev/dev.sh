@@ -16,6 +16,8 @@ Commands:
   exec <node> <cmd...>   Run a command on a node (node1 or node2)
   n1 <cmd...>            Shortcut for: exec node1 <cmd...>
   n2 <cmd...>            Shortcut for: exec node2 <cmd...>
+  n3 <cmd...>            Shortcut for: exec node3 <cmd...>
+  n4 <cmd...>            Shortcut for: exec node4 <cmd...>
   logs [node]            Show container logs
   status      Show container and WireGuard status on both nodes
   shell <node>           Open a shell on a node
@@ -60,6 +62,8 @@ cmd_up() {
     echo "==> Containers ready."
     echo "    node1: docker exec syfrah-node1 ..."
     echo "    node2: docker exec syfrah-node2 ..."
+    echo "    node3: docker exec syfrah-node3 ..."
+    echo "    node4: docker exec syfrah-node4 ..."
 }
 
 cmd_down() {
@@ -88,7 +92,7 @@ cmd_logs() {
 }
 
 cmd_status() {
-    for node in node1 node2; do
+    for node in node1 node2 node3 node4; do
         echo "=== $node ==="
         docker exec "syfrah-${node}" sh -c '
             echo "-- IP addresses --"
@@ -130,6 +134,8 @@ case "$command" in
     exec)    cmd_exec "$@" ;;
     n1)      cmd_exec "node1" "$@" ;;
     n2)      cmd_exec "node2" "$@" ;;
+    n3)      cmd_exec "node3" "$@" ;;
+    n4)      cmd_exec "node4" "$@" ;;
     logs)    cmd_logs "${1:-}" ;;
     status)  cmd_status ;;
     shell)   cmd_shell "$1" ;;
