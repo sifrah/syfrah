@@ -11,6 +11,7 @@ categories.workspace = true
 [dependencies]
 syfrah-core = { path = "../core" }
 syfrah-state = { path = "../state" }
+syfrah-api = { path = "../api" }
 wireguard-control = "1.7"
 tokio.workspace = true
 tracing.workspace = true

@@ -1,0 +1,20 @@
+[package]
+name = "syfrah-api"
+description = "Shared transport for Unix socket IPC in Syfrah"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["test-util"] }
