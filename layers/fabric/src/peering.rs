@@ -1104,20 +1104,15 @@ pub async fn announce_peer(
         match try_announce(&target, &ciphertext, tls_config.clone()).await {
             Ok(()) => return Ok(()),
             Err(e) => {
-                // Only retry on transient errors (Io, Timeout). TLS errors
-                // indicate a mesh-secret mismatch or incompatible config and
-                // will not resolve on retry.
-                match &e {
-                    PeeringError::Io(_) | PeeringError::Timeout => {
-                        debug!(
-                            "announce attempt {}/{} to {target} failed: {e}",
-                            attempt + 1,
-                            ANNOUNCE_MAX_RETRIES
-                        );
-                        last_err = Some(e);
-                    }
-                    _ => return Err(e), // Non-transient: fail immediately
-                }
+                // Retry on transient errors. TLS handshake failures are also
+                // retried because they can occur when the remote listener is
+                // still initialising its TLS acceptor.
+                debug!(
+                    "announce attempt {}/{} to {target} failed: {e}",
+                    attempt + 1,
+                    ANNOUNCE_MAX_RETRIES
+                );
+                last_err = Some(e);
             }
         }
     }
