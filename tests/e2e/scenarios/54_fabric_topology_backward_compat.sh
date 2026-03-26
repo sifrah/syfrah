@@ -16,7 +16,7 @@ init_mesh "e2e-tcompat-1" "172.20.0.10" "node-1"
 start_peering "e2e-tcompat-1"
 join_mesh "e2e-tcompat-2" "172.20.0.10" "172.20.0.11" "node-2"
 
-sleep 3
+wait_for_convergence "e2e-tcompat-" 2 1 30 || true
 
 # Topology should still work with default region/zone
 topo=$(docker exec "e2e-tcompat-1" syfrah fabric topology 2>&1)

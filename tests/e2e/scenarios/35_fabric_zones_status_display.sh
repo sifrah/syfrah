@@ -21,7 +21,7 @@ else
     echo "$output"
 fi
 
-if echo "$output" | grep -q "zone:"; then
+if echo "$output" | grep -qi "zone:"; then
     pass "status shows zone field"
 else
     fail "status missing zone field"

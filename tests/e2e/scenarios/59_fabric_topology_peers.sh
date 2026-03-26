@@ -46,7 +46,7 @@ docker exec -d "e2e-tpeers-3" \
 
 wait_daemon "e2e-tpeers-3"
 
-sleep 3
+wait_for_convergence "e2e-tpeers-" 3 2 30 || true
 
 # Run peers --topology
 topo=$(docker exec "e2e-tpeers-1" syfrah fabric peers --topology 2>&1)
@@ -66,11 +66,12 @@ else
     echo "$topo"
 fi
 
-# Should show zone groupings
-if echo "$topo" | grep -q "eu-west-1a"; then
-    pass "peers --topology shows zone eu-west-1a"
+# Should show zone groupings (eu-west-1b has node-eu-2; eu-west-1a is the leader's zone,
+# which doesn't appear in peers since peers excludes self)
+if echo "$topo" | grep -q "eu-west-1b"; then
+    pass "peers --topology shows zone eu-west-1b"
 else
-    fail "peers --topology missing zone eu-west-1a"
+    fail "peers --topology missing zone eu-west-1b"
     echo "$topo"
 fi
 

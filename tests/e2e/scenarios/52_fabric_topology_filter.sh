@@ -46,7 +46,7 @@ docker exec -d "e2e-tfilt-3" \
 
 wait_daemon "e2e-tfilt-3"
 
-sleep 3
+wait_for_convergence "e2e-tfilt-" 3 2 30 || true
 
 # Filter by --region eu-west: should show eu-west, NOT us-east
 filtered=$(docker exec "e2e-tfilt-1" syfrah fabric topology --region eu-west 2>&1)

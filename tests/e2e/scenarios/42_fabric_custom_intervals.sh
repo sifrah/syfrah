@@ -17,6 +17,11 @@ docker exec "e2e-config-1" sh -c 'cat > /root/.syfrah/config.toml << EOF
 health_check_interval = 10
 unreachable_timeout = 20
 reconcile_interval = 10
+
+[health]
+same_zone_timeout = 20
+same_region_timeout = 20
+cross_region_timeout = 20
 EOF'
 
 # Init and join with custom config

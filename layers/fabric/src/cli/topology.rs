@@ -23,9 +23,34 @@ pub struct TopologyOpts {
 }
 
 pub async fn run(opts: TopologyOpts) -> Result<()> {
+    use syfrah_core::mesh::{PeerRecord, Topology};
+
     let state = store::load().map_err(|_| no_mesh_error())?;
 
-    let view = TopologyView::from_peers(&state.peers);
+    // Include the local node in the topology view alongside remote peers.
+    let local_peer = PeerRecord {
+        name: state.node_name.clone(),
+        wg_public_key: state.wg_public_key.clone(),
+        endpoint: state
+            .public_endpoint
+            .unwrap_or_else(|| format!("0.0.0.0:{}", state.wg_listen_port).parse().unwrap()),
+        mesh_ipv6: state.mesh_ipv6,
+        last_seen: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        status: PeerStatus::Active,
+        region: state.region.clone(),
+        zone: state.zone.clone(),
+        topology: Topology::from_strings(
+            state.region.as_deref(),
+            state.zone.as_deref(),
+        ),
+    };
+    let mut all_nodes = state.peers.clone();
+    all_nodes.push(local_peer);
+
+    let view = TopologyView::from_peers(&all_nodes);
 
     if opts.json {
         return run_json(&state.mesh_name, &view, &opts);

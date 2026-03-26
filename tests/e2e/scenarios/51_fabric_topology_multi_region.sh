@@ -46,7 +46,7 @@ docker exec -d "e2e-tmr-3" \
 
 wait_daemon "e2e-tmr-3"
 
-sleep 3
+wait_for_convergence "e2e-tmr-" 3 2 30 || true
 
 # Topology from leader should show both regions
 topo=$(docker exec "e2e-tmr-1" syfrah fabric topology 2>&1)
