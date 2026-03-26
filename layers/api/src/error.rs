@@ -162,4 +162,23 @@ mod tests {
         assert!(err.trace_id.starts_with("req-"));
         assert_eq!(err.trace_id.len(), 16);
     }
+
+    #[test]
+    fn error_code_constants_are_non_empty() {
+        let codes = [
+            FABRIC_PEER_NOT_FOUND,
+            FABRIC_DAEMON_NOT_RUNNING,
+            FABRIC_MESH_NOT_INITIALIZED,
+            FABRIC_HANDSHAKE_FAILED,
+            FABRIC_TUNNEL_TIMEOUT,
+            STATE_STORE_UNAVAILABLE,
+            STATE_CONFLICT,
+            AUTH_UNAUTHORIZED,
+            AUTH_FORBIDDEN,
+            INTERNAL_ERROR,
+        ];
+        for code in codes {
+            assert!(!code.is_empty(), "error code constant must not be empty");
+        }
+    }
 }
