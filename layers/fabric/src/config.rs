@@ -9,6 +9,30 @@ fn syfrah_dir() -> PathBuf {
         .join(".syfrah")
 }
 
+/// Per-tier health check timeout policy based on topology proximity.
+///
+/// Peers in the same zone are expected to respond faster, so they get a
+/// shorter timeout. Cross-region peers are given more slack.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HealthPolicy {
+    /// Timeout for peers in the same zone (default 120s).
+    pub same_zone_timeout: Duration,
+    /// Timeout for peers in the same region but different zone (default 180s).
+    pub same_region_timeout: Duration,
+    /// Timeout for peers in a different region, or peers with unknown topology (default 300s).
+    pub cross_region_timeout: Duration,
+}
+
+impl Default for HealthPolicy {
+    fn default() -> Self {
+        Self {
+            same_zone_timeout: Duration::from_secs(120),
+            same_region_timeout: Duration::from_secs(180),
+            cross_region_timeout: Duration::from_secs(300),
+        }
+    }
+}
+
 /// Daemon tuning parameters. All fields are optional — defaults match the
 /// original hardcoded values.
 #[derive(Debug, Clone, PartialEq)]
@@ -17,6 +41,9 @@ pub struct Tuning {
     pub reconcile_interval: Duration,
     pub persist_interval: Duration,
     pub unreachable_timeout: Duration,
+    /// Topology-aware health check timeouts. When set, these override the
+    /// global `unreachable_timeout` for peers with known topology.
+    pub health_policy: HealthPolicy,
     pub keepalive_interval: u16,
     pub join_timeout: Duration,
     pub exchange_timeout: Duration,
@@ -86,6 +113,7 @@ impl Default for Tuning {
             reconcile_interval: Duration::from_secs(30),
             persist_interval: Duration::from_secs(30),
             unreachable_timeout: Duration::from_secs(300),
+            health_policy: HealthPolicy::default(),
             keepalive_interval: 25,
             join_timeout: Duration::from_secs(10),
             exchange_timeout: Duration::from_secs(10),
@@ -116,7 +144,16 @@ struct ConfigFile {
     #[serde(default)]
     limits: LimitsSection,
     #[serde(default)]
+    health: HealthSection,
+    #[serde(default)]
     announcements: AnnouncementsSection,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct HealthSection {
+    same_zone_timeout: Option<u64>,
+    same_region_timeout: Option<u64>,
+    cross_region_timeout: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -230,6 +267,21 @@ pub fn diff_tuning(old: &Tuning, new: &Tuning) -> (Vec<TuningChange>, Vec<Tuning
     cmp_val!(log_max_size_mb);
     cmp_dur!(self_announce_interval);
 
+    // HealthPolicy fields (nested, compare manually)
+    macro_rules! cmp_health {
+        ($field:ident) => {
+            if old.health_policy.$field != new.health_policy.$field {
+                let name = format!("health_policy.{}", stringify!($field));
+                let c = TuningChange {
+                    name,
+                    old_value: format!("{}s", old.health_policy.$field.as_secs()),
+                    new_value: format!("{}s", new.health_policy.$field.as_secs()),
+                };
+                changes.push(c);
+            }
+        };
+    }
+
     // Announcement wave config — compare nested fields manually.
     macro_rules! cmp_announce {
         ($field:ident) => {
@@ -243,6 +295,10 @@ pub fn diff_tuning(old: &Tuning, new: &Tuning) -> (Vec<TuningChange>, Vec<Tuning
             }
         };
     }
+
+    cmp_health!(same_zone_timeout);
+    cmp_health!(same_region_timeout);
+    cmp_health!(cross_region_timeout);
 
     cmp_announce!(same_zone_concurrency);
     cmp_announce!(same_region_concurrency);
@@ -335,6 +391,23 @@ pub fn load_tuning() -> Result<Tuning, String> {
             .self_announce_interval
             .map(Duration::from_secs)
             .unwrap_or(defaults.self_announce_interval),
+        health_policy: HealthPolicy {
+            same_zone_timeout: config
+                .health
+                .same_zone_timeout
+                .map(Duration::from_secs)
+                .unwrap_or(defaults.health_policy.same_zone_timeout),
+            same_region_timeout: config
+                .health
+                .same_region_timeout
+                .map(Duration::from_secs)
+                .unwrap_or(defaults.health_policy.same_region_timeout),
+            cross_region_timeout: config
+                .health
+                .cross_region_timeout
+                .map(Duration::from_secs)
+                .unwrap_or(defaults.health_policy.cross_region_timeout),
+        },
         announcements: AnnouncementConfig {
             same_zone_concurrency: config
                 .announcements
