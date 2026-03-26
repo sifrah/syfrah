@@ -161,6 +161,15 @@ enum FabricCommand {
         /// Output as JSON (for listing peers)
         #[arg(long)]
         json: bool,
+        /// Group output by region/zone (tree view)
+        #[arg(long)]
+        topology: bool,
+        /// Filter peers by region
+        #[arg(long)]
+        region: Option<String>,
+        /// Filter peers by zone
+        #[arg(long)]
+        zone: Option<String>,
     },
     /// Show the mesh secret
     Token,
@@ -724,10 +733,24 @@ async fn run() -> Result<()> {
                 setup_logging(false);
                 cli::audit::run(json, limit, since, event_type).await
             }
-            FabricCommand::Peers { action, json } => {
+            FabricCommand::Peers {
+                action,
+                json,
+                topology,
+                region,
+                zone,
+            } => {
                 setup_logging(false);
                 match action {
-                    None => cli::peers::run(json).await,
+                    None => {
+                        cli::peers::run(cli::peers::PeersOpts {
+                            json,
+                            topology,
+                            region,
+                            zone,
+                        })
+                        .await
+                    }
                     Some(PeersAction::Remove { name_or_key, yes }) => {
                         cli::peers_remove::run(name_or_key, yes).await
                     }
