@@ -8,7 +8,7 @@ These decisions were reached through two rounds of architectural review by five 
 
 ### Core Principles
 
-1. **The CLI drives the API design.** Write the `--help` text first, then build the handler.
+1. **The CLI drives the API shape.** Write the `--help` text first, then build the handler. The CLI drives the user-facing API shape, while resource semantics (naming, lifecycle, relationships) remain stable independently of CLI presentation.
 2. **One binary per context.** `syfrah` on servers (local daemon control), `syfrah-cli` on laptops (remote API access).
 3. **Proto files are the source of truth.** All external APIs defined in `.proto` files. SDKs generated, never hand-written.
 4. **Unix sockets for local, gRPC+REST for remote.** Two trust boundaries, two transports.
@@ -27,10 +27,11 @@ These decisions were reached through two rounds of architectural review by five 
 │  Auth: API key (syf_key_...) over TLS 1.3                       │
 │  Protocol: gRPC (primary) + REST/JSON gateway (from same .proto) │
 ├──────────────────────────────────────────────────────────────────┤
-│  API Gateway (any mesh node with public IP)                      │
+│  API Gateway (dedicated gateway node(s) with public IP)          │
 │  Terminates TLS, validates key + CIDR + rate limit               │
 │  Authorizes via IAM role table                                   │
 │  Forwards mutations to Raft leader over internal fabric          │
+│  Leader commits state transition; execution may run on followers  │
 ├──────────────────────────────────────────────────────────────────┤
 │  Internal Fabric (WireGuard mesh)                                │
 │  Node → Node: HTTP/JSON over syfrah0 interface                   │
@@ -40,6 +41,10 @@ These decisions were reached through two rounds of architectural review by five 
 ```
 
 Three trust boundaries. Three transports. Never mixed.
+
+**Gateway node designation:** In v1, gateway nodes are explicitly designated by the operator via configuration (`--role gateway`). They are not dynamically elected. API key state (hashed keys, CIDR allowlists, rate limit counters) is replicated to all gateway nodes through the Raft-backed IAM state. If a gateway node fails, the operator promotes another node or relies on DNS failover across multiple designated gateways. A future version may automate gateway election based on health and topology.
+
+**Mutation flow:** The gateway forwards every mutating request to the current Raft leader. The leader is the source of truth for state transitions, but execution may occur on follower/worker nodes after the transition is committed. For example, a `vm.create` request is committed as a state transition by the leader; the actual VM creation is executed by the worker node that owns the target hardware.
 
 ---
 
@@ -79,8 +84,7 @@ Three trust boundaries. Three transports. Never mixed.
 
 **Transport:** HTTP/1.1 + JSON over WireGuard fabric interface (`syfrah0`)
 
-- WireGuard provides encryption equivalent to mTLS
-- No additional TLS needed (already encrypted at L3)
+- Internal HTTP relies on WireGuard as the transport security layer; no additional TLS is required in v1
 - Bound to mesh IPv6 address only (never public interface)
 - Read-only monitoring also served here (`/metrics`, `/v1/{layer}/health`)
 
@@ -106,7 +110,7 @@ Proto files are the source of truth. The REST gateway automatically serializes p
 
 ### Internal node-to-node: JSON
 
-HTTP/JSON over the fabric. Same serde types as local IPC. Same version, same binary — no compatibility concerns.
+HTTP/JSON over the fabric. Same serde types as local IPC. Same version, same binary — no compatibility concerns. Internal node-to-node payloads are non-contractual: they are an implementation detail of the current binary and carry no cross-version stability guarantee. If semantic drift between the internal JSON surface and the external proto surface becomes a risk, critical internal paths will be migrated to proto definitions.
 
 ### Why both
 
@@ -236,6 +240,8 @@ sdk/rust/            # Generated Rust client (syfrah-cli uses this)
 
 The Terraform provider imports `sdk/go/` and uses the same gRPC API as `syfrah-cli`.
 
+Both binaries share the same command grammar wherever semantics overlap; differences are limited to transport, auth, and context management. For example, `syfrah fabric peers list` and `syfrah-cli fabric peers list` accept the same flags and produce the same output shape. The shared grammar is enforced by a common clap command definition in `layers/core/`.
+
 ---
 
 ## Authentication & Authorization
@@ -294,7 +300,7 @@ For external API only (not local Unix socket, not internal fabric).
 
 Terraform at peak: ~10-20 req/s. Well within limits.
 
-Implementation: in-memory token bucket. No external dependency.
+Implementation: in-memory token bucket per gateway instance. No external dependency. Rate limits are enforced per gateway instance in v1; the effective burst for a given API key is `burst × gateway_count`. Global rate limiting across gateways may be added in a future version if needed.
 
 ---
 
@@ -307,14 +313,14 @@ Implementation: in-memory token bucket. No external dependency.
   "error": {
     "code": "PEER_NOT_FOUND",
     "message": "No peer named 'web-3' in the mesh. Did you mean 'web-03'?",
-    "trace_id": "req-a7f3"
+    "trace_id": "req-a7f3e29b1c04"
   }
 }
 ```
 
 - **code**: Machine-readable, stable across versions. Scripts and Terraform match on this.
 - **message**: Human-readable, may change. Includes actionable next steps.
-- **trace_id**: 6-character random ID, logged server-side. For incident debugging.
+- **trace_id**: 12-character random hex ID (48 bits of entropy), logged server-side. For incident debugging and cross-node correlation at scale.
 
 ### Error codes per layer
 
@@ -371,9 +377,9 @@ Every mutating API call is logged:
 | Layer | `fabric`, `compute`, etc. |
 | Command | `peer.remove`, `vm.create`, etc. |
 | Result | Success or error code |
-| Trace ID | 6-char random, returned to client |
+| Trace ID | 12-char random hex, returned to client |
 
-External API audit entries are written to the Raft log for replication across all nodes.
+In v1, audit entries for mutating actions are replicated through the same consensus path as state transitions for simplicity. A dedicated audit store (e.g., append-only local log with async replication) may be introduced later to decouple audit durability and volumetry from the Raft state machine.
 
 The audit module is a shared dependency used by all layers — not fabric-specific.
 
@@ -405,8 +411,11 @@ pub trait LayerHandler: Send + Sync {
     /// Handle local control socket requests
     async fn handle(&self, request: LayerRequest) -> LayerResponse;
 
-    /// HTTP routes for internal observability (read-only, JSON)
-    fn internal_routes(&self) -> axum::Router;
+    /// Internal control endpoints (node-to-node coordination, state forwarding)
+    fn internal_control_routes(&self) -> axum::Router;
+
+    /// Internal observability endpoints (health, metrics — read-only, safe to expose broadly)
+    fn internal_observability_routes(&self) -> axum::Router;
 
     /// gRPC service for external API (generated from proto)
     fn grpc_service(&self) -> tonic::transport::server::Router;
@@ -433,7 +442,7 @@ let daemon = Daemon::new()
 // Three listeners, one daemon
 daemon.serve(
     unix_socket,              // Local CLI
-    internal_http,            // Node-to-node + metrics
+    internal_http,            // Node-to-node control + observability (same listener in v1, logically separated)
     external_grpc_and_rest,   // Terraform, laptop CLI, SDKs
 ).await;
 ```
