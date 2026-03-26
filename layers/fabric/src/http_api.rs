@@ -59,6 +59,9 @@ impl Default for ApiConfig {
 pub async fn serve(config: ApiConfig, shutdown: tokio::sync::watch::Receiver<bool>) {
     if !config.enabled {
         tracing::debug!("HTTP API disabled, skipping");
+        // Park forever so the tokio::select! in the daemon loop does not
+        // fire on this branch when the API is disabled.
+        std::future::pending::<()>().await;
         return;
     }
 
