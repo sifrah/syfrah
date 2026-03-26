@@ -51,7 +51,8 @@ pub async fn run(opts: StatusOpts) -> Result<()> {
     ui::box_top("Mesh");
     ui::box_row(&format!("Name:     {}", sanitize(&state.mesh_name)));
     ui::box_row(&format!("Node:     {}", sanitize(&state.node_name)));
-    ui::box_row(&format!("Region:   {} / zone: {}", region, zone));
+    ui::box_row(&format!("Region:   {}", region));
+    ui::box_row(&format!("Zone:     {}", zone));
     ui::box_row(&format!("Prefix:   {}/48", state.mesh_prefix));
     if let Some(ref up) = uptime_str {
         ui::box_row(&format!("Uptime:   {up}"));
