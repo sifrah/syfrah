@@ -922,6 +922,9 @@ pub async fn run_daemon(
     let announce_max_peers = max_peers;
     let announce_keepalive = keepalive_interval;
     let announce_store_failures = metrics_store_failures.clone();
+    let announce_enc_key = enc_key;
+    let announce_peering_port = peering_port;
+    let announce_tls_client = tls_client_config.clone();
     let on_announce: Arc<dyn Fn(PeerRecord) + Send + Sync> = Arc::new(move |record| {
         announce_recv.fetch_add(1, Ordering::Relaxed);
         events::emit(
@@ -979,6 +982,9 @@ pub async fn run_daemon(
         let plr = announce_peer_limit.clone();
         let sf = announce_store_failures.clone();
         let max_ev = announce_max_events;
+        let gossip_enc = announce_enc_key;
+        let gossip_pp = announce_peering_port;
+        let gossip_tls = announce_tls_client.clone();
         tokio::spawn(async move {
             let _permit = permit; // held until task completes
 
@@ -1002,6 +1008,9 @@ pub async fn run_daemon(
                     current_count * 100 / mp
                 );
             }
+
+            // Track whether this is a new peer (not previously known) for gossip forwarding.
+            let is_new_peer = !exists;
 
             // Add to WG (bounded)
             match wg::upsert_peer_bounded(&pubkey, &record, mp, current_count, exists, ka) {
@@ -1042,6 +1051,28 @@ pub async fn run_daemon(
                     warn!(peer = %sanitize(&record.name), error = %e, "failed to persist announced peer");
                 }
                 Ok(true) => {}
+            }
+
+            // Re-gossip: forward to a random subset of our own peers if this
+            // is a genuinely new peer we hadn't seen before. The replay guard
+            // on the receiving side will drop duplicates, preventing infinite
+            // forwarding loops.
+            if is_new_peer {
+                let known = match store::get_peers() {
+                    Ok(peers) => peers,
+                    Err(e) => {
+                        warn!(error = %e, "gossip forward: failed to load peers");
+                        return;
+                    }
+                };
+                let (_ok, _failed) = peering::announce_peer_to_mesh(
+                    &record,
+                    &known,
+                    &gossip_enc,
+                    gossip_pp,
+                    Some(gossip_tls),
+                )
+                .await;
             }
         });
     });
