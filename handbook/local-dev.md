@@ -103,6 +103,59 @@ Ensure Docker daemon has IPv6 enabled. Check `/etc/docker/daemon.json`:
 }
 ```
 
+## Running E2E Tests Locally
+
+The CI E2E suite (`tests/e2e/run.sh`) rebuilds a full Docker image on every run (~3 min), which makes local iteration slow. `dev/e2e.sh` solves this by volume-mounting a locally-compiled binary into lightweight containers.
+
+### Quick start
+
+```bash
+# 1. Build a static binary (musl, needed for the minimal containers)
+cargo build --release --target x86_64-unknown-linux-musl
+
+# 2. Run all E2E scenarios
+./dev/e2e.sh
+
+# 3. Run a specific group
+./dev/e2e.sh fabric
+
+# 4. Run a single scenario
+./dev/e2e.sh 01_fabric
+```
+
+Or via just:
+
+```bash
+just e2e-local
+just e2e-local fabric
+just e2e-local 01_fabric
+```
+
+### How it works
+
+1. `dev/e2e.sh` builds a lightweight Docker image (debian + wireguard-tools, no Rust compilation)
+2. It sets `E2E_BINARY_MOUNT` pointing to the local static binary
+3. `tests/e2e/lib.sh` `start_node()` detects the env var and adds a `-v` flag to volume-mount the binary into each container
+4. Delegates to the standard `tests/e2e/run.sh` with `SKIP_BUILD=1`
+
+CI is unchanged — when `E2E_BINARY_MOUNT` is not set, `start_node()` uses the baked-in binary as before.
+
+### Iteration workflow
+
+```
+edit code -> cargo build --release --target x86_64-unknown-linux-musl -> ./dev/e2e.sh fabric -> repeat
+```
+
+The first run builds the base Docker image (~10s). Subsequent runs skip this if the image is cached, so the cycle is: compile + run scenarios.
+
+### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `E2E_BINARY` | (auto-detected) | Override path to the syfrah binary |
+| `E2E_BINARY_MOUNT` | (set by e2e.sh) | Used by lib.sh to volume-mount the binary |
+| `SKIP_BUILD` | (set by e2e.sh) | Tells run.sh to skip the Docker image build |
+
 ## Files
 
 ```
@@ -110,4 +163,5 @@ dev/
   Dockerfile           # Minimal image: debian + wireguard-tools + iproute2
   docker-compose.yml   # 2 nodes, bridge network, volume mount
   dev.sh               # Helper script for the full workflow
+  e2e.sh               # Run E2E tests locally with volume-mounted binary
 ```
