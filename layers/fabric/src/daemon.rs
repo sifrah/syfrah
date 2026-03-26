@@ -729,6 +729,11 @@ pub async fn run_daemon(
         tuning.max_concurrent_connections,
         tuning.max_pending_joins,
     ));
+    // Normalize to V1 derivation: when a node joins or restarts, the secret is
+    // parsed from a string which always yields V1.  The init node gets V2 from
+    // generate(), but every other node will have V1.  We must use the same
+    // derivation everywhere so encryption keys match across the mesh.
+    let mesh_secret = syfrah_core::secret::MeshSecret::from_bytes(*mesh_secret.as_bytes());
     let enc_key = mesh_secret.encryption_key();
 
     // Build TLS configuration from the raw mesh secret for peering connections.
