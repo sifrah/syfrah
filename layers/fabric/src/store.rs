@@ -461,6 +461,38 @@ pub fn get_peers() -> Result<Vec<PeerRecord>, StoreError> {
     Ok(entries.into_iter().map(|(_, p)| p).collect())
 }
 
+// ── Zone health persistence ─────────────────────────────────
+
+/// Persist the health status for a zone.
+pub fn set_zone_health(
+    zone_name: &str,
+    status: crate::events::ZoneHealthStatus,
+) -> Result<(), StoreError> {
+    let db = open_db()?;
+    db.set("zone_health", zone_name, &status)?;
+    Ok(())
+}
+
+/// Load the health status for a specific zone.
+pub fn get_zone_health(
+    zone_name: &str,
+) -> Result<Option<crate::events::ZoneHealthStatus>, StoreError> {
+    if !LayerDb::layer_exists(LAYER_NAME) {
+        return Ok(None);
+    }
+    let db = open_db()?;
+    Ok(db.get("zone_health", zone_name)?)
+}
+
+/// Load all persisted zone health statuses.
+pub fn list_zone_health() -> Result<Vec<(String, crate::events::ZoneHealthStatus)>, StoreError> {
+    if !LayerDb::layer_exists(LAYER_NAME) {
+        return Ok(vec![]);
+    }
+    let db = open_db()?;
+    Ok(db.list("zone_health")?)
+}
+
 // ── Metrics (atomic) ────────────────────────────────────────
 
 /// Increment a metric atomically.

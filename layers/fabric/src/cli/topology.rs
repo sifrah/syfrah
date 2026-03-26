@@ -6,6 +6,7 @@ use serde::Serialize;
 use syfrah_core::mesh::{PeerStatus, Region, Zone};
 
 use crate::cli::ui::truncate;
+use crate::events::ZoneHealthStatus;
 use crate::topology::TopologyView;
 use crate::{no_mesh_error, store, ui, wg};
 
@@ -123,7 +124,22 @@ fn run_tree(mesh_name: &str, view: &TopologyView, opts: &TopologyOpts) -> Result
             let peers = view.peers_in_zone(zone);
             let zone_count = peers.len();
             let zone_word = if zone_count == 1 { "node" } else { "nodes" };
-            println!("  {} ({} {})", zone.as_str(), zone_count, zone_word);
+            let zone_health = store::get_zone_health(zone.as_str()).ok().flatten();
+            let health_tag = match zone_health {
+                Some(status) => format_zone_health(status),
+                None => String::new(),
+            };
+            if health_tag.is_empty() {
+                println!("  {} ({} {})", zone.as_str(), zone_count, zone_word);
+            } else {
+                println!(
+                    "  {} ({} {}) [{}]",
+                    zone.as_str(),
+                    zone_count,
+                    zone_word,
+                    health_tag,
+                );
+            }
 
             for peer in peers {
                 let name = truncate(&peer.name, 20);
@@ -219,8 +235,13 @@ fn run_json(mesh_name: &str, view: &TopologyView, opts: &TopologyOpts) -> Result
                             status: format_status(p.status),
                         })
                         .collect();
+                    let health = store::get_zone_health(zone.as_str())
+                        .ok()
+                        .flatten()
+                        .map(|s| s.to_string());
                     JsonZone {
                         name: zone.as_str().to_owned(),
+                        health,
                         nodes,
                     }
                 })
@@ -241,6 +262,31 @@ fn run_json(mesh_name: &str, view: &TopologyView, opts: &TopologyOpts) -> Result
 
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
+}
+
+fn format_zone_health(status: ZoneHealthStatus) -> String {
+    let label = status.to_string();
+    if !ui::is_tty() {
+        return label;
+    }
+    match status {
+        ZoneHealthStatus::Healthy => {
+            let style = console::Style::new().green();
+            format!("{}", style.apply_to(label))
+        }
+        ZoneHealthStatus::Degraded => {
+            let style = console::Style::new().yellow();
+            format!("{}", style.apply_to(label))
+        }
+        ZoneHealthStatus::Critical => {
+            let style = console::Style::new().red().bold();
+            format!("{}", style.apply_to(label))
+        }
+        ZoneHealthStatus::Failed => {
+            let style = console::Style::new().red().bold();
+            format!("{}", style.apply_to(label))
+        }
+    }
 }
 
 fn format_status(status: PeerStatus) -> String {
@@ -319,6 +365,8 @@ struct JsonRegion {
 #[derive(Serialize)]
 struct JsonZone {
     name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    health: Option<String>,
     nodes: Vec<JsonNode>,
 }
 
