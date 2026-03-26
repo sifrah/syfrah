@@ -2034,10 +2034,14 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 name = "syfrah-api"
 version = "0.2.0"
 dependencies = [
+ "libc",
  "rand",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2107,6 +2111,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "syfrah-api",
  "syfrah-core",
  "syfrah-state",
  "tempfile",

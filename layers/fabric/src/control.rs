@@ -1,14 +1,10 @@
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{UnixListener, UnixStream};
-use tracing::{debug, warn};
-
-/// Maximum time to wait for a client to send a complete control request.
-const CONTROL_READ_TIMEOUT: Duration = Duration::from_secs(5);
+use syfrah_api::transport;
+use tokio::net::UnixStream;
+use tracing::debug;
 
 use crate::peering::JoinRequestInfo;
 
@@ -84,34 +80,10 @@ pub trait ControlHandler: Send + Sync {
 
 /// Start the Unix domain socket control listener.
 pub async fn start_control_listener(socket_path: &Path, handler: Arc<dyn ControlHandler>) {
-    // Remove stale socket
-    let _ = std::fs::remove_file(socket_path);
-
-    // Set restrictive umask *before* bind to eliminate the permission race window.
-    // The socket is created with mode 0o600 (owner-only) from the start.
-    #[cfg(unix)]
-    let old_umask = unsafe { libc::umask(0o177) };
-
-    let listener = match UnixListener::bind(socket_path) {
+    let listener = match transport::bind_unix_listener(socket_path) {
         Ok(l) => l,
-        Err(e) => {
-            #[cfg(unix)]
-            unsafe {
-                libc::umask(old_umask);
-            }
-            warn!(
-                "failed to bind control socket at {}: {e}",
-                socket_path.display()
-            );
-            return;
-        }
+        Err(_) => return,
     };
-
-    // Restore the original umask immediately after bind
-    #[cfg(unix)]
-    unsafe {
-        libc::umask(old_umask);
-    }
 
     debug!("control socket listening at {}", socket_path.display());
 
@@ -126,7 +98,7 @@ pub async fn start_control_listener(socket_path: &Path, handler: Arc<dyn Control
                 });
             }
             Err(e) => {
-                warn!("control socket accept error: {e}");
+                tracing::warn!("control socket accept error: {e}");
             }
         }
     }
@@ -136,18 +108,23 @@ async fn handle_control_connection(
     mut stream: UnixStream,
     handler: Arc<dyn ControlHandler>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let req = match tokio::time::timeout(CONTROL_READ_TIMEOUT, read_control(&mut stream)).await {
+    let req = match tokio::time::timeout(
+        transport::READ_TIMEOUT,
+        transport::read_message(&mut stream),
+    )
+    .await
+    {
         Ok(result) => result?,
         Err(_) => {
-            warn!(
+            tracing::warn!(
                 "control client timed out after {:?}, dropping connection",
-                CONTROL_READ_TIMEOUT
+                transport::READ_TIMEOUT
             );
             return Err("control read timed out".into());
         }
     };
     let resp = handler.handle(req).await;
-    write_control(&mut stream, &resp).await?;
+    transport::write_message(&mut stream, &resp).await?;
     Ok(())
 }
 
@@ -157,39 +134,9 @@ pub async fn send_control_request(
     req: &ControlRequest,
 ) -> Result<ControlResponse, Box<dyn std::error::Error>> {
     let mut stream = UnixStream::connect(socket_path).await?;
-    write_control(&mut stream, req).await?;
-    let resp = read_control(&mut stream).await?;
+    transport::write_message(&mut stream, req).await?;
+    let resp = transport::read_message(&mut stream).await?;
     Ok(resp)
-}
-
-/// Write a length-prefixed JSON message to an async writer.
-pub async fn write_control<T: Serialize, W: AsyncWriteExt + Unpin>(
-    stream: &mut W,
-    msg: &T,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let data = serde_json::to_vec(msg)?;
-    let len = data.len() as u32;
-    stream.write_all(&len.to_be_bytes()).await?;
-    stream.write_all(&data).await?;
-    stream.flush().await?;
-    Ok(())
-}
-
-/// Read a length-prefixed JSON message from an async reader.
-/// Rejects messages larger than 1,000,000 bytes.
-pub async fn read_control<T: serde::de::DeserializeOwned, R: AsyncReadExt + Unpin>(
-    stream: &mut R,
-) -> Result<T, Box<dyn std::error::Error>> {
-    let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf).await?;
-    let len = u32::from_be_bytes(len_buf);
-    if len > 65_536 {
-        return Err("control message too large".into());
-    }
-    let mut data = vec![0u8; len as usize];
-    stream.read_exact(&mut data).await?;
-    let msg: T = serde_json::from_slice(&data)?;
-    Ok(msg)
 }
 
 #[cfg(test)]
@@ -205,10 +152,10 @@ mod tests {
             port: 7946,
             pin: Some("1234".into()),
         };
-        write_control(&mut client, &req).await.unwrap();
-        drop(client); // close write end
+        transport::write_message(&mut client, &req).await.unwrap();
+        drop(client);
 
-        let read_req: ControlRequest = read_control(&mut server).await.unwrap();
+        let read_req: ControlRequest = transport::read_message(&mut server).await.unwrap();
         match read_req {
             ControlRequest::PeeringStart { port, pin } => {
                 assert_eq!(port, 7946);
@@ -222,14 +169,13 @@ mod tests {
     async fn control_oversized_message_rejected() {
         let (mut client, mut server) = duplex(64);
 
-        // Write a length header claiming >1MB
         let fake_len: u32 = 1_000_001;
         tokio::io::AsyncWriteExt::write_all(&mut client, &fake_len.to_be_bytes())
             .await
             .unwrap();
         drop(client);
 
-        let result: Result<ControlRequest, _> = read_control(&mut server).await;
+        let result: Result<ControlRequest, _> = transport::read_message(&mut server).await;
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(
@@ -242,7 +188,6 @@ mod tests {
     async fn control_malformed_json_rejected() {
         let (mut client, mut server) = duplex(4096);
 
-        // Write valid length but invalid JSON
         let bad_json = b"not valid json";
         let len = bad_json.len() as u32;
         tokio::io::AsyncWriteExt::write_all(&mut client, &len.to_be_bytes())
@@ -253,16 +198,16 @@ mod tests {
             .unwrap();
         drop(client);
 
-        let result: Result<ControlRequest, _> = read_control(&mut server).await;
+        let result: Result<ControlRequest, _> = transport::read_message(&mut server).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn control_empty_stream_errors() {
         let (_client, mut server) = duplex(4096);
-        drop(_client); // close immediately — empty stream
+        drop(_client);
 
-        let result: Result<ControlRequest, _> = read_control(&mut server).await;
+        let result: Result<ControlRequest, _> = transport::read_message(&mut server).await;
         assert!(result.is_err());
     }
 
@@ -270,7 +215,6 @@ mod tests {
     async fn control_truncated_body_errors() {
         let (mut client, mut server) = duplex(4096);
 
-        // Length header claims 100 bytes, but only 5 are written
         let len: u32 = 100;
         tokio::io::AsyncWriteExt::write_all(&mut client, &len.to_be_bytes())
             .await
@@ -278,9 +222,9 @@ mod tests {
         tokio::io::AsyncWriteExt::write_all(&mut client, b"hello")
             .await
             .unwrap();
-        drop(client); // EOF before 100 bytes
+        drop(client);
 
-        let result: Result<ControlRequest, _> = read_control(&mut server).await;
+        let result: Result<ControlRequest, _> = transport::read_message(&mut server).await;
         assert!(result.is_err());
     }
 
@@ -300,10 +244,10 @@ mod tests {
                 zone: None,
             }],
         };
-        write_control(&mut client, &resp).await.unwrap();
+        transport::write_message(&mut client, &resp).await.unwrap();
         drop(client);
 
-        let read_resp: ControlResponse = read_control(&mut server).await.unwrap();
+        let read_resp: ControlResponse = transport::read_message(&mut server).await.unwrap();
         match read_resp {
             ControlResponse::PeeringList { requests } => {
                 assert_eq!(requests.len(), 1);
@@ -339,13 +283,11 @@ mod tests {
 
         let listener = UnixListener::bind(&sock).unwrap();
 
-        // Connect but send nothing — simulate a slow/stalled client
         let _client = tokio::net::UnixStream::connect(&sock).await.unwrap();
 
-        // Accept the connection and handle it; should timeout within CONTROL_READ_TIMEOUT
         let (stream, _) = listener.accept().await.unwrap();
         let result = tokio::time::timeout(
-            CONTROL_READ_TIMEOUT + Duration::from_secs(1),
+            transport::READ_TIMEOUT + std::time::Duration::from_secs(1),
             handle_control_connection(stream, handler),
         )
         .await

@@ -4,6 +4,7 @@ members = [
     "layers/api",
     "layers/core",
     "layers/state",
+    "layers/api",
     "layers/fabric",
     "bin/syfrah",
 ]
