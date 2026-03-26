@@ -27,14 +27,27 @@ pub enum ControlRequest {
         request_id: String,
         reason: Option<String>,
     },
+    RemovePeer {
+        name_or_key: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ControlResponse {
     Ok,
-    PeeringList { requests: Vec<JoinRequestInfo> },
-    PeeringAccepted { peer_name: String },
-    Error { message: String },
+    PeeringList {
+        requests: Vec<JoinRequestInfo>,
+    },
+    PeeringAccepted {
+        peer_name: String,
+    },
+    PeerRemoved {
+        peer_name: String,
+        announced_to: usize,
+    },
+    Error {
+        message: String,
+    },
 }
 
 /// Handler trait for processing control commands. Implemented by the daemon.

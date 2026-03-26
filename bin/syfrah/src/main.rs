@@ -138,9 +138,11 @@ enum FabricCommand {
         #[arg(long)]
         since: Option<u64>,
     },
-    /// List all peers
+    /// List and manage peers
     Peers {
-        /// Output as JSON
+        #[command(subcommand)]
+        action: Option<PeersAction>,
+        /// Output as JSON (for listing peers)
         #[arg(long)]
         json: bool,
     },
@@ -207,6 +209,18 @@ enum PeeringAction {
         request_id: String,
         #[arg(long)]
         reason: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PeersAction {
+    /// Remove a peer from the mesh
+    Remove {
+        /// Peer node name or WireGuard public key
+        name_or_key: String,
+        /// Skip confirmation prompt
+        #[arg(long, short)]
+        yes: bool,
     },
 }
 
@@ -588,9 +602,14 @@ async fn run() -> Result<()> {
                 setup_logging(false);
                 cli::events::run(json, limit, since).await
             }
-            FabricCommand::Peers { json } => {
+            FabricCommand::Peers { action, json } => {
                 setup_logging(false);
-                cli::peers::run(json).await
+                match action {
+                    None => cli::peers::run(json).await,
+                    Some(PeersAction::Remove { name_or_key, yes }) => {
+                        cli::peers_remove::run(name_or_key, yes).await
+                    }
+                }
             }
             FabricCommand::Token => {
                 setup_logging(false);
