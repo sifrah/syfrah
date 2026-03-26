@@ -30,6 +30,8 @@ pub enum ControlRequest {
     RemovePeer {
         name_or_key: String,
     },
+    /// Reload config.toml and apply hot-reloadable parameters.
+    Reload,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -47,6 +49,11 @@ pub enum ControlResponse {
     },
     Error {
         message: String,
+    },
+    /// Result of a config reload: lists changed parameters.
+    ConfigReloaded {
+        changes: Vec<String>,
+        skipped: Vec<String>,
     },
 }
 

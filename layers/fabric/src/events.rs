@@ -47,6 +47,8 @@ pub enum EventType {
     HealthCheckRun,
     AnnounceDropped,
     PeerLimitReached,
+    ConfigReloaded,
+    ConfigReloadFailed,
 }
 
 impl std::fmt::Display for EventType {
@@ -69,6 +71,8 @@ impl std::fmt::Display for EventType {
             EventType::HealthCheckRun => "health-check-run",
             EventType::AnnounceDropped => "announce-dropped",
             EventType::PeerLimitReached => "peer-limit-reached",
+            EventType::ConfigReloaded => "config-reloaded",
+            EventType::ConfigReloadFailed => "config-reload-failed",
         };
         write!(f, "{s}")
     }

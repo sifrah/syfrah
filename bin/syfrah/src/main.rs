@@ -181,6 +181,8 @@ enum FabricCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Reload config.toml without restarting the daemon
+    Reload,
     /// Export metrics in Prometheus text format
     Metrics,
     /// Manage the systemd service
@@ -650,6 +652,10 @@ async fn run() -> Result<()> {
             FabricCommand::Diagnose { json } => {
                 setup_logging(false);
                 cli::diagnose::run(json).await
+            }
+            FabricCommand::Reload => {
+                setup_logging(false);
+                cli::reload::run().await
             }
             FabricCommand::Metrics => {
                 setup_logging(false);

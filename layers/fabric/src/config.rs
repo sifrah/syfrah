@@ -11,7 +11,7 @@ fn syfrah_dir() -> PathBuf {
 
 /// Daemon tuning parameters. All fields are optional — defaults match the
 /// original hardcoded values.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Tuning {
     pub health_check_interval: Duration,
     pub reconcile_interval: Duration,
@@ -105,6 +105,73 @@ struct LimitsSection {
     max_concurrent_announces: Option<usize>,
 }
 
+/// Parameters that cannot be changed without a daemon restart.
+const NON_HOT_RELOADABLE: &[&str] = &["interface_name", "keepalive_interval"];
+
+/// A single changed parameter.
+pub struct TuningChange {
+    pub name: String,
+    pub old_value: String,
+    pub new_value: String,
+}
+
+/// Compare two tuning configs and return (hot-reloadable changes, skipped non-hot-reloadable changes).
+pub fn diff_tuning(old: &Tuning, new: &Tuning) -> (Vec<TuningChange>, Vec<TuningChange>) {
+    let mut changes = Vec::new();
+    let mut skipped = Vec::new();
+
+    macro_rules! cmp_dur {
+        ($field:ident) => {
+            if old.$field != new.$field {
+                let c = TuningChange {
+                    name: stringify!($field).to_string(),
+                    old_value: format!("{}s", old.$field.as_secs()),
+                    new_value: format!("{}s", new.$field.as_secs()),
+                };
+                if NON_HOT_RELOADABLE.contains(&stringify!($field)) {
+                    skipped.push(c);
+                } else {
+                    changes.push(c);
+                }
+            }
+        };
+    }
+
+    macro_rules! cmp_val {
+        ($field:ident) => {
+            if old.$field != new.$field {
+                let c = TuningChange {
+                    name: stringify!($field).to_string(),
+                    old_value: format!("{}", old.$field),
+                    new_value: format!("{}", new.$field),
+                };
+                if NON_HOT_RELOADABLE.contains(&stringify!($field)) {
+                    skipped.push(c);
+                } else {
+                    changes.push(c);
+                }
+            }
+        };
+    }
+
+    cmp_dur!(health_check_interval);
+    cmp_dur!(reconcile_interval);
+    cmp_dur!(persist_interval);
+    cmp_dur!(unreachable_timeout);
+    cmp_dur!(join_timeout);
+    cmp_dur!(exchange_timeout);
+    cmp_val!(keepalive_interval);
+    cmp_val!(max_events);
+    cmp_val!(max_concurrent_connections);
+    cmp_val!(max_pending_joins);
+    cmp_val!(max_peers);
+    cmp_val!(max_concurrent_announces);
+    cmp_val!(interface_name);
+    cmp_val!(log_max_size_mb);
+
+    (changes, skipped)
+}
+
 /// Load tuning from `~/.syfrah/config.toml`. Returns defaults if file
 /// doesn't exist. Returns error only if file exists but is invalid.
 pub fn load_tuning() -> Result<Tuning, String> {
@@ -178,4 +245,62 @@ pub fn load_tuning() -> Result<Tuning, String> {
             .log_max_size_mb
             .unwrap_or(defaults.log_max_size_mb),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diff_tuning_no_changes() {
+        let a = Tuning::default();
+        let b = Tuning::default();
+        let (changes, skipped) = diff_tuning(&a, &b);
+        assert!(changes.is_empty());
+        assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn diff_tuning_hot_reloadable_change() {
+        let a = Tuning::default();
+        let mut b = Tuning::default();
+        b.health_check_interval = Duration::from_secs(30);
+        b.max_peers = 500;
+
+        let (changes, skipped) = diff_tuning(&a, &b);
+        assert_eq!(changes.len(), 2);
+        assert!(skipped.is_empty());
+        assert!(changes[0].name == "health_check_interval");
+        assert!(changes[0].old_value == "60s");
+        assert!(changes[0].new_value == "30s");
+        assert!(changes[1].name == "max_peers");
+    }
+
+    #[test]
+    fn diff_tuning_non_hot_reloadable_skipped() {
+        let a = Tuning::default();
+        let mut b = Tuning::default();
+        b.interface_name = "wg1".to_string();
+        b.keepalive_interval = 50;
+
+        let (changes, skipped) = diff_tuning(&a, &b);
+        assert!(changes.is_empty());
+        assert_eq!(skipped.len(), 2);
+        assert!(skipped.iter().any(|s| s.name == "interface_name"));
+        assert!(skipped.iter().any(|s| s.name == "keepalive_interval"));
+    }
+
+    #[test]
+    fn diff_tuning_mixed_changes() {
+        let a = Tuning::default();
+        let mut b = Tuning::default();
+        b.reconcile_interval = Duration::from_secs(10);
+        b.interface_name = "wg1".to_string();
+
+        let (changes, skipped) = diff_tuning(&a, &b);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].name, "reconcile_interval");
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].name, "interface_name");
+    }
 }
