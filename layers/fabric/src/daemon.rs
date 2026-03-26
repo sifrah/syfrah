@@ -877,6 +877,7 @@ pub async fn run_daemon(
         wg_pubkey: wg_pubkey.clone(),
         peering_port,
         on_accepted: on_accepted.clone(),
+        tls_client_config: tls_client_config.clone(),
         max_events: tuning.max_events,
         max_peers,
     });
@@ -1274,6 +1275,7 @@ struct DaemonControlHandler {
     wg_pubkey: Key,
     peering_port: u16,
     on_accepted: peering::OnAccepted,
+    tls_client_config: Arc<rustls::ClientConfig>,
     max_events: u64,
     max_peers: usize,
 }
@@ -1474,6 +1476,7 @@ impl ControlHandler for DaemonControlHandler {
                             &active_peers,
                             &encryption_key,
                             self.peering_port,
+                            Some(self.tls_client_config.clone()),
                         )
                         .await;
 
