@@ -49,13 +49,20 @@ remove_network() {
 # ── Containers ────────────────────────────────────────────────
 
 # Start a container. Args: <name> <ip>
+# When E2E_BINARY_MOUNT is set, the local binary is volume-mounted into the
+# container instead of using the one baked into the Docker image.
 start_node() {
     local name="$1"
     local ip="$2"
 
     docker rm -f "$name" >/dev/null 2>&1 || true
 
-    debug "starting container $name at $ip"
+    local volume_args=()
+    if [ -n "${E2E_BINARY_MOUNT:-}" ]; then
+        volume_args=(-v "${E2E_BINARY_MOUNT}:/usr/local/bin/syfrah:ro")
+    fi
+
+    debug "starting container $name at $ip${E2E_BINARY_MOUNT:+ (local binary)}"
     docker run -d \
         --name "$name" \
         --network "$E2E_NETWORK" \
@@ -63,6 +70,7 @@ start_node() {
         --privileged \
         --hostname "$name" \
         --init \
+        "${volume_args[@]+"${volume_args[@]}"}" \
         "$E2E_IMAGE" >/dev/null
 
     E2E_CONTAINERS+=("$name")
