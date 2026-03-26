@@ -1,3 +1,4 @@
+pub mod apikey;
 pub mod auth;
 pub mod error;
 pub mod handler;
