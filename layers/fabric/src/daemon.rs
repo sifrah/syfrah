@@ -15,6 +15,7 @@ use crate::audit::{self as audit_log, AuditEventType};
 use crate::config::{self, Tuning};
 use crate::control::{self, ControlHandler, ControlRequest, ControlResponse};
 use crate::events::{self, EventType};
+use crate::http_api;
 use crate::peering::{self, AutoAcceptConfig, PeeringState};
 use crate::sanitize::sanitize;
 use crate::sd_watchdog;
@@ -713,6 +714,9 @@ pub async fn run_daemon(
         tuning.max_concurrent_announces,
         tuning.announce_queue_size,
     );
+
+    // Load HTTP API config (includes /metrics endpoint).
+    let api_config = http_api::load_api_config();
 
     let announce_semaphore = Arc::new(Semaphore::new(tuning.max_concurrent_announces));
     let max_peers = tuning.max_peers;
@@ -1690,6 +1694,10 @@ pub async fn run_daemon(
     #[cfg(not(unix))]
     let sighup_reload = std::future::pending::<()>();
 
+    // HTTP API server (serves /metrics for Prometheus and topology endpoints).
+    let (api_shutdown_tx, api_shutdown_rx) = tokio::sync::watch::channel(false);
+    let api_task = tokio::spawn(http_api::serve(api_config, api_shutdown_rx));
+
     tokio::select! {
         _ = control_task => {}
         _ = peering_task => {}
@@ -1699,6 +1707,7 @@ pub async fn run_daemon(
         _ = reconcile => {}
         _ = self_announce => {}
         _ = sighup_reload => {}
+        _ = api_task => {}
         _ = tokio::signal::ctrl_c() => {
             info!("received SIGINT, shutting down");
         }
@@ -1706,6 +1715,9 @@ pub async fn run_daemon(
             info!("received SIGTERM, shutting down");
         }
     }
+
+    // Signal HTTP API server to shut down gracefully.
+    let _ = api_shutdown_tx.send(true);
 
     // Tell systemd we are shutting down gracefully.
     sd_watchdog::notify_stopping();
