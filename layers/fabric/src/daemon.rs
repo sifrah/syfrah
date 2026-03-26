@@ -704,13 +704,14 @@ pub async fn run_daemon(
     });
     wg::set_interface_name(&tuning.interface_name);
     info!(
-        "daemon tuning: health_check={}s reconcile={}s persist={}s unreachable={}s max_peers={} max_concurrent_announces={}",
+        "daemon tuning: health_check={}s reconcile={}s persist={}s unreachable={}s max_peers={} max_concurrent_announces={} announce_queue_size={}",
         tuning.health_check_interval.as_secs(),
         tuning.reconcile_interval.as_secs(),
         tuning.persist_interval.as_secs(),
         tuning.unreachable_timeout.as_secs(),
         tuning.max_peers,
         tuning.max_concurrent_announces,
+        tuning.announce_queue_size,
     );
 
     let announce_semaphore = Arc::new(Semaphore::new(tuning.max_concurrent_announces));
@@ -754,6 +755,8 @@ pub async fn run_daemon(
     let metrics_reconciliations = Arc::new(AtomicU64::new(0));
     let metrics_unreachable = Arc::new(AtomicU64::new(0));
     let metrics_announces_dropped = Arc::new(AtomicU64::new(0));
+    let metrics_announces_queued = Arc::new(AtomicU64::new(0));
+    let metrics_announces_queue_full = Arc::new(AtomicU64::new(0));
     let metrics_peer_limit_reached = Arc::new(AtomicU64::new(0));
     let metrics_health_check_failures = Arc::new(AtomicU64::new(0));
     let metrics_reconcile_failures = Arc::new(AtomicU64::new(0));
@@ -900,6 +903,11 @@ pub async fn run_daemon(
         control::start_control_listener(&control_path, control_handler).await;
     });
 
+    // Bounded retry queue for announces that cannot be processed immediately.
+    let (announce_queue_tx, announce_queue_rx) =
+        tokio::sync::mpsc::channel::<PeerRecord>(tuning.announce_queue_size);
+    let announce_queue_rx = Arc::new(tokio::sync::Mutex::new(announce_queue_rx));
+
     // on_announce callback: when a peer announce arrives from existing mesh member
     let announce_wg_pubkey = wg_pubkey.clone();
     let announce_recv = metrics_received.clone();
@@ -907,6 +915,9 @@ pub async fn run_daemon(
     let announce_max_events = tuning.max_events;
     let announce_sem = announce_semaphore.clone();
     let announce_dropped = metrics_announces_dropped.clone();
+    let announce_queued = metrics_announces_queued.clone();
+    let announce_queue_full = metrics_announces_queue_full.clone();
+    let announce_queue_tx = announce_queue_tx.clone();
     let announce_peer_limit = metrics_peer_limit_reached.clone();
     let announce_max_peers = max_peers;
     let announce_keepalive = keepalive_interval;
@@ -924,20 +935,41 @@ pub async fn run_daemon(
             Some(announce_max_events),
         );
 
-        // Bound concurrent announce processing with a semaphore
+        // Bound concurrent announce processing with a semaphore.
+        // When the semaphore is full, queue the announce for retry instead of dropping it.
         let permit = match announce_sem.clone().try_acquire_owned() {
             Ok(p) => p,
             Err(_) => {
-                warn!(peer = %sanitize(&record.name), "announce processing at capacity, dropping");
-                announce_dropped.fetch_add(1, Ordering::Relaxed);
-                let _ = store::inc_metric("announces_dropped", 1);
-                events::emit(
-                    EventType::AnnounceDropped,
-                    Some(&record.name),
-                    Some(&record.endpoint.to_string()),
-                    Some("semaphore full"),
-                    Some(announce_max_events),
-                );
+                // Try to queue for retry instead of dropping immediately.
+                match announce_queue_tx.try_send(record.clone()) {
+                    Ok(()) => {
+                        announce_queued.fetch_add(1, Ordering::Relaxed);
+                        let _ = store::inc_metric("announces_queued", 1);
+                        debug!(peer = %sanitize(&record.name), "announce queued for retry (semaphore full)");
+                        events::emit(
+                            EventType::AnnounceQueued,
+                            Some(&record.name),
+                            Some(&record.endpoint.to_string()),
+                            Some("semaphore full, queued for retry"),
+                            Some(announce_max_events),
+                        );
+                    }
+                    Err(_) => {
+                        // Queue is also full — drop as last resort.
+                        warn!(peer = %sanitize(&record.name), "announce queue full, dropping");
+                        announce_dropped.fetch_add(1, Ordering::Relaxed);
+                        announce_queue_full.fetch_add(1, Ordering::Relaxed);
+                        let _ = store::inc_metric("announces_dropped", 1);
+                        let _ = store::inc_metric("announces_queue_full", 1);
+                        events::emit(
+                            EventType::AnnounceQueueFull,
+                            Some(&record.name),
+                            Some(&record.endpoint.to_string()),
+                            Some("semaphore full and retry queue full"),
+                            Some(announce_max_events),
+                        );
+                    }
+                }
                 return;
             }
         };
@@ -1062,6 +1094,90 @@ pub async fn run_daemon(
         }
     });
 
+    // Background drain task: processes queued announces when semaphore permits become available.
+    let drain_sem = announce_semaphore.clone();
+    let drain_wg_pubkey = wg_pubkey.clone();
+    let drain_recon = metrics_reconciliations.clone();
+    let drain_max_peers = max_peers;
+    let drain_keepalive = keepalive_interval;
+    let drain_peer_limit = metrics_peer_limit_reached.clone();
+    let drain_store_failures = metrics_store_failures.clone();
+    let drain_max_events = tuning.max_events;
+    let drain_queue_rx = announce_queue_rx;
+    let drain_task = tokio::spawn(async move {
+        loop {
+            // Wait for a record from the queue.
+            let record = {
+                let mut rx = drain_queue_rx.lock().await;
+                match rx.recv().await {
+                    Some(r) => r,
+                    None => break, // channel closed
+                }
+            };
+
+            // Wait for a semaphore permit (blocking — this is the retry).
+            let permit = match drain_sem.clone().acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => break, // semaphore closed
+            };
+
+            let pubkey = drain_wg_pubkey.clone();
+            let recon = drain_recon.clone();
+            let mp = drain_max_peers;
+            let ka = drain_keepalive;
+            let plr = drain_peer_limit.clone();
+            let sf = drain_store_failures.clone();
+            let max_ev = drain_max_events;
+
+            tokio::spawn(async move {
+                let _permit = permit;
+                debug!(peer = %sanitize(&record.name), "processing queued announce (retry)");
+
+                let (current_count, exists) =
+                    match store::peer_count_and_exists(&record.wg_public_key) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            warn!(error = %e, "drain: failed to read peer count, skipping upsert");
+                            sf.fetch_add(1, Ordering::Relaxed);
+                            return;
+                        }
+                    };
+
+                match wg::upsert_peer_bounded(&pubkey, &record, mp, current_count, exists, ka) {
+                    Err(e) => {
+                        if matches!(e, wg::WgError::PeerLimitExceeded(_, _)) {
+                            plr.fetch_add(1, Ordering::Relaxed);
+                            let _ = store::inc_metric("peer_limit_reached", 1);
+                            events::emit(
+                                EventType::PeerLimitReached,
+                                Some(&sanitize(&record.name)),
+                                Some(&record.endpoint.to_string()),
+                                Some(&format!("max_peers={mp}")),
+                                Some(max_ev),
+                            );
+                        }
+                        warn!(peer = %sanitize(&record.name), endpoint = %record.endpoint, error = %e, "failed to upsert queued peer");
+                    }
+                    Ok(()) => {
+                        recon.fetch_add(1, Ordering::Relaxed);
+                        debug!(peer = %sanitize(&record.name), endpoint = %record.endpoint, "queued peer upserted via announce drain");
+                    }
+                }
+                match store::upsert_peer_bounded(&record, mp) {
+                    Ok(false) => {
+                        warn!(peer = %sanitize(&record.name), max = mp, "peer limit reached, not persisting queued peer");
+                        plr.fetch_add(1, Ordering::Relaxed);
+                        let _ = store::inc_metric("peer_limit_reached", 1);
+                    }
+                    Err(e) => {
+                        warn!(peer = %sanitize(&record.name), error = %e, "failed to persist queued peer");
+                    }
+                    Ok(true) => {}
+                }
+            });
+        }
+    });
+
     // Notify systemd that the daemon is ready (Type=notify).
     // At this point the WireGuard interface is up, the control socket is
     // listening, and the peering listener is accepting connections.
@@ -1073,6 +1189,8 @@ pub async fn run_daemon(
     let persist_recon = metrics_reconciliations.clone();
     let persist_unreach = metrics_unreachable.clone();
     let persist_dropped = metrics_announces_dropped.clone();
+    let persist_announces_queued = metrics_announces_queued.clone();
+    let persist_announces_queue_full = metrics_announces_queue_full.clone();
     let persist_peer_limit = metrics_peer_limit_reached.clone();
     let persist_health_failures = metrics_health_check_failures.clone();
     let persist_reconcile_failures = metrics_reconcile_failures.clone();
@@ -1098,6 +1216,14 @@ pub async fn run_daemon(
                 persist_peering_state.connections_active(),
             );
             let _ = store::set_metric("announces_dropped", persist_dropped.load(Ordering::Relaxed));
+            let _ = store::set_metric(
+                "announces_queued",
+                persist_announces_queued.load(Ordering::Relaxed),
+            );
+            let _ = store::set_metric(
+                "announces_queue_full",
+                persist_announces_queue_full.load(Ordering::Relaxed),
+            );
             let _ = store::set_metric(
                 "peer_limit_reached",
                 persist_peer_limit.load(Ordering::Relaxed),
@@ -1293,6 +1419,7 @@ pub async fn run_daemon(
     tokio::select! {
         _ = control_task => {}
         _ = peering_task => {}
+        _ = drain_task => {}
         _ = persist => {}
         _ = health_check => {}
         _ = reconcile => {}

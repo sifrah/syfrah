@@ -47,6 +47,8 @@ pub enum EventType {
     ReconciliationRun,
     HealthCheckRun,
     AnnounceDropped,
+    AnnounceQueued,
+    AnnounceQueueFull,
     PeerLimitReached,
 }
 
@@ -70,6 +72,8 @@ impl std::fmt::Display for EventType {
             EventType::ReconciliationRun => "reconciliation-run",
             EventType::HealthCheckRun => "health-check-run",
             EventType::AnnounceDropped => "announce-dropped",
+            EventType::AnnounceQueued => "announce-queued",
+            EventType::AnnounceQueueFull => "announce-queue-full",
             EventType::PeerLimitReached => "peer-limit-reached",
         };
         write!(f, "{s}")
