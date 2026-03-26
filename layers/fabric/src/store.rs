@@ -493,6 +493,33 @@ pub fn list_zone_health() -> Result<Vec<(String, crate::events::ZoneHealthStatus
     Ok(db.list("zone_health")?)
 }
 
+// ── Zone drain state ────────────────────────────────────────
+
+/// Set the drain state for a zone. `true` = draining, `false` = active.
+pub fn set_zone_drain(zone_name: &str, draining: bool) -> Result<(), StoreError> {
+    let db = open_db()?;
+    db.set("zone_drain", zone_name, &draining)?;
+    Ok(())
+}
+
+/// Get the drain state for a specific zone.
+pub fn get_zone_drain(zone_name: &str) -> Result<Option<bool>, StoreError> {
+    if !LayerDb::layer_exists(LAYER_NAME) {
+        return Ok(None);
+    }
+    let db = open_db()?;
+    Ok(db.get("zone_drain", zone_name)?)
+}
+
+/// List all zone drain states.
+pub fn list_zone_drain() -> Result<Vec<(String, bool)>, StoreError> {
+    if !LayerDb::layer_exists(LAYER_NAME) {
+        return Ok(vec![]);
+    }
+    let db = open_db()?;
+    Ok(db.list("zone_drain")?)
+}
+
 // ── Metrics (atomic) ────────────────────────────────────────
 
 /// Increment a metric atomically.
