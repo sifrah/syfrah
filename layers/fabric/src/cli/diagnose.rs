@@ -1,4 +1,4 @@
-use crate::{config, store, ui, wg};
+use crate::{audit, config, store, ui, wg};
 use anyhow::Result;
 use serde::Serialize;
 use syfrah_state::LayerDb;
@@ -125,6 +125,26 @@ pub async fn run(json: bool) -> Result<()> {
         socket_exists,
         &format!("missing: {}", socket_path.display())
     );
+
+    let audit_path = audit::audit_log_path();
+    let audit_ok = if audit_path.exists() {
+        let writable = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&audit_path)
+            .is_ok();
+        let size = std::fs::metadata(&audit_path).map(|m| m.len()).unwrap_or(0);
+        check!(
+            format!("Audit log exists ({size} bytes)"),
+            writable,
+            "audit log is not writable"
+        );
+        writable
+    } else {
+        // Not an error if the log doesn't exist yet (first run).
+        check!("Audit log", true, "");
+        true
+    };
+    let _ = audit_ok;
 
     let log_path = dirs::home_dir()
         .unwrap_or_default()
