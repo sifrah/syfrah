@@ -31,6 +31,38 @@ services:
     networks:
       - mesh
 
+  node3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: syfrah-node3
+    hostname: node3
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=0
+    volumes:
+      - ../target/debug/syfrah:/usr/local/bin/syfrah:ro
+    networks:
+      - mesh
+
+  node4:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: syfrah-node4
+    hostname: node4
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=0
+    volumes:
+      - ../target/debug/syfrah:/usr/local/bin/syfrah:ro
+    networks:
+      - mesh
+
 networks:
   mesh:
     driver: bridge
