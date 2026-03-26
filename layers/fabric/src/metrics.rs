@@ -45,6 +45,18 @@ const METRIC_DEFS: &[MetricDef] = &[
         kind: MetricKind::Counter,
     },
     MetricDef {
+        store_key: "announces_queued",
+        prom_name: "syfrah_announces_queued_total",
+        help: "Total announce messages queued for retry",
+        kind: MetricKind::Counter,
+    },
+    MetricDef {
+        store_key: "announces_queue_full",
+        prom_name: "syfrah_announces_queue_full_total",
+        help: "Total announce messages dropped because the retry queue was full",
+        kind: MetricKind::Counter,
+    },
+    MetricDef {
         store_key: "peer_limit_reached",
         prom_name: "syfrah_peer_limit_reached_total",
         help: "Total times a new peer was rejected because the peer limit was reached",

@@ -82,6 +82,10 @@ pub struct Metrics {
     #[serde(default)]
     pub announces_dropped: u64,
     #[serde(default)]
+    pub announces_queued: u64,
+    #[serde(default)]
+    pub announces_queue_full: u64,
+    #[serde(default)]
     pub peer_limit_reached: u64,
 }
 
@@ -143,6 +147,8 @@ pub fn save(state: &NodeState) -> Result<(), StoreError> {
         w.set_metric("announcements_failed", state.metrics.announcements_failed)?;
         w.set_metric("daemon_started_at", state.metrics.daemon_started_at)?;
         w.set_metric("announces_dropped", state.metrics.announces_dropped)?;
+        w.set_metric("announces_queued", state.metrics.announces_queued)?;
+        w.set_metric("announces_queue_full", state.metrics.announces_queue_full)?;
         w.set_metric("peer_limit_reached", state.metrics.peer_limit_reached)?;
         Ok(())
     })?;
@@ -238,6 +244,8 @@ fn load_from_redb_with(db: &LayerDb) -> Result<NodeState, StoreError> {
         announcements_failed: db.get_metric("announcements_failed")?,
         daemon_started_at: db.get_metric("daemon_started_at")?,
         announces_dropped: db.get_metric("announces_dropped")?,
+        announces_queued: db.get_metric("announces_queued")?,
+        announces_queue_full: db.get_metric("announces_queue_full")?,
         peer_limit_reached: db.get_metric("peer_limit_reached")?,
     };
 

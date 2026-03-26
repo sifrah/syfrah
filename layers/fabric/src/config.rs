@@ -30,6 +30,9 @@ pub struct Tuning {
     pub max_peers: usize,
     /// Maximum number of concurrent announce-processing tasks.
     pub max_concurrent_announces: usize,
+    /// Size of the bounded retry queue for announces that cannot be processed
+    /// immediately because the concurrency semaphore is full (default 200).
+    pub announce_queue_size: usize,
     /// WireGuard interface name (default "syfrah0").
     pub interface_name: String,
     /// Maximum log file size in megabytes before rotation (default 10).
@@ -51,6 +54,7 @@ impl Default for Tuning {
             max_pending_joins: 100,
             max_peers: 1000,
             max_concurrent_announces: 50,
+            announce_queue_size: 200,
             interface_name: crate::wg::DEFAULT_INTERFACE_NAME.to_string(),
             log_max_size_mb: 10,
         }
@@ -103,6 +107,7 @@ struct EventsSection {
 struct LimitsSection {
     max_peers: Option<usize>,
     max_concurrent_announces: Option<usize>,
+    announce_queue_size: Option<usize>,
 }
 
 /// Load tuning from `~/.syfrah/config.toml`. Returns defaults if file
@@ -169,6 +174,10 @@ pub fn load_tuning() -> Result<Tuning, String> {
             .limits
             .max_concurrent_announces
             .unwrap_or(defaults.max_concurrent_announces),
+        announce_queue_size: config
+            .limits
+            .announce_queue_size
+            .unwrap_or(defaults.announce_queue_size),
         interface_name: config
             .wireguard
             .interface_name

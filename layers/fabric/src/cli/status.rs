@@ -162,6 +162,8 @@ pub async fn run(opts: StatusOpts) -> Result<()> {
             m.peers_marked_unreachable
         ));
         ui::box_row(&format!("Announce fails:    {}", m.announcements_failed));
+        ui::box_row(&format!("Announces queued:  {}", m.announces_queued));
+        ui::box_row(&format!("Queue overflows:   {}", m.announces_queue_full));
         ui::box_bottom();
     }
 
@@ -261,6 +263,8 @@ fn run_json(state: &store::NodeState, opts: &StatusOpts) -> Result<()> {
             wg_reconciliations: state.metrics.wg_reconciliations,
             peers_marked_unreachable: state.metrics.peers_marked_unreachable,
             announcements_failed: state.metrics.announcements_failed,
+            announces_queued: state.metrics.announces_queued,
+            announces_queue_full: state.metrics.announces_queue_full,
         },
         config: JsonConfig {
             health_check_interval_secs: tuning.health_check_interval.as_secs(),
@@ -303,6 +307,8 @@ struct JsonMetrics {
     wg_reconciliations: u64,
     peers_marked_unreachable: u64,
     announcements_failed: u64,
+    announces_queued: u64,
+    announces_queue_full: u64,
 }
 
 #[derive(Serialize)]
