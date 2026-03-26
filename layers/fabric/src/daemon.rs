@@ -11,6 +11,7 @@ use syfrah_core::addressing;
 use syfrah_core::mesh::{PeerRecord, PeerStatus};
 use syfrah_core::secret::MeshSecret;
 
+use crate::audit::{self as audit_log, AuditEventType};
 use crate::config::{self, Tuning};
 use crate::control::{self, ControlHandler, ControlRequest, ControlResponse};
 use crate::events::{self, EventType};
@@ -303,7 +304,7 @@ pub async fn setup_join(
     }
     let req_zone = config.zone.clone();
 
-    let request = syfrah_core::mesh::JoinRequest {
+    let mut request = syfrah_core::mesh::JoinRequest {
         request_id: peering::generate_request_id(),
         node_name: config.node_name.clone(),
         wg_public_key: wg_keypair.public.to_base64(),
@@ -312,7 +313,17 @@ pub async fn setup_join(
         pin,
         region: req_region,
         zone: req_zone,
+        timestamp: 0,
+        signature: String::new(),
     };
+    // Sign the request with the WireGuard private key to prove possession.
+    let wg_private_bytes: [u8; 32] = {
+        let raw = wg_keypair.private.as_bytes();
+        let mut buf = [0u8; 32];
+        buf.copy_from_slice(raw);
+        buf
+    };
+    syfrah_core::mesh::sign_join_request(&mut request, &wg_private_bytes);
     ui::step_ok(&sp, &format!("Connected to {target}"));
 
     let sp = ui::spinner("Waiting for approval...");
@@ -711,6 +722,7 @@ pub async fn run_daemon(
         None,
         Some(tuning.max_events),
     );
+    audit_log::emit(AuditEventType::DaemonStarted, None, None, None);
 
     let wg_pubkey = wg_keypair.public.clone();
     let peering_state = Arc::new(PeeringState::with_limits(
@@ -1249,6 +1261,7 @@ pub async fn run_daemon(
         None,
         Some(tuning.max_events),
     );
+    audit_log::emit(AuditEventType::DaemonStopped, None, None, None);
     info!("daemon stopped");
     Ok(())
 }
@@ -1294,11 +1307,13 @@ impl ControlHandler for DaemonControlHandler {
                         .await;
                 }
                 self.peering_state.set_active(true).await;
+                audit_log::emit(AuditEventType::PeeringStarted, None, None, None);
                 ControlResponse::Ok
             }
             ControlRequest::PeeringStop => {
                 self.peering_state.set_active(false).await;
                 self.peering_state.set_auto_accept(None).await;
+                audit_log::emit(AuditEventType::PeeringStopped, None, None, None);
                 ControlResponse::Ok
             }
             ControlRequest::PeeringList => {
@@ -1367,6 +1382,12 @@ impl ControlHandler for DaemonControlHandler {
                             None,
                             Some(self.max_events),
                         );
+                        audit_log::emit(
+                            AuditEventType::PeerJoinAccepted,
+                            Some(&sanitize(&info.node_name)),
+                            Some(&info.endpoint.to_string()),
+                            Some("approved_by=manual"),
+                        );
                         (self.on_accepted)(new_record);
                         ControlResponse::PeeringAccepted {
                             peer_name: info.node_name,
@@ -1387,10 +1408,88 @@ impl ControlHandler for DaemonControlHandler {
                             reason.as_deref(),
                             Some(self.max_events),
                         );
+                        audit_log::emit(
+                            AuditEventType::PeerJoinRejected,
+                            None,
+                            None,
+                            reason.as_deref(),
+                        );
                         ControlResponse::Ok
                     }
                     Err(e) => ControlResponse::Error {
                         message: e.to_string(),
+                    },
+                }
+            }
+            ControlRequest::RemovePeer { name_or_key } => {
+                let state = match store::load() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return ControlResponse::Error {
+                            message: format!("{e}"),
+                        }
+                    }
+                };
+
+                // Prevent removing self
+                if name_or_key == state.node_name || name_or_key == state.wg_public_key {
+                    return ControlResponse::Error {
+                        message: "Cannot remove self. Use 'syfrah fabric leave' instead.".into(),
+                    };
+                }
+
+                // Mark peer as Removed in the store
+                match store::remove_peer(&name_or_key) {
+                    Ok(Some(removed_peer)) => {
+                        // Remove from WireGuard and clean up route
+                        if let Ok(self_key) = Key::from_base64(&state.wg_public_key) {
+                            let tuning = config::load_tuning().unwrap_or_default();
+                            let _ = wg::sync_peers(
+                                &self_key,
+                                &store::get_peers().unwrap_or_default(),
+                                tuning.keepalive_interval,
+                            );
+                        }
+
+                        let peer_name = sanitize(&removed_peer.name);
+
+                        events::emit(
+                            EventType::PeerRemoved,
+                            Some(&peer_name),
+                            Some(&removed_peer.endpoint.to_string()),
+                            None,
+                            Some(self.max_events),
+                        );
+
+                        // Announce removal to other peers
+                        let peers = store::get_peers().unwrap_or_default();
+                        let active_peers: Vec<_> = peers
+                            .iter()
+                            .filter(|p| p.status != PeerStatus::Removed)
+                            .cloned()
+                            .collect();
+                        let encryption_key = self.mesh_secret.encryption_key();
+                        let (announced, _failed) = peering::announce_peer_to_mesh(
+                            &removed_peer,
+                            &active_peers,
+                            &encryption_key,
+                            self.peering_port,
+                        )
+                        .await;
+
+                        ControlResponse::PeerRemoved {
+                            peer_name: removed_peer.name.clone(),
+                            announced_to: announced,
+                        }
+                    }
+                    Ok(None) => ControlResponse::Error {
+                        message: format!(
+                            "No peer named '{}'. Run 'syfrah fabric peers' to list peers.",
+                            name_or_key
+                        ),
+                    },
+                    Err(e) => ControlResponse::Error {
+                        message: format!("Failed to remove peer: {e}"),
                     },
                 }
             }

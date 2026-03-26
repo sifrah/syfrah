@@ -12,10 +12,11 @@ use tokio::sync::{oneshot, Mutex, RwLock, Semaphore};
 use tracing::{debug, info, warn};
 
 use syfrah_core::mesh::{
-    decrypt_record, encrypt_record, validate_join_request, validate_join_response,
+    decrypt_record, encrypt_record, validate_and_verify_join_request, validate_join_response,
     validate_peer_record, JoinRequest, JoinResponse, PeerRecord, PeerStatus, PeeringMessage,
 };
 
+use crate::audit::{self as audit_log, AuditEventType};
 use crate::events::{self, EventType};
 use crate::sanitize::sanitize;
 
@@ -572,8 +573,8 @@ async fn handle_incoming<S: AsyncRead + AsyncWrite + Unpin>(
 
     match msg {
         PeeringMessage::JoinRequest(mut req) => {
-            // Validate all fields before processing
-            if let Err(e) = validate_join_request(&req) {
+            // Validate all fields and verify cryptographic signature before processing
+            if let Err(e) = validate_and_verify_join_request(&req) {
                 warn!(from = %peer_addr, error = %e, "rejecting join request: validation failed");
                 return Err(PeeringError::Protocol(format!("invalid join request: {e}")));
             }
@@ -602,6 +603,12 @@ async fn handle_incoming<S: AsyncRead + AsyncWrite + Unpin>(
                 Some(&req.endpoint.to_string()),
                 Some(&format!("request_id={}", req.request_id)),
                 None,
+            );
+            audit_log::emit(
+                AuditEventType::PeerJoinRequested,
+                Some(&sanitize(&req.node_name)),
+                Some(&req.endpoint.to_string()),
+                Some(&format!("request_id={}", req.request_id)),
             );
 
             // Warn if node name already in active peers (the node likely left and is rejoining)
@@ -678,6 +685,15 @@ async fn handle_incoming<S: AsyncRead + AsyncWrite + Unpin>(
                                 Some(&format!("max_peers={}", config.max_peers)),
                                 None,
                             );
+                            audit_log::emit(
+                                AuditEventType::PeerJoinRejected,
+                                Some(&sanitize(&req.node_name)),
+                                Some(&req.endpoint.to_string()),
+                                Some(&format!(
+                                    "reason=peer_limit_reached, max_peers={}",
+                                    config.max_peers
+                                )),
+                            );
                             let response = JoinResponse {
                                 accepted: false,
                                 mesh_name: None,
@@ -703,6 +719,12 @@ async fn handle_incoming<S: AsyncRead + AsyncWrite + Unpin>(
                             Some("pin-matched"),
                             None,
                         );
+                        audit_log::emit(
+                            AuditEventType::PeerJoinAccepted,
+                            Some(&sanitize(&req.node_name)),
+                            Some(&req.endpoint.to_string()),
+                            Some("approved_by=pin"),
+                        );
                         let (response, new_record) = build_auto_accept_response(&req, config)?;
                         write_message(&mut stream, &PeeringMessage::JoinResponse(response)).await?;
                         on_accepted(new_record);
@@ -715,6 +737,12 @@ async fn handle_incoming<S: AsyncRead + AsyncWrite + Unpin>(
                         node = %sanitize(&req.node_name),
                         request_id = %req.request_id,
                         "failed PIN attempt"
+                    );
+                    audit_log::emit(
+                        AuditEventType::PeerJoinRejected,
+                        Some(&sanitize(&req.node_name)),
+                        Some(&req.endpoint.to_string()),
+                        Some("reason=bad_pin"),
                     );
                     {
                         let mut rl = rate_limiter.lock().await;
@@ -792,6 +820,12 @@ async fn handle_incoming<S: AsyncRead + AsyncWrite + Unpin>(
                         Some(&pending_endpoint),
                         Some(&format!("request_id={}", req.request_id)),
                         None,
+                    );
+                    audit_log::emit(
+                        AuditEventType::PeerJoinRejected,
+                        Some(&sanitize(&pending_node_name)),
+                        Some(&pending_endpoint),
+                        Some(&format!("reason=timeout, request_id={}", req.request_id)),
                     );
                     JoinResponse {
                         accepted: false,

@@ -1,10 +1,13 @@
+pub mod audit;
 pub mod diagnose;
 pub mod events;
 pub mod init;
 pub mod join;
 pub mod leave;
+pub mod metrics;
 pub mod peering;
 pub mod peers;
+pub mod peers_remove;
 pub mod rotate;
 pub mod service;
 pub mod start;

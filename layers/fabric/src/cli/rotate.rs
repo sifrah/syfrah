@@ -1,3 +1,4 @@
+use crate::audit::{self as audit_log, AuditEventType};
 use crate::ui;
 use crate::{no_mesh_error, store};
 use anyhow::Result;
@@ -29,6 +30,7 @@ pub async fn run(skip_confirm: bool) -> Result<()> {
     state.mesh_ipv6 = new_ipv6;
     state.peers.clear();
     store::save(&state)?;
+    audit_log::emit(AuditEventType::SecretRotated, None, None, None);
 
     ui::step_ok(&sp, "Secret rotated");
     ui::info_line("New secret", &new_secret.to_string());
