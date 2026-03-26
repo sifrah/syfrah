@@ -1507,10 +1507,14 @@ pub async fn run_daemon(
         }
     };
 
-    // Periodic self-announce (anti-entropy): re-announce our own record to a
-    // gossip subset of known peers so that any announcements lost during initial
-    // join propagation are eventually recovered. Without this, a failed announce
+    // Periodic self-announce (anti-entropy): re-announce our own record to
+    // ALL known peers so that any announcements lost during initial join
+    // propagation are eventually recovered. Without this, a failed announce
     // between two peers can leave them permanently unaware of each other.
+    //
+    // Unlike event-driven gossip (which uses fanout to limit traffic), the
+    // self-announce loop broadcasts to every peer because it runs infrequently
+    // and must guarantee convergence within a bounded number of rounds.
     let self_announce_record = my_record.clone();
     let self_announce_enc = enc_key;
     let self_announce_port = peering_port;
@@ -1532,22 +1536,40 @@ pub async fn run_daemon(
             if known.is_empty() {
                 continue;
             }
-            let (ok, failed) = peering::announce_peer_to_mesh(
-                &self_announce_record,
-                &known,
-                &self_announce_enc,
-                self_announce_port,
-                Some(self_announce_tls.clone()),
-            )
-            .await;
+            // Broadcast to ALL peers (not gossip subset) for reliable convergence.
+            let mut succeeded = 0usize;
+            let mut failed = 0usize;
+            for peer in &known {
+                if peer.wg_public_key == self_announce_record.wg_public_key {
+                    continue; // skip self
+                }
+                if let Err(e) = peering::announce_peer(
+                    peer.endpoint,
+                    self_announce_port,
+                    &self_announce_record,
+                    &self_announce_enc,
+                    Some(self_announce_tls.clone()),
+                )
+                .await
+                {
+                    debug!(
+                        target_peer = %sanitize(&peer.name),
+                        error = %e,
+                        "self-announce to peer failed"
+                    );
+                    failed += 1;
+                } else {
+                    succeeded += 1;
+                }
+            }
             if failed > 0 {
                 debug!(
-                    succeeded = ok,
+                    succeeded = succeeded,
                     failed = failed,
                     "self-announce round completed with failures"
                 );
-            } else {
-                debug!(succeeded = ok, "self-announce round completed");
+            } else if succeeded > 0 {
+                debug!(succeeded = succeeded, "self-announce round completed");
             }
         }
     };

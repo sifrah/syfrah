@@ -39,7 +39,7 @@ pub struct Tuning {
     pub log_max_size_mb: u64,
     /// Interval between periodic self-announce rounds (anti-entropy).
     /// Each round re-announces this node to a gossip subset of known peers,
-    /// ensuring convergence even when initial announcements fail (default 15s).
+    /// ensuring convergence even when initial announcements fail (default 10s).
     pub self_announce_interval: Duration,
 }
 
@@ -61,7 +61,7 @@ impl Default for Tuning {
             announce_queue_size: 200,
             interface_name: crate::wg::DEFAULT_INTERFACE_NAME.to_string(),
             log_max_size_mb: 10,
-            self_announce_interval: Duration::from_secs(15),
+            self_announce_interval: Duration::from_secs(10),
         }
     }
 }
