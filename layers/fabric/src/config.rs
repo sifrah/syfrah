@@ -37,6 +37,10 @@ pub struct Tuning {
     pub interface_name: String,
     /// Maximum log file size in megabytes before rotation (default 10).
     pub log_max_size_mb: u64,
+    /// Interval between periodic self-announce rounds (anti-entropy).
+    /// Each round re-announces this node to a gossip subset of known peers,
+    /// ensuring convergence even when initial announcements fail (default 10s).
+    pub self_announce_interval: Duration,
 }
 
 impl Default for Tuning {
@@ -57,6 +61,7 @@ impl Default for Tuning {
             announce_queue_size: 200,
             interface_name: crate::wg::DEFAULT_INTERFACE_NAME.to_string(),
             log_max_size_mb: 10,
+            self_announce_interval: Duration::from_secs(10),
         }
     }
 }
@@ -82,6 +87,7 @@ struct DaemonSection {
     persist_interval: Option<u64>,
     unreachable_timeout: Option<u64>,
     log_max_size_mb: Option<u64>,
+    self_announce_interval: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -173,6 +179,7 @@ pub fn diff_tuning(old: &Tuning, new: &Tuning) -> (Vec<TuningChange>, Vec<Tuning
     cmp_val!(max_concurrent_announces);
     cmp_val!(interface_name);
     cmp_val!(log_max_size_mb);
+    cmp_dur!(self_announce_interval);
 
     (changes, skipped)
 }
@@ -253,6 +260,11 @@ pub fn load_tuning() -> Result<Tuning, String> {
             .daemon
             .log_max_size_mb
             .unwrap_or(defaults.log_max_size_mb),
+        self_announce_interval: config
+            .daemon
+            .self_announce_interval
+            .map(Duration::from_secs)
+            .unwrap_or(defaults.self_announce_interval),
     })
 }
 
