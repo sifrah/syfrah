@@ -16,6 +16,7 @@ use crate::audit::{self as audit_log, AuditEventType};
 use crate::config::{self, Tuning};
 use crate::control::{self, ControlHandler, ControlRequest, ControlResponse};
 use crate::events::{self, EventType};
+use crate::http_api;
 use crate::peering::{self, AutoAcceptConfig, PeeringState};
 use crate::sanitize::sanitize;
 use crate::sd_watchdog;
@@ -715,6 +716,9 @@ pub async fn run_daemon(
         tuning.announce_queue_size,
     );
 
+    // Load HTTP API config (includes /metrics endpoint).
+    let api_config = http_api::load_api_config();
+
     let announce_semaphore = Arc::new(Semaphore::new(tuning.max_concurrent_announces));
     let max_peers = tuning.max_peers;
     let keepalive_interval = tuning.keepalive_interval;
@@ -1297,6 +1301,7 @@ pub async fn run_daemon(
     let persist_store_failures = metrics_store_failures.clone();
     let persist_peering_state = peering_state.clone();
     let shutdown_persist = shutdown.clone();
+    let gc_threshold_secs = tuning.gc_removed_threshold.as_secs();
     let persist = async move {
         let mut interval = tokio::time::interval(tuning.persist_interval);
         loop {
@@ -1349,6 +1354,18 @@ pub async fn run_daemon(
                 persist_store_failures.load(Ordering::Relaxed),
             ) {
                 debug!(error = %e, "failed to persist store_failures metric");
+            }
+
+            // Garbage-collect peers that have been Removed for longer than
+            // the configured threshold (default 24 h).
+            match store::gc_removed_peers(gc_threshold_secs) {
+                Ok(n) if n > 0 => {
+                    info!(count = n, "garbage-collected removed peers");
+                }
+                Err(e) => {
+                    debug!(error = %e, "failed to gc removed peers");
+                }
+                _ => {}
             }
 
             // Flush JSON export so state.json stays in sync with redb
@@ -1713,6 +1730,10 @@ pub async fn run_daemon(
     #[cfg(not(unix))]
     let sighup_reload = std::future::pending::<()>();
 
+    // HTTP API server (serves /metrics for Prometheus and topology endpoints).
+    let (api_shutdown_tx, api_shutdown_rx) = tokio::sync::watch::channel(false);
+    let api_task = tokio::spawn(http_api::serve(api_config, api_shutdown_rx));
+
     // Wait for a shutdown signal (SIGINT or SIGTERM) or an unexpected task exit.
     tokio::select! {
         _ = &mut control_task => {
@@ -1729,6 +1750,7 @@ pub async fn run_daemon(
         _ = reconcile => {}
         _ = self_announce => {}
         _ = sighup_reload => {}
+        _ = api_task => {}
         _ = tokio::signal::ctrl_c() => {
             info!("received SIGINT, shutting down");
         }
@@ -1739,6 +1761,9 @@ pub async fn run_daemon(
 
     // Signal all cancellation-aware loops to stop.
     shutdown.cancel();
+
+    // Signal HTTP API server to shut down gracefully.
+    let _ = api_shutdown_tx.send(true);
 
     // Tell systemd we are shutting down gracefully.
     sd_watchdog::notify_stopping();

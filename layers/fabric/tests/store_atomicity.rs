@@ -420,3 +420,64 @@ fn peer_count_and_exists_after_upserts() {
         assert!(!exists, "non-existent key should return false");
     });
 }
+
+// ── Test: gc_removed_peers deletes only stale Removed peers ──
+
+#[test]
+fn gc_removed_peers_deletes_stale_removed() {
+    with_temp_home(|| {
+        // Active peer — should survive GC.
+        let active = make_test_peer("gc-active", 1);
+        store::upsert_peer(&active).unwrap();
+
+        // Removed peer with ancient last_seen — should be collected.
+        let mut stale_removed = make_test_peer("gc-stale", 2);
+        stale_removed.status = PeerStatus::Removed;
+        stale_removed.last_seen = 1000; // epoch + 1000s, well past any threshold
+        store::upsert_peer(&stale_removed).unwrap();
+
+        // Removed peer with recent last_seen — should survive.
+        let mut fresh_removed = make_test_peer("gc-fresh", 3);
+        fresh_removed.status = PeerStatus::Removed;
+        fresh_removed.last_seen = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        store::upsert_peer(&fresh_removed).unwrap();
+
+        assert_eq!(store::get_peers().unwrap().len(), 3);
+
+        // GC with 24h threshold — only the stale removed peer qualifies.
+        let collected = store::gc_removed_peers(86400).unwrap();
+        assert_eq!(collected, 1, "expected 1 peer to be garbage-collected");
+
+        let remaining = store::get_peers().unwrap();
+        assert_eq!(remaining.len(), 2, "expected 2 peers after GC");
+        assert!(
+            remaining.iter().any(|p| p.name == "gc-active"),
+            "active peer should survive"
+        );
+        assert!(
+            remaining.iter().any(|p| p.name == "gc-fresh"),
+            "recently-removed peer should survive"
+        );
+        assert!(
+            !remaining.iter().any(|p| p.name == "gc-stale"),
+            "stale removed peer should be deleted"
+        );
+    });
+}
+
+#[test]
+fn gc_removed_peers_noop_when_threshold_zero() {
+    with_temp_home(|| {
+        let mut removed = make_test_peer("gc-zero", 1);
+        removed.status = PeerStatus::Removed;
+        removed.last_seen = 1000;
+        store::upsert_peer(&removed).unwrap();
+
+        let collected = store::gc_removed_peers(0).unwrap();
+        assert_eq!(collected, 0, "threshold 0 should disable GC");
+        assert_eq!(store::get_peers().unwrap().len(), 1);
+    });
+}

@@ -15,6 +15,7 @@
 //! - `GET /v1/topology/health`          — zone health status
 //! - `GET /v1/peers`                    — all peers
 //! - `GET /v1/health`                   — simple health check
+//! - `GET /metrics`                     — Prometheus text exposition format
 
 use std::net::SocketAddr;
 
@@ -27,6 +28,7 @@ use serde::Serialize;
 use syfrah_core::mesh::{PeerStatus, Region, Zone};
 use tokio::net::TcpListener;
 
+use crate::metrics as prom;
 use crate::topology::TopologyView;
 
 /// Default listen address (localhost-only for security).
@@ -57,6 +59,9 @@ impl Default for ApiConfig {
 pub async fn serve(config: ApiConfig, shutdown: tokio::sync::watch::Receiver<bool>) {
     if !config.enabled {
         tracing::debug!("HTTP API disabled, skipping");
+        // Park forever so the tokio::select! in the daemon loop does not
+        // fire on this branch when the API is disabled.
+        std::future::pending::<()>().await;
         return;
     }
 
@@ -95,6 +100,7 @@ pub fn router() -> Router {
         .route("/v1/topology/health", get(topology_health))
         .route("/v1/peers", get(list_peers))
         .route("/v1/health", get(health))
+        .route("/metrics", get(prometheus_metrics))
 }
 
 // ---------------------------------------------------------------------------
@@ -309,6 +315,17 @@ async fn health() -> impl IntoResponse {
     })
 }
 
+/// Prometheus text exposition endpoint.
+async fn prometheus_metrics() -> impl IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        prom::render_prometheus(),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Config loading
 // ---------------------------------------------------------------------------
@@ -398,6 +415,36 @@ mod tests {
     async fn invalid_zone_returns_bad_request() {
         let (status, _) = get_response("/v1/topology/zones/INVALID/peers").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn metrics_returns_prometheus_format() {
+        let (status, body) = get_response("/metrics").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body.contains("syfrah_peers_count"),
+            "metrics output should contain syfrah_peers_count"
+        );
+    }
+
+    #[tokio::test]
+    async fn metrics_content_type_is_text_plain() {
+        let app = router();
+        let req = Request::builder()
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .expect("content-type header should be set")
+            .to_str()
+            .unwrap();
+        assert!(
+            ct.contains("text/plain"),
+            "content-type should be text/plain, got: {ct}"
+        );
     }
 
     #[test]

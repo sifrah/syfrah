@@ -188,7 +188,8 @@ assert_peer_count() {
     local container="$1"
     local expected="$2"
     local actual
-    actual=$(docker exec "$container" syfrah fabric peers 2>&1 | grep -c "active" || echo "0")
+    actual=$(docker exec "$container" syfrah fabric peers 2>&1 | grep -c "active" || true)
+    actual=${actual:-0}
     if [ "$actual" -eq "$expected" ]; then
         pass "$container sees $expected peers"
     else
