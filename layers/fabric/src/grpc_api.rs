@@ -36,6 +36,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 
+use crate::auth_middleware::{self, SharedValidator, StubApiKeyValidator};
 use crate::control::{FabricHandler, FabricRequest, FabricResponse};
 
 /// Default listen address for the gRPC API.
@@ -168,8 +169,19 @@ type SharedHandler = Arc<dyn FabricHandler>;
 // ---------------------------------------------------------------------------
 
 /// Build the axum [`Router`] for the fabric gRPC-compatible API.
+///
+/// When `validator` is provided the auth middleware layer is applied to all
+/// routes, requiring a valid `Authorization: Bearer syf_key_...` header.
 pub fn router(handler: SharedHandler) -> Router {
-    Router::new()
+    router_with_auth(
+        handler,
+        Some(Arc::new(StubApiKeyValidator) as SharedValidator),
+    )
+}
+
+/// Build the router with an explicit auth validator (or `None` to skip auth).
+pub fn router_with_auth(handler: SharedHandler, validator: Option<SharedValidator>) -> Router {
+    let base = Router::new()
         .route("/v1/fabric/peering/start", post(start_peering))
         .route("/v1/fabric/peering/stop", post(stop_peering))
         .route("/v1/fabric/peering/requests", get(list_peering_requests))
@@ -182,8 +194,12 @@ pub fn router(handler: SharedHandler) -> Router {
         )
         .route("/v1/fabric/reload", post(reload))
         .route("/v1/fabric/rotate-secret", post(rotate_secret))
-        .route("/v1/fabric/status", get(status))
-        .with_state(handler)
+        .route("/v1/fabric/status", get(status));
+
+    match validator {
+        Some(v) => auth_middleware::with_auth_layer(base, v).with_state(handler),
+        None => base.with_state(handler),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -501,6 +517,11 @@ mod tests {
         Arc::new(StubFabricHandler)
     }
 
+    /// Build router without auth for existing handler tests.
+    fn test_router() -> Router {
+        router_with_auth(test_handler(), None)
+    }
+
     async fn send_request(
         app: Router,
         method: &str,
@@ -525,7 +546,7 @@ mod tests {
 
     #[tokio::test]
     async fn status_returns_ok() {
-        let app = router(test_handler());
+        let app = test_router();
         let (status, body) = send_request(app, "GET", "/v1/fabric/status", None).await;
         assert_eq!(status, StatusCode::OK);
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -534,7 +555,7 @@ mod tests {
 
     #[tokio::test]
     async fn start_peering_returns_ok() {
-        let app = router(test_handler());
+        let app = test_router();
         let (status, body) = send_request(
             app,
             "POST",
@@ -549,14 +570,14 @@ mod tests {
 
     #[tokio::test]
     async fn stop_peering_returns_ok() {
-        let app = router(test_handler());
+        let app = test_router();
         let (status, _) = send_request(app, "POST", "/v1/fabric/peering/stop", None).await;
         assert_eq!(status, StatusCode::OK);
     }
 
     #[tokio::test]
     async fn list_peering_requests_returns_empty() {
-        let app = router(test_handler());
+        let app = test_router();
         let (status, body) = send_request(app, "GET", "/v1/fabric/peering/requests", None).await;
         assert_eq!(status, StatusCode::OK);
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -565,7 +586,7 @@ mod tests {
 
     #[tokio::test]
     async fn accept_peering_returns_peer_name() {
-        let app = router(test_handler());
+        let app = test_router();
         let (status, body) = send_request(
             app,
             "POST",
@@ -580,7 +601,7 @@ mod tests {
 
     #[tokio::test]
     async fn reject_peering_returns_ok() {
-        let app = router(test_handler());
+        let app = test_router();
         let (status, _) = send_request(
             app,
             "POST",
@@ -593,7 +614,7 @@ mod tests {
 
     #[tokio::test]
     async fn remove_peer_returns_details() {
-        let app = router(test_handler());
+        let app = test_router();
         let (status, body) = send_request(
             app,
             "POST",
@@ -609,7 +630,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_peer_endpoint_returns_details() {
-        let app = router(test_handler());
+        let app = test_router();
         let (status, body) = send_request(
             app,
             "POST",
@@ -628,7 +649,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_peer_endpoint_invalid_addr() {
-        let app = router(test_handler());
+        let app = test_router();
         let (status, body) = send_request(
             app,
             "POST",
@@ -646,7 +667,7 @@ mod tests {
 
     #[tokio::test]
     async fn reload_returns_changes() {
-        let app = router(test_handler());
+        let app = test_router();
         let (status, body) = send_request(app, "POST", "/v1/fabric/reload", None).await;
         assert_eq!(status, StatusCode::OK);
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -655,7 +676,7 @@ mod tests {
 
     #[tokio::test]
     async fn rotate_secret_returns_details() {
-        let app = router(test_handler());
+        let app = test_router();
         let (status, body) = send_request(app, "POST", "/v1/fabric/rotate-secret", None).await;
         assert_eq!(status, StatusCode::OK);
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -674,7 +695,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_peering_requests_returns_json_array() {
-        let app = router(test_handler());
+        let app = test_router();
         let (status, body) = send_request(app, "GET", "/v1/fabric/peering/requests", None).await;
         assert_eq!(status, StatusCode::OK);
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -685,7 +706,7 @@ mod tests {
 
     #[tokio::test]
     async fn status_returns_json_object() {
-        let app = router(test_handler());
+        let app = test_router();
         let (status, body) = send_request(app, "GET", "/v1/fabric/status", None).await;
         assert_eq!(status, StatusCode::OK);
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -694,7 +715,7 @@ mod tests {
 
     #[tokio::test]
     async fn proto_field_names_match_status_response() {
-        let app = router(test_handler());
+        let app = test_router();
         let (_, body) = send_request(app, "GET", "/v1/fabric/status", None).await;
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         let obj = v.as_object().unwrap();
@@ -703,7 +724,7 @@ mod tests {
 
     #[tokio::test]
     async fn proto_field_names_match_accept_peering_response() {
-        let app = router(test_handler());
+        let app = test_router();
         let (_, body) = send_request(
             app,
             "POST",
@@ -721,7 +742,7 @@ mod tests {
 
     #[tokio::test]
     async fn proto_field_names_match_remove_peer_response() {
-        let app = router(test_handler());
+        let app = test_router();
         let (_, body) = send_request(
             app,
             "POST",
@@ -743,7 +764,7 @@ mod tests {
 
     #[tokio::test]
     async fn proto_field_names_match_update_endpoint_response() {
-        let app = router(test_handler());
+        let app = test_router();
         let (_, body) = send_request(
             app,
             "POST",
@@ -769,7 +790,7 @@ mod tests {
 
     #[tokio::test]
     async fn proto_field_names_match_reload_response() {
-        let app = router(test_handler());
+        let app = test_router();
         let (_, body) = send_request(app, "POST", "/v1/fabric/reload", None).await;
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         let obj = v.as_object().unwrap();
@@ -779,7 +800,7 @@ mod tests {
 
     #[tokio::test]
     async fn proto_field_names_match_rotate_secret_response() {
-        let app = router(test_handler());
+        let app = test_router();
         let (_, body) = send_request(app, "POST", "/v1/fabric/rotate-secret", None).await;
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         let obj = v.as_object().unwrap();
@@ -803,7 +824,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_endpoint_returns_404() {
-        let app = router(test_handler());
+        let app = test_router();
         let req = Request::builder()
             .method("GET")
             .uri("/v1/fabric/nonexistent")
@@ -815,7 +836,7 @@ mod tests {
 
     #[tokio::test]
     async fn post_without_json_content_type_is_rejected() {
-        let app = router(test_handler());
+        let app = test_router();
         let req = Request::builder()
             .method("POST")
             .uri("/v1/fabric/peering/start")
@@ -835,7 +856,7 @@ mod tests {
     async fn health_status_always_returns_200() {
         // Call the status endpoint multiple times to confirm it always returns 200.
         for _ in 0..3 {
-            let app = router(test_handler());
+            let app = test_router();
             let req = Request::builder()
                 .method("GET")
                 .uri("/v1/fabric/status")
@@ -844,5 +865,82 @@ mod tests {
             let resp = app.oneshot(req).await.unwrap();
             assert_eq!(resp.status(), StatusCode::OK);
         }
+    }
+
+    // ----- Auth middleware integration tests -----
+
+    /// Build router WITH auth enabled (using the stub validator).
+    fn authed_router() -> Router {
+        router_with_auth(
+            test_handler(),
+            Some(Arc::new(auth_middleware::StubApiKeyValidator) as auth_middleware::SharedValidator),
+        )
+    }
+
+    fn authed_request(
+        method: &str,
+        uri: &str,
+        auth: Option<&str>,
+        body: Option<serde_json::Value>,
+    ) -> Request<Body> {
+        let body = match body {
+            Some(v) => Body::from(serde_json::to_vec(&v).unwrap()),
+            None => Body::empty(),
+        };
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json");
+        if let Some(token) = auth {
+            builder = builder.header("authorization", token);
+        }
+        builder.body(body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn authed_router_rejects_without_token() {
+        let app = authed_router();
+        let req = authed_request("GET", "/v1/fabric/status", None, None);
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn authed_router_accepts_valid_token() {
+        let app = authed_router();
+        let req = authed_request(
+            "GET",
+            "/v1/fabric/status",
+            Some("Bearer syf_key_testtoken123"),
+            None,
+        );
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn authed_router_rejects_bad_prefix() {
+        let app = authed_router();
+        let req = authed_request(
+            "GET",
+            "/v1/fabric/status",
+            Some("Bearer bad_prefix_token"),
+            None,
+        );
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn authed_router_allows_post_with_token() {
+        let app = authed_router();
+        let req = authed_request(
+            "POST",
+            "/v1/fabric/peering/start",
+            Some("Bearer syf_key_testtoken123"),
+            Some(serde_json::json!({"port": 7946})),
+        );
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 }
