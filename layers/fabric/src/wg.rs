@@ -194,8 +194,14 @@ pub fn diff_peers(
 
         match wg_map.get(peer.wg_public_key.as_str()) {
             Some(existing_ips) if existing_ips.contains(desired_aip.as_str()) => {
-                // Peer exists with correct allowed IPs — no change needed.
-                // Endpoint may differ due to WG roaming; that's fine.
+                // Peer exists with correct allowed IPs — normally no change needed.
+                // However, if the stored endpoint is 0.0.0.0 (unspecified), we must
+                // re-apply the peer so WireGuard can learn a valid endpoint. The
+                // general rule of ignoring endpoint differences for roaming does not
+                // apply when the stored endpoint is fundamentally unreachable.
+                if peer.endpoint.ip().is_unspecified() {
+                    to_add_or_update.push(peer.clone());
+                }
             }
             Some(_) => {
                 // Peer exists but allowed IPs changed — update
@@ -872,6 +878,50 @@ mod tests {
             remove[0], peer_b64,
             "removed peer still in WG should be in to_remove"
         );
+    }
+
+    // ── diff_peers: 0.0.0.0 endpoint triggers update (issue #285) ──
+
+    #[test]
+    fn diff_peers_zero_endpoint_triggers_update() {
+        let self_kp = generate_keypair();
+        let peer_kp = generate_keypair();
+        let peer_b64 = peer_kp.public.to_base64();
+
+        // Peer exists in WG with correct allowed IPs, but stored endpoint
+        // is 0.0.0.0 — should trigger an update so WG can learn a real endpoint.
+        let mut desired_peer = make_peer(&peer_b64, syfrah_core::mesh::PeerStatus::Active);
+        desired_peer.endpoint = "0.0.0.0:51820".parse().unwrap();
+        let desired = vec![desired_peer];
+        let wg_peers = vec![make_wg_summary(&peer_b64, "203.0.113.1:51820")];
+
+        let (add, remove) = diff_peers(&self_kp.public, &desired, &wg_peers).unwrap();
+        assert_eq!(
+            add.len(),
+            1,
+            "peer with 0.0.0.0 endpoint must be re-applied even if allowed IPs match"
+        );
+        assert_eq!(add[0].wg_public_key, peer_b64);
+        assert!(remove.is_empty());
+    }
+
+    #[test]
+    fn diff_peers_valid_endpoint_no_spurious_update() {
+        let self_kp = generate_keypair();
+        let peer_kp = generate_keypair();
+        let peer_b64 = peer_kp.public.to_base64();
+
+        // Peer with a valid (non-zero) endpoint and matching allowed IPs —
+        // should NOT trigger an update (normal roaming case).
+        let desired = vec![make_peer(&peer_b64, syfrah_core::mesh::PeerStatus::Active)];
+        let wg_peers = vec![make_wg_summary(&peer_b64, "198.51.100.1:51820")];
+
+        let (add, remove) = diff_peers(&self_kp.public, &desired, &wg_peers).unwrap();
+        assert!(
+            add.is_empty(),
+            "valid endpoint with matching IPs should not trigger update"
+        );
+        assert!(remove.is_empty());
     }
 
     // Integration tests (require root) are skipped in normal CI.

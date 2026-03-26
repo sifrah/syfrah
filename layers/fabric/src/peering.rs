@@ -591,6 +591,28 @@ async fn handle_incoming<S: AsyncRead + AsyncWrite + Unpin>(
                 );
             }
 
+            // Reject if endpoint is still unspecified after auto-detection.
+            // WireGuard cannot send packets to 0.0.0.0 — this would cause
+            // silent packet loss (see issue #285).
+            if req.endpoint.ip().is_unspecified() {
+                warn!(
+                    node = %sanitize(&req.node_name),
+                    endpoint = %req.endpoint,
+                    "rejecting join: endpoint is 0.0.0.0 after auto-detection"
+                );
+                let rejection = JoinResponse {
+                    accepted: false,
+                    mesh_name: None,
+                    mesh_secret: None,
+                    mesh_prefix: None,
+                    peers: vec![],
+                    reason: Some("could not detect public IP; use --endpoint to specify it".into()),
+                    approved_by: None,
+                };
+                write_message(&mut stream, &PeeringMessage::JoinResponse(rejection)).await?;
+                return Ok(());
+            }
+
             info!(
                 node = %sanitize(&req.node_name),
                 endpoint = %req.endpoint,

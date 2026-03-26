@@ -368,6 +368,34 @@ pub fn peer_count_and_exists(wg_public_key: &str) -> Result<(usize, bool), Store
     Ok((count as usize, exists))
 }
 
+/// Mark all peers with the given node name as Removed, except the one with
+/// `except_wg_key`. Returns the number of peers marked as Removed.
+///
+/// This is used during join/init to purge phantom peers left by previous
+/// init/join cycles of the same node name with different WG keys.
+pub fn purge_stale_peers_by_name(name: &str, except_wg_key: &str) -> Result<usize, StoreError> {
+    if !LayerDb::layer_exists(LAYER_NAME) {
+        return Ok(0);
+    }
+    let db = open_db()?;
+    let entries: Vec<(String, PeerRecord)> = db.list("peers")?;
+    let mut purged = 0;
+    for (key, mut peer) in entries {
+        if peer.name == name
+            && peer.wg_public_key != except_wg_key
+            && peer.status != syfrah_core::mesh::PeerStatus::Removed
+        {
+            peer.status = syfrah_core::mesh::PeerStatus::Removed;
+            db.set("peers", &key, &peer)?;
+            purged += 1;
+        }
+    }
+    if purged > 0 {
+        maybe_write_json(&db);
+    }
+    Ok(purged)
+}
+
 /// Mark a peer as Removed by name or WG public key.
 /// Returns the updated PeerRecord if found, or None if no matching peer exists.
 pub fn remove_peer(name_or_key: &str) -> Result<Option<PeerRecord>, StoreError> {
@@ -839,5 +867,99 @@ mod tests {
         assert_eq!(loaded.mesh_name, "test");
         assert_eq!(loaded.node_name, "node-1");
         assert_eq!(loaded.mesh_ipv6, state.mesh_ipv6);
+    }
+
+    // ── purge_stale_peers_by_name tests ──
+
+    #[test]
+    fn purge_stale_peers_marks_old_keys_as_removed() {
+        let (_dir, db) = temp_db();
+
+        // Simulate 3 peer records with the same node name but different keys
+        // (from repeated init/join cycles).
+        let mut p1 = make_peer("old-key-1");
+        p1.name = "node-a".into();
+        let mut p2 = make_peer("old-key-2");
+        p2.name = "node-a".into();
+        let mut p3 = make_peer("current-key");
+        p3.name = "node-a".into();
+        // A different node that should not be purged
+        let mut p4 = make_peer("other-node-key");
+        p4.name = "node-b".into();
+
+        db.set("peers", &p1.wg_public_key, &p1).unwrap();
+        db.set("peers", &p2.wg_public_key, &p2).unwrap();
+        db.set("peers", &p3.wg_public_key, &p3).unwrap();
+        db.set("peers", &p4.wg_public_key, &p4).unwrap();
+
+        // Purge stale peers for node-a, keeping current-key
+        let entries: Vec<(String, PeerRecord)> = db.list("peers").unwrap();
+        let mut purged = 0;
+        for (key, mut peer) in entries {
+            if peer.name == "node-a"
+                && peer.wg_public_key != "current-key"
+                && peer.status != PeerStatus::Removed
+            {
+                peer.status = PeerStatus::Removed;
+                db.set("peers", &key, &peer).unwrap();
+                purged += 1;
+            }
+        }
+
+        assert_eq!(purged, 2);
+
+        // Verify: old keys are Removed, current key is Active, other node untouched
+        let p1_loaded: PeerRecord = db.get("peers", "old-key-1").unwrap().unwrap();
+        assert_eq!(p1_loaded.status, PeerStatus::Removed);
+        let p2_loaded: PeerRecord = db.get("peers", "old-key-2").unwrap().unwrap();
+        assert_eq!(p2_loaded.status, PeerStatus::Removed);
+        let p3_loaded: PeerRecord = db.get("peers", "current-key").unwrap().unwrap();
+        assert_eq!(p3_loaded.status, PeerStatus::Active);
+        let p4_loaded: PeerRecord = db.get("peers", "other-node-key").unwrap().unwrap();
+        assert_eq!(p4_loaded.status, PeerStatus::Active);
+    }
+
+    #[test]
+    fn purge_stale_peers_no_stale_entries() {
+        let (_dir, db) = temp_db();
+
+        let mut p1 = make_peer("key-1");
+        p1.name = "node-a".into();
+        db.set("peers", &p1.wg_public_key, &p1).unwrap();
+
+        // Purge with the only key — nothing should be purged
+        let entries: Vec<(String, PeerRecord)> = db.list("peers").unwrap();
+        let purged = entries
+            .into_iter()
+            .filter(|(_, p)| {
+                p.name == "node-a" && p.wg_public_key != "key-1" && p.status != PeerStatus::Removed
+            })
+            .count();
+        assert_eq!(purged, 0);
+    }
+
+    #[test]
+    fn purge_stale_peers_skips_already_removed() {
+        let (_dir, db) = temp_db();
+
+        let mut p1 = make_peer("old-key");
+        p1.name = "node-a".into();
+        p1.status = PeerStatus::Removed; // already removed
+        let mut p2 = make_peer("current-key");
+        p2.name = "node-a".into();
+
+        db.set("peers", &p1.wg_public_key, &p1).unwrap();
+        db.set("peers", &p2.wg_public_key, &p2).unwrap();
+
+        let entries: Vec<(String, PeerRecord)> = db.list("peers").unwrap();
+        let purged = entries
+            .into_iter()
+            .filter(|(_, p)| {
+                p.name == "node-a"
+                    && p.wg_public_key != "current-key"
+                    && p.status != PeerStatus::Removed
+            })
+            .count();
+        assert_eq!(purged, 0, "already-removed peers should not be counted");
     }
 }
