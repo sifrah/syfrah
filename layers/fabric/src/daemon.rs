@@ -21,6 +21,69 @@ use crate::store::{self, NodeState};
 use crate::ui;
 use crate::wg;
 
+/// TLS certificate verifier that skips trust-anchor verification but still
+/// validates TLS 1.3 handshake signatures.  Used only during the join
+/// handshake where the joiner does not yet have the mesh secret to verify
+/// the server's certificate chain.  The PIN exchange provides the
+/// authentication guarantee at this stage.
+mod danger {
+    use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+    use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+    use rustls::DigitallySignedStruct;
+
+    #[derive(Debug)]
+    pub struct NoCertVerifier;
+
+    impl ServerCertVerifier for NoCertVerifier {
+        fn verify_server_cert(
+            &self,
+            _end_entity: &CertificateDer<'_>,
+            _intermediates: &[CertificateDer<'_>],
+            _server_name: &ServerName<'_>,
+            _ocsp_response: &[u8],
+            _now: UnixTime,
+        ) -> Result<ServerCertVerified, rustls::Error> {
+            // Skip trust-anchor check — the joiner cannot verify the
+            // mesh-derived CA yet.  Signature math is still enforced below.
+            Ok(ServerCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            _message: &[u8],
+            _cert: &CertificateDer<'_>,
+            _dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            // TLS 1.2 is disabled at the config level; reject if reached.
+            Err(rustls::Error::General(
+                "TLS 1.2 is not supported".to_string(),
+            ))
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            // Delegate to the real ring signature verifier so that a MITM
+            // cannot present an arbitrary certificate with a garbage signature.
+            rustls::crypto::verify_tls13_signature(
+                message,
+                cert,
+                dss,
+                &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+            )
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            rustls::crypto::ring::default_provider()
+                .signature_verification_algorithms
+                .supported_schemes()
+        }
+    }
+}
+
 /// Default region used when the operator does not specify `--region`.
 pub const DEFAULT_REGION: &str = "default";
 
@@ -264,7 +327,18 @@ pub async fn setup_join(
     ui::step_ok(&sp, &format!("Connected to {target}"));
 
     let sp = ui::spinner("Waiting for approval...");
-    let response = match peering::send_join_request(target, request).await {
+    // For the join handshake, we use a permissive TLS client config that skips
+    // server certificate verification. The joiner does not yet know the mesh secret
+    // (that arrives in the JoinResponse), so it cannot verify the mesh-derived cert.
+    // The PIN exchange provides authentication at this stage.
+    let join_tls_config = {
+        let cfg = rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(danger::NoCertVerifier))
+            .with_no_client_auth();
+        Arc::new(cfg)
+    };
+    let response = match peering::send_join_request(target, request, Some(join_tls_config)).await {
         Ok(resp) => resp,
         Err(e) => {
             ui::step_fail(&sp, &format!("Failed: {e}"));
@@ -440,6 +514,12 @@ fn map_join_error(err: peering::PeeringError, target: SocketAddr) -> anyhow::Err
                  Ask the operator to run: syfrah fabric peering start"
             )
         }
+        peering::PeeringError::Tls(detail) => {
+            anyhow::anyhow!(
+                "TLS handshake failed with {target}. Verify the node is running a compatible version.\n  \
+                 Detail: {detail}"
+            )
+        }
         _ => err.into(),
     }
 }
@@ -613,6 +693,10 @@ pub async fn run_daemon(
     mesh_secret: MeshSecret,
     peering_port: u16,
 ) -> anyhow::Result<()> {
+    // Ensure ring is installed as the global CryptoProvider. This is needed
+    // because rustls 0.23 no longer auto-selects a provider at runtime.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let tuning = config::load_tuning().unwrap_or_else(|e| {
         warn!("failed to load config.toml: {e}, using defaults");
         Tuning::default()
@@ -649,7 +733,21 @@ pub async fn run_daemon(
         tuning.max_concurrent_connections,
         tuning.max_pending_joins,
     ));
+    // Normalize to V1 derivation: when a node joins or restarts, the secret is
+    // parsed from a string which always yields V1.  The init node gets V2 from
+    // generate(), but every other node will have V1.  We must use the same
+    // derivation everywhere so encryption keys match across the mesh.
+    let mesh_secret = syfrah_core::secret::MeshSecret::from_bytes(*mesh_secret.as_bytes());
     let enc_key = mesh_secret.encryption_key();
+
+    // Build TLS configuration from the raw mesh secret for peering connections.
+    // Use as_bytes() (not encryption_key()) so TLS certs are identical regardless
+    // of the derivation version (V1 vs V2) — all nodes share the same raw secret.
+    let mesh_secret_bytes: [u8; 32] = *mesh_secret.as_bytes();
+    let tls_server_config = peering::build_tls_server_config(&mesh_secret_bytes)
+        .map_err(|e| anyhow::anyhow!("failed to build TLS server config: {e}"))?;
+    let tls_client_config = peering::build_tls_client_config(&mesh_secret_bytes)
+        .map_err(|e| anyhow::anyhow!("failed to build TLS client config: {e}"))?;
 
     let metrics_received = Arc::new(AtomicU64::new(0));
     let metrics_reconciliations = Arc::new(AtomicU64::new(0));
@@ -672,6 +770,7 @@ pub async fn run_daemon(
     let accepted_keepalive = keepalive_interval;
     let accepted_peer_limit_counter = metrics_peer_limit_reached.clone();
     let accepted_store_failures = metrics_store_failures.clone();
+    let accepted_tls_client = tls_client_config.clone();
     let on_accepted: peering::OnAccepted = Arc::new(move |new_record| {
         accepted_recv.fetch_add(1, Ordering::Relaxed);
         let pubkey = accepted_wg_pubkey.clone();
@@ -682,6 +781,7 @@ pub async fn run_daemon(
         let max_ev = accepted_max_events;
         let mp = accepted_max_peers;
         let ka = accepted_keepalive;
+        let tls_cfg = accepted_tls_client.clone();
         let plr = accepted_peer_limit_counter.clone();
         let sf = accepted_store_failures.clone();
         tokio::spawn(async move {
@@ -765,7 +865,8 @@ pub async fn run_daemon(
                     return;
                 }
             };
-            let (_ok, failed) = peering::announce_peer_to_mesh(&record, &known, &enc, pp).await;
+            let (_ok, failed) =
+                peering::announce_peer_to_mesh(&record, &known, &enc, pp, Some(tls_cfg)).await;
             if failed > 0 {
                 let _ = store::inc_metric("announcements_failed", failed as u64);
                 events::emit(
@@ -787,6 +888,7 @@ pub async fn run_daemon(
         wg_pubkey: wg_pubkey.clone(),
         peering_port,
         on_accepted: on_accepted.clone(),
+        tls_client_config: tls_client_config.clone(),
         max_events: tuning.max_events,
         max_peers,
     });
@@ -915,7 +1017,13 @@ pub async fn run_daemon(
     let listener_state = peering_state.clone();
     let peering_task = tokio::spawn(async move {
         if let Err(e) = listener_state
-            .run_listener(peering_port, Some(enc_key), on_announce, on_accepted)
+            .run_listener(
+                peering_port,
+                Some(enc_key),
+                on_announce,
+                on_accepted,
+                Some(tls_server_config),
+            )
             .await
         {
             warn!("peering listener error: {e}");
@@ -1178,6 +1286,7 @@ struct DaemonControlHandler {
     wg_pubkey: Key,
     peering_port: u16,
     on_accepted: peering::OnAccepted,
+    tls_client_config: Arc<rustls::ClientConfig>,
     max_events: u64,
     max_peers: usize,
 }
@@ -1378,6 +1487,7 @@ impl ControlHandler for DaemonControlHandler {
                             &active_peers,
                             &encryption_key,
                             self.peering_port,
+                            Some(self.tls_client_config.clone()),
                         )
                         .await;
 

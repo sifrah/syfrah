@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{oneshot, Mutex, RwLock, Semaphore};
 use tracing::{debug, info, warn};
@@ -19,6 +19,120 @@ use syfrah_core::mesh::{
 use crate::audit::{self as audit_log, AuditEventType};
 use crate::events::{self, EventType};
 use crate::sanitize::sanitize;
+
+// ---------- TLS helpers ----------
+
+/// Build a `rustls::ServerConfig` from a mesh-secret-derived self-signed certificate.
+/// The certificate is deterministically generated from the mesh secret so every node
+/// holding the same secret presents the same CA, enabling mutual verification without
+/// an external PKI.
+pub fn build_tls_server_config(
+    mesh_secret: &[u8; 32],
+) -> Result<Arc<rustls::ServerConfig>, PeeringError> {
+    let (cert_chain, key_der) = generate_mesh_cert(mesh_secret)?;
+    let cfg = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(cert_chain, key_der)
+        .map_err(|e| PeeringError::Tls(format!("server TLS config: {e}")))?;
+    Ok(Arc::new(cfg))
+}
+
+/// Build a `rustls::ClientConfig` that trusts only the mesh-derived certificate.
+pub fn build_tls_client_config(
+    mesh_secret: &[u8; 32],
+) -> Result<Arc<rustls::ClientConfig>, PeeringError> {
+    let (cert_chain, _) = generate_mesh_cert(mesh_secret)?;
+    let mut root_store = rustls::RootCertStore::empty();
+    root_store
+        .add(cert_chain[0].clone())
+        .map_err(|e| PeeringError::Tls(format!("root store: {e}")))?;
+    let cfg = rustls::ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    Ok(Arc::new(cfg))
+}
+
+/// Deterministically generate a self-signed certificate + private key from a mesh secret.
+/// We use ECDSA P-256 because `rcgen` makes it easy and `rustls` supports it out of the box.
+fn generate_mesh_cert(
+    mesh_secret: &[u8; 32],
+) -> Result<
+    (
+        Vec<rustls::pki_types::CertificateDer<'static>>,
+        rustls::pki_types::PrivateKeyDer<'static>,
+    ),
+    PeeringError,
+> {
+    use rcgen::{CertificateParams, KeyPair};
+    use sha2::Sha256 as S256;
+
+    // Derive 32 bytes of key material from the mesh secret for the certificate key.
+    let mut hasher = S256::new();
+    hasher.update(b"syfrah-tls-cert-key-v1");
+    hasher.update(mesh_secret);
+    let seed: [u8; 32] = hasher.finalize().into();
+
+    // rcgen can import a PKCS#8 key. We build an Ed25519 key from the seed.
+    // ring (used by rustls) accepts a PKCS#8 v2 document for Ed25519.
+    let pkcs8_doc = ring_ed25519_pkcs8_from_seed(&seed)
+        .map_err(|e| PeeringError::Tls(format!("key generation: {e}")))?;
+
+    let private_key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(
+        rustls::pki_types::PrivatePkcs8KeyDer::from(pkcs8_doc.clone()),
+    );
+    let key_pair = KeyPair::from_der_and_sign_algo(&private_key_der, &rcgen::PKCS_ED25519)
+        .map_err(|e| PeeringError::Tls(format!("key pair: {e}")))?;
+
+    let mut params = CertificateParams::new(vec!["syfrah-mesh.internal".to_string()])
+        .map_err(|e| PeeringError::Tls(format!("cert params: {e}")))?;
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    // Pin both not_before and not_after so the cert is fully deterministic
+    // across nodes (all nodes holding the same mesh secret produce identical DER).
+    params.not_before = rcgen::date_time_ymd(2025, 1, 1);
+    params.not_after = rcgen::date_time_ymd(2045, 1, 1);
+
+    let cert = params
+        .self_signed(&key_pair)
+        .map_err(|e| PeeringError::Tls(format!("self-sign: {e}")))?;
+
+    let cert_der = rustls::pki_types::CertificateDer::from(cert.der().to_vec());
+    let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(
+        rustls::pki_types::PrivatePkcs8KeyDer::from(pkcs8_doc),
+    );
+
+    Ok((vec![cert_der], key_der))
+}
+
+/// Construct a PKCS#8 v2 document for an Ed25519 key from a 32-byte seed.
+/// This is the DER encoding that ring / rustls expects.
+fn ring_ed25519_pkcs8_from_seed(seed: &[u8; 32]) -> Result<Vec<u8>, String> {
+    // PKCS#8 v2 wrapper for Ed25519 (RFC 8410).
+    // The structure is:
+    //   SEQUENCE {
+    //     INTEGER 0
+    //     SEQUENCE { OID 1.3.101.112 }
+    //     OCTET STRING { OCTET STRING { <32 bytes seed> } }
+    //   }
+    let mut doc = Vec::with_capacity(48);
+    // SEQUENCE (outer)
+    doc.push(0x30);
+    doc.push(0x2e); // 46 bytes payload
+
+    // INTEGER 0 (version)
+    doc.extend_from_slice(&[0x02, 0x01, 0x00]);
+
+    // SEQUENCE { OID 1.3.101.112 }
+    doc.extend_from_slice(&[0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70]);
+
+    // OCTET STRING wrapping OCTET STRING wrapping seed
+    doc.push(0x04); // outer OCTET STRING tag
+    doc.push(0x22); // 34 bytes
+    doc.push(0x04); // inner OCTET STRING tag
+    doc.push(0x20); // 32 bytes
+    doc.extend_from_slice(seed);
+
+    Ok(doc)
+}
 
 const JOIN_TIMEOUT: Duration = Duration::from_secs(10);
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -163,6 +277,8 @@ pub enum PeeringError {
     NotFound(String),
     #[error("timeout")]
     Timeout,
+    #[error("TLS error: {0}")]
+    Tls(String),
     #[error("rejected: {0}")]
     Rejected(String),
     #[error("peer limit exceeded: {current} peers (max {max})")]
@@ -311,7 +427,11 @@ impl PeeringState {
         Ok(())
     }
 
-    /// Run the peering TCP listener. Runs forever.
+    /// Run the peering TCP listener with TLS. Runs forever.
+    ///
+    /// When `tls_config` is `Some`, every accepted TCP connection is upgraded to
+    /// TLS 1.3 before any peering messages are exchanged.  Plaintext connections
+    /// will fail the TLS handshake and be dropped — there is no fallback.
     #[allow(unreachable_code)]
     pub async fn run_listener(
         &self,
@@ -319,15 +439,20 @@ impl PeeringState {
         encryption_key: Option<[u8; 32]>,
         on_announce: Arc<dyn Fn(PeerRecord) + Send + Sync>,
         on_accepted: OnAccepted,
+        tls_config: Option<Arc<rustls::ServerConfig>>,
     ) -> Result<(), PeeringError> {
         self.set_active(true).await;
         let addr: SocketAddr = format!("0.0.0.0:{port}").parse().unwrap();
         let listener = TcpListener::bind(addr).await?;
         let semaphore = Arc::new(Semaphore::new(self.max_connections));
+
+        let tls_acceptor = tls_config.map(tokio_rustls::TlsAcceptor::from);
+
         info!(
             port = port,
             max_connections = self.max_connections,
             max_pending_joins = self.max_pending_joins,
+            tls = tls_acceptor.is_some(),
             "peering listener started"
         );
 
@@ -369,23 +494,54 @@ impl PeeringState {
             let active_counter = self.connections_active.clone();
             let max_pending = self.max_pending_joins;
             let replay_guard = self.replay_guard.clone();
+            let tls_acceptor = tls_acceptor.clone();
 
             tokio::spawn(async move {
                 let _permit = permit; // held until this task ends
-                if let Err(e) = handle_incoming(
-                    stream,
-                    peer_addr,
-                    pending,
-                    enc_key,
-                    on_announce,
-                    auto_accept,
-                    on_accepted,
-                    rate_limiter,
-                    max_pending,
-                    replay_guard,
-                )
-                .await
-                {
+
+                let result = if let Some(acceptor) = tls_acceptor {
+                    match tokio::time::timeout(EXCHANGE_TIMEOUT, acceptor.accept(stream)).await {
+                        Ok(Ok(tls_stream)) => {
+                            handle_incoming(
+                                tls_stream,
+                                peer_addr,
+                                pending,
+                                enc_key,
+                                on_announce,
+                                auto_accept,
+                                on_accepted,
+                                rate_limiter,
+                                max_pending,
+                                replay_guard,
+                            )
+                            .await
+                        }
+                        Ok(Err(e)) => {
+                            debug!("TLS handshake with {peer_addr} failed: {e}");
+                            Err(PeeringError::Tls(format!("handshake: {e}")))
+                        }
+                        Err(_) => {
+                            debug!("TLS handshake with {peer_addr} timed out");
+                            Err(PeeringError::Timeout)
+                        }
+                    }
+                } else {
+                    handle_incoming(
+                        stream,
+                        peer_addr,
+                        pending,
+                        enc_key,
+                        on_announce,
+                        auto_accept,
+                        on_accepted,
+                        rate_limiter,
+                        max_pending,
+                        replay_guard,
+                    )
+                    .await
+                };
+
+                if let Err(e) = result {
                     debug!("peering connection from {peer_addr} failed: {e}");
                 }
                 active_counter.fetch_sub(1, Ordering::Relaxed);
@@ -396,10 +552,10 @@ impl PeeringState {
     }
 }
 
-/// Handle an incoming TCP connection.
+/// Handle an incoming connection (plain TCP or TLS).
 #[allow(clippy::too_many_arguments)]
-async fn handle_incoming(
-    mut stream: TcpStream,
+async fn handle_incoming<S: AsyncRead + AsyncWrite + Unpin>(
+    mut stream: S,
     peer_addr: SocketAddr,
     pending: Arc<RwLock<HashMap<String, PendingJoin>>>,
     encryption_key: Option<[u8; 32]>,
@@ -805,26 +961,111 @@ fn build_auto_accept_response(
     Ok((response, new_record))
 }
 
+// --- Client-side helpers ---
+
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+/// A stream that is either a plain TCP connection or a TLS-upgraded one.
+/// Implements `AsyncRead + AsyncWrite` so callers can use a single code path.
+enum MaybeTlsStream {
+    Plain(TcpStream),
+    Tls(Box<tokio_rustls::client::TlsStream<TcpStream>>),
+}
+
+impl AsyncRead for MaybeTlsStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            MaybeTlsStream::Plain(s) => Pin::new(s).poll_read(cx, buf),
+            MaybeTlsStream::Tls(s) => Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for MaybeTlsStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            MaybeTlsStream::Plain(s) => Pin::new(s).poll_write(cx, buf),
+            MaybeTlsStream::Tls(s) => Pin::new(s).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            MaybeTlsStream::Plain(s) => Pin::new(s).poll_flush(cx),
+            MaybeTlsStream::Tls(s) => Pin::new(s).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            MaybeTlsStream::Plain(s) => Pin::new(s).poll_shutdown(cx),
+            MaybeTlsStream::Tls(s) => Pin::new(s).poll_shutdown(cx),
+        }
+    }
+}
+
+/// Upgrade a `TcpStream` to TLS if a config is provided, returning a
+/// `MaybeTlsStream`.  This eliminates duplicated TLS / non-TLS branches
+/// in every client-side function.
+async fn maybe_upgrade_tls(
+    tcp_stream: TcpStream,
+    tls_config: Option<Arc<rustls::ClientConfig>>,
+    target: &SocketAddr,
+) -> Result<MaybeTlsStream, PeeringError> {
+    if let Some(cfg) = tls_config {
+        let connector = tokio_rustls::TlsConnector::from(cfg);
+        let server_name = rustls::pki_types::ServerName::try_from("syfrah-mesh.internal")
+            .map_err(|e| PeeringError::Tls(format!("server name: {e}")))?;
+        let tls_stream = tokio::time::timeout(
+            EXCHANGE_TIMEOUT,
+            connector.connect(server_name.to_owned(), tcp_stream),
+        )
+        .await
+        .map_err(|_| PeeringError::Timeout)?
+        .map_err(|e| PeeringError::Tls(format!("TLS handshake failed with {target}. Verify the node is running a compatible version. ({e})")))?;
+        Ok(MaybeTlsStream::Tls(Box::new(tls_stream)))
+    } else {
+        Ok(MaybeTlsStream::Plain(tcp_stream))
+    }
+}
+
 // --- Client-side functions ---
 
 /// Send a join request to an existing node and wait for response.
+///
+/// When `tls_config` is `Some`, the TCP connection is upgraded to TLS before
+/// sending the join request.  The joiner does not yet know the mesh secret
+/// (that is what it receives in the `JoinResponse`), so it cannot verify the
+/// server certificate via the mesh-derived CA.  We therefore skip server-cert
+/// verification for the join handshake only — the PIN exchange provides the
+/// authentication guarantee at this stage.
 pub async fn send_join_request(
     target: SocketAddr,
     request: JoinRequest,
+    tls_config: Option<Arc<rustls::ClientConfig>>,
 ) -> Result<JoinResponse, PeeringError> {
-    let mut stream = tokio::time::timeout(EXCHANGE_TIMEOUT, TcpStream::connect(target))
+    let tcp_stream = tokio::time::timeout(EXCHANGE_TIMEOUT, TcpStream::connect(target))
         .await
         .map_err(|_| PeeringError::Timeout)??;
 
-    write_message(&mut stream, &PeeringMessage::JoinRequest(request)).await?;
+    let mut stream = maybe_upgrade_tls(tcp_stream, tls_config, &target).await?;
 
+    write_message(&mut stream, &PeeringMessage::JoinRequest(request)).await?;
     let msg = tokio::time::timeout(JOIN_TIMEOUT, read_message(&mut stream))
         .await
         .map_err(|_| PeeringError::Timeout)??;
 
     match msg {
         PeeringMessage::JoinResponse(resp) => {
-            // Validate peer list size limit
             if let Err(e) = validate_join_response(&resp) {
                 warn!(error = %e, "rejecting join response: validation failed");
                 return Err(PeeringError::Protocol(format!(
@@ -846,6 +1087,7 @@ pub async fn announce_peer(
     peering_port: u16,
     record: &PeerRecord,
     encryption_key: &[u8; 32],
+    tls_config: Option<Arc<rustls::ClientConfig>>,
 ) -> Result<(), PeeringError> {
     let target = SocketAddr::new(target_endpoint.ip(), peering_port);
     // Stamp the record with the current time for replay protection.
@@ -859,31 +1101,34 @@ pub async fn announce_peer(
             let delay = Duration::from_secs(1 << (attempt - 1)); // 1s, 2s, 4s
             tokio::time::sleep(delay).await;
         }
-        match try_announce(&target, &ciphertext).await {
+        match try_announce(&target, &ciphertext, tls_config.clone()).await {
             Ok(()) => return Ok(()),
             Err(e) => {
-                // Only retry on transient errors (Io, Timeout)
-                match &e {
-                    PeeringError::Io(_) | PeeringError::Timeout => {
-                        debug!(
-                            "announce attempt {}/{} to {target} failed: {e}",
-                            attempt + 1,
-                            ANNOUNCE_MAX_RETRIES
-                        );
-                        last_err = Some(e);
-                    }
-                    _ => return Err(e), // Non-transient: fail immediately
-                }
+                // Retry on transient errors. TLS handshake failures are also
+                // retried because they can occur when the remote listener is
+                // still initialising its TLS acceptor.
+                debug!(
+                    "announce attempt {}/{} to {target} failed: {e}",
+                    attempt + 1,
+                    ANNOUNCE_MAX_RETRIES
+                );
+                last_err = Some(e);
             }
         }
     }
     Err(last_err.unwrap_or(PeeringError::Timeout))
 }
 
-async fn try_announce(target: &SocketAddr, ciphertext: &[u8]) -> Result<(), PeeringError> {
-    let mut stream = tokio::time::timeout(EXCHANGE_TIMEOUT, TcpStream::connect(target))
+async fn try_announce(
+    target: &SocketAddr,
+    ciphertext: &[u8],
+    tls_config: Option<Arc<rustls::ClientConfig>>,
+) -> Result<(), PeeringError> {
+    let tcp_stream = tokio::time::timeout(EXCHANGE_TIMEOUT, TcpStream::connect(target))
         .await
         .map_err(|_| PeeringError::Timeout)??;
+
+    let mut stream = maybe_upgrade_tls(tcp_stream, tls_config, target).await?;
     write_message(
         &mut stream,
         &PeeringMessage::PeerAnnounce(ciphertext.to_vec()),
@@ -899,6 +1144,7 @@ pub async fn announce_peer_to_mesh(
     known_peers: &[PeerRecord],
     encryption_key: &[u8; 32],
     peering_port: u16,
+    tls_config: Option<Arc<rustls::ClientConfig>>,
 ) -> (usize, usize) {
     let mut succeeded = 0;
     let mut failed = 0;
@@ -906,7 +1152,15 @@ pub async fn announce_peer_to_mesh(
         if peer.wg_public_key == record.wg_public_key {
             continue;
         }
-        if let Err(e) = announce_peer(peer.endpoint, peering_port, record, encryption_key).await {
+        if let Err(e) = announce_peer(
+            peer.endpoint,
+            peering_port,
+            record,
+            encryption_key,
+            tls_config.clone(),
+        )
+        .await
+        {
             warn!(target_peer = %sanitize(&peer.name), target_endpoint = %peer.endpoint, error = %e, "announcement failed after retries");
             events::emit(
                 EventType::PeerAnnounceFailed,
@@ -926,7 +1180,10 @@ pub async fn announce_peer_to_mesh(
 
 // --- Wire protocol helpers ---
 
-async fn write_message(stream: &mut TcpStream, msg: &PeeringMessage) -> Result<(), PeeringError> {
+async fn write_message<S: AsyncWrite + Unpin>(
+    stream: &mut S,
+    msg: &PeeringMessage,
+) -> Result<(), PeeringError> {
     let data = serde_json::to_vec(msg)?;
     let len = data.len() as u32;
     stream.write_all(&len.to_be_bytes()).await?;
@@ -935,7 +1192,9 @@ async fn write_message(stream: &mut TcpStream, msg: &PeeringMessage) -> Result<(
     Ok(())
 }
 
-async fn read_message(stream: &mut TcpStream) -> Result<PeeringMessage, PeeringError> {
+async fn read_message<S: AsyncRead + Unpin>(
+    stream: &mut S,
+) -> Result<PeeringMessage, PeeringError> {
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf).await?;
     let len = u32::from_be_bytes(len_buf);
