@@ -19,10 +19,12 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+Type=notify
 ExecStart={exe_path} fabric start --foreground
+ExecStartPost={exe_path} fabric diagnose --json
 Restart=always
 RestartSec=5
+WatchdogSec=60
 LimitNOFILE=65535
 
 [Install]
@@ -57,6 +59,8 @@ pub async fn install() -> Result<()> {
         run_systemctl(&["enable", "syfrah"])?;
 
         ui::success("Systemd service installed and enabled.");
+        ui::info_line("Type", "notify (daemon signals readiness via sd_notify)");
+        ui::info_line("Watchdog", "WatchdogSec=60 (health check pings every 30s)");
         ui::info_line("Note", "The daemon will start automatically on reboot.");
         ui::info_line("Start now", "systemctl start syfrah");
         Ok(())
@@ -158,6 +162,10 @@ mod tests {
         assert!(contents.contains("After=network-online.target"));
         assert!(contents.contains("WantedBy=multi-user.target"));
         assert!(contents.contains("LimitNOFILE=65535"));
+        assert!(contents.contains("Type=notify"));
+        assert!(contents.contains("WatchdogSec=60"));
+        assert!(contents.contains("ExecStartPost="));
+        assert!(contents.contains("fabric diagnose --json"));
     }
 
     #[test]

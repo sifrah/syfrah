@@ -17,6 +17,7 @@ use crate::control::{self, ControlHandler, ControlRequest, ControlResponse};
 use crate::events::{self, EventType};
 use crate::peering::{self, AutoAcceptConfig, PeeringState};
 use crate::sanitize::sanitize;
+use crate::sd_watchdog;
 use crate::store::{self, NodeState};
 use crate::ui;
 use crate::wg;
@@ -1030,6 +1031,12 @@ pub async fn run_daemon(
         }
     });
 
+    // Notify systemd that the daemon is ready (Type=notify).
+    // At this point the WireGuard interface is up, the control socket is
+    // listening, and the peering listener is accepting connections.
+    sd_watchdog::notify_ready();
+    sd_watchdog::notify_status("Mesh daemon running");
+
     // Persist metrics (atomic — no load+modify+save)
     let persist_recv = metrics_received.clone();
     let persist_recon = metrics_reconciliations.clone();
@@ -1186,6 +1193,11 @@ pub async fn run_daemon(
                 Some(&format!("peers_checked={}", peers.len())),
                 Some(health_max_events),
             );
+
+            // Ping systemd watchdog after each successful health check cycle.
+            // With WatchdogSec=60 and the default health_check_interval of 30s,
+            // this keeps the watchdog fed as long as the health loop is running.
+            sd_watchdog::notify_watchdog();
         }
     };
 
@@ -1260,6 +1272,9 @@ pub async fn run_daemon(
             info!("received SIGTERM, shutting down");
         }
     }
+
+    // Tell systemd we are shutting down gracefully.
+    sd_watchdog::notify_stopping();
 
     // Flush any debounced JSON state so the on-disk export is up-to-date.
     let _ = store::flush_json();
