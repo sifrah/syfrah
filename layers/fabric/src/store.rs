@@ -382,6 +382,33 @@ pub fn remove_peer(name_or_key: &str) -> Result<Option<PeerRecord>, StoreError> 
     }
 }
 
+/// Update a peer's endpoint by name or WG public key.
+/// Returns `Ok(Some((old_endpoint, updated_peer)))` if found, or `Ok(None)` if
+/// no matching peer exists.
+pub fn update_peer_endpoint(
+    name_or_key: &str,
+    new_endpoint: std::net::SocketAddr,
+) -> Result<Option<(std::net::SocketAddr, PeerRecord)>, StoreError> {
+    if !LayerDb::layer_exists(LAYER_NAME) {
+        return Ok(None);
+    }
+    let db = open_db()?;
+    let entries: Vec<(String, PeerRecord)> = db.list("peers")?;
+    let found = entries
+        .into_iter()
+        .find(|(_, p)| p.name == name_or_key || p.wg_public_key == name_or_key);
+    match found {
+        Some((key, mut peer)) => {
+            let old_endpoint = peer.endpoint;
+            peer.endpoint = new_endpoint;
+            db.set("peers", &key, &peer)?;
+            maybe_write_json(&db);
+            Ok(Some((old_endpoint, peer)))
+        }
+        None => Ok(None),
+    }
+}
+
 /// Get all peers from redb.
 pub fn get_peers() -> Result<Vec<PeerRecord>, StoreError> {
     if !LayerDb::layer_exists(LAYER_NAME) {

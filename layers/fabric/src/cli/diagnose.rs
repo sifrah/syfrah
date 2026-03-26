@@ -1,4 +1,4 @@
-use crate::{audit, config, store, ui, wg};
+use crate::{audit, config, sd_watchdog, store, ui, wg};
 use anyhow::Result;
 use serde::Serialize;
 use syfrah_state::LayerDb;
@@ -202,6 +202,40 @@ pub async fn run(json: bool) -> Result<()> {
                 format!("Interface {}", wg::interface_name()),
                 false,
                 &format!("not found: {e}")
+            );
+        }
+    }
+
+    // -- Systemd integration --
+    if !json {
+        println!();
+        ui::heading("Systemd");
+    }
+    let unit_installed = std::path::Path::new(crate::cli::service::UNIT_FILE_PATH).exists();
+    check!(
+        "Unit file installed",
+        unit_installed,
+        "run 'syfrah fabric service install'"
+    );
+    let sd_active = sd_watchdog::is_active();
+    check!(
+        "Systemd notify socket",
+        sd_active || !unit_installed,
+        "NOTIFY_SOCKET not set — daemon may not be running under systemd"
+    );
+    if unit_installed {
+        if let Ok(contents) = std::fs::read_to_string(crate::cli::service::UNIT_FILE_PATH) {
+            let has_notify = contents.contains("Type=notify");
+            check!(
+                "Unit file has Type=notify",
+                has_notify,
+                "reinstall with 'syfrah fabric service install'"
+            );
+            let has_watchdog = contents.contains("WatchdogSec=");
+            check!(
+                "Unit file has WatchdogSec",
+                has_watchdog,
+                "reinstall with 'syfrah fabric service install'"
             );
         }
     }
