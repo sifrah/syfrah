@@ -12,7 +12,7 @@ use tokio::sync::{oneshot, Mutex, RwLock, Semaphore};
 use tracing::{debug, info, warn};
 
 use syfrah_core::mesh::{
-    decrypt_record, encrypt_record, validate_join_request, validate_join_response,
+    decrypt_record, encrypt_record, validate_and_verify_join_request, validate_join_response,
     validate_peer_record, JoinRequest, JoinResponse, PeerRecord, PeerStatus, PeeringMessage,
 };
 
@@ -417,8 +417,8 @@ async fn handle_incoming(
 
     match msg {
         PeeringMessage::JoinRequest(mut req) => {
-            // Validate all fields before processing
-            if let Err(e) = validate_join_request(&req) {
+            // Validate all fields and verify cryptographic signature before processing
+            if let Err(e) = validate_and_verify_join_request(&req) {
                 warn!(from = %peer_addr, error = %e, "rejecting join request: validation failed");
                 return Err(PeeringError::Protocol(format!("invalid join request: {e}")));
             }
