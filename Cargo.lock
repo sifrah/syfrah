@@ -2035,9 +2035,11 @@ name = "syfrah-api"
 version = "0.2.0"
 dependencies = [
  "libc",
+ "rand",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
