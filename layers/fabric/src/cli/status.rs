@@ -152,6 +152,41 @@ pub async fn run(opts: StatusOpts) -> Result<()> {
     }
     ui::box_bottom();
 
+    // ── Verbose: Zone Health ────────────────────────────────────────
+    if opts.verbose {
+        if let Ok(zone_statuses) = store::list_zone_health() {
+            if !zone_statuses.is_empty() {
+                ui::box_top("Zone Health");
+                let mut sorted = zone_statuses;
+                sorted.sort_by(|a, b| a.0.cmp(&b.0));
+                for (zone_name, status) in &sorted {
+                    let label = status.to_string();
+                    if ui::is_tty() {
+                        let styled = match status {
+                            crate::events::ZoneHealthStatus::Healthy => {
+                                let s = console::Style::new().green();
+                                format!("{}", s.apply_to(&label))
+                            }
+                            crate::events::ZoneHealthStatus::Degraded => {
+                                let s = console::Style::new().yellow();
+                                format!("{}", s.apply_to(&label))
+                            }
+                            _ => {
+                                let s = console::Style::new().red().bold();
+                                format!("{}", s.apply_to(&label))
+                            }
+                        };
+                        ui::box_row(&format!("{zone_name}: {styled}"));
+                    } else {
+                        ui::box_row(&format!("{zone_name}: {label}"));
+                    }
+                }
+                ui::box_bottom();
+                println!();
+            }
+        }
+    }
+
     // ── Verbose: Metrics ────────────────────────────────────────────
     if opts.verbose && m.daemon_started_at > 0 {
         println!();

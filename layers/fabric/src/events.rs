@@ -28,7 +28,7 @@ pub struct MeshEvent {
 }
 
 /// All event types tracked by the fabric layer.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EventType {
     DaemonStarted,
     DaemonStopped,
@@ -52,6 +52,10 @@ pub enum EventType {
     PeerLimitReached,
     ConfigReloaded,
     ConfigReloadFailed,
+    ZoneDegraded,
+    ZoneCritical,
+    ZoneFailed,
+    ZoneRecovered,
 }
 
 impl std::fmt::Display for EventType {
@@ -79,6 +83,10 @@ impl std::fmt::Display for EventType {
             EventType::PeerLimitReached => "peer-limit-reached",
             EventType::ConfigReloaded => "config-reloaded",
             EventType::ConfigReloadFailed => "config-reload-failed",
+            EventType::ZoneDegraded => "zone-degraded",
+            EventType::ZoneCritical => "zone-critical",
+            EventType::ZoneFailed => "zone-failed",
+            EventType::ZoneRecovered => "zone-recovered",
         };
         write!(f, "{s}")
     }
@@ -143,6 +151,64 @@ pub fn emit(
     record(event, max_events);
 }
 
+/// Zone-level health status, computed from the ratio of active peers in a zone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ZoneHealthStatus {
+    /// >= 80% of peers are active.
+    Healthy,
+    /// 50-79% of peers are active.
+    Degraded,
+    /// 25-49% of peers are active.
+    Critical,
+    /// < 25% of peers are active (includes 0%).
+    Failed,
+}
+
+impl std::fmt::Display for ZoneHealthStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            ZoneHealthStatus::Healthy => "healthy",
+            ZoneHealthStatus::Degraded => "degraded",
+            ZoneHealthStatus::Critical => "critical",
+            ZoneHealthStatus::Failed => "failed",
+        };
+        write!(f, "{s}")
+    }
+}
+
+impl ZoneHealthStatus {
+    /// Compute zone health from the number of active peers and total peers.
+    ///
+    /// Returns `Healthy` for zones with no peers (vacuously healthy).
+    pub fn from_counts(active: usize, total: usize) -> Self {
+        if total == 0 {
+            return ZoneHealthStatus::Healthy;
+        }
+        // Use integer arithmetic: active * 100 / total gives the percentage.
+        let pct = (active * 100) / total;
+        if pct >= 80 {
+            ZoneHealthStatus::Healthy
+        } else if pct >= 50 {
+            ZoneHealthStatus::Degraded
+        } else if pct >= 25 {
+            ZoneHealthStatus::Critical
+        } else {
+            ZoneHealthStatus::Failed
+        }
+    }
+
+    /// Return the event type for transitioning *to* this status, if any.
+    /// Transitions to `Healthy` emit `ZoneRecovered`; no event for staying healthy.
+    pub fn transition_event(&self) -> Option<EventType> {
+        match self {
+            ZoneHealthStatus::Healthy => Some(EventType::ZoneRecovered),
+            ZoneHealthStatus::Degraded => Some(EventType::ZoneDegraded),
+            ZoneHealthStatus::Critical => Some(EventType::ZoneCritical),
+            ZoneHealthStatus::Failed => Some(EventType::ZoneFailed),
+        }
+    }
+}
+
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -162,6 +228,99 @@ mod tests {
             "join-request-received"
         );
         assert_eq!(EventType::PeerRecovered.to_string(), "peer-recovered");
+    }
+
+    #[test]
+    fn zone_health_event_display() {
+        assert_eq!(EventType::ZoneDegraded.to_string(), "zone-degraded");
+        assert_eq!(EventType::ZoneCritical.to_string(), "zone-critical");
+        assert_eq!(EventType::ZoneFailed.to_string(), "zone-failed");
+        assert_eq!(EventType::ZoneRecovered.to_string(), "zone-recovered");
+    }
+
+    #[test]
+    fn zone_health_status_display() {
+        assert_eq!(ZoneHealthStatus::Healthy.to_string(), "healthy");
+        assert_eq!(ZoneHealthStatus::Degraded.to_string(), "degraded");
+        assert_eq!(ZoneHealthStatus::Critical.to_string(), "critical");
+        assert_eq!(ZoneHealthStatus::Failed.to_string(), "failed");
+    }
+
+    #[test]
+    fn zone_health_from_counts_thresholds() {
+        // 3 nodes: 3 active = 100% = healthy
+        assert_eq!(
+            ZoneHealthStatus::from_counts(3, 3),
+            ZoneHealthStatus::Healthy
+        );
+        // 3 nodes: 2 active = 66% = degraded
+        assert_eq!(
+            ZoneHealthStatus::from_counts(2, 3),
+            ZoneHealthStatus::Degraded
+        );
+        // 3 nodes: 1 active = 33% = critical
+        assert_eq!(
+            ZoneHealthStatus::from_counts(1, 3),
+            ZoneHealthStatus::Critical
+        );
+        // 3 nodes: 0 active = 0% = failed
+        assert_eq!(
+            ZoneHealthStatus::from_counts(0, 3),
+            ZoneHealthStatus::Failed
+        );
+        // 0 nodes = healthy (vacuous)
+        assert_eq!(
+            ZoneHealthStatus::from_counts(0, 0),
+            ZoneHealthStatus::Healthy
+        );
+        // Edge: 5 nodes, 4 active = 80% = healthy
+        assert_eq!(
+            ZoneHealthStatus::from_counts(4, 5),
+            ZoneHealthStatus::Healthy
+        );
+        // Edge: 4 nodes, 3 active = 75% = degraded
+        assert_eq!(
+            ZoneHealthStatus::from_counts(3, 4),
+            ZoneHealthStatus::Degraded
+        );
+        // Edge: 4 nodes, 2 active = 50% = degraded
+        assert_eq!(
+            ZoneHealthStatus::from_counts(2, 4),
+            ZoneHealthStatus::Degraded
+        );
+        // Edge: 4 nodes, 1 active = 25% = critical
+        assert_eq!(
+            ZoneHealthStatus::from_counts(1, 4),
+            ZoneHealthStatus::Critical
+        );
+    }
+
+    #[test]
+    fn zone_health_transition_events() {
+        assert_eq!(
+            ZoneHealthStatus::Healthy.transition_event(),
+            Some(EventType::ZoneRecovered)
+        );
+        assert_eq!(
+            ZoneHealthStatus::Degraded.transition_event(),
+            Some(EventType::ZoneDegraded)
+        );
+        assert_eq!(
+            ZoneHealthStatus::Critical.transition_event(),
+            Some(EventType::ZoneCritical)
+        );
+        assert_eq!(
+            ZoneHealthStatus::Failed.transition_event(),
+            Some(EventType::ZoneFailed)
+        );
+    }
+
+    #[test]
+    fn zone_health_status_serialization_roundtrip() {
+        let status = ZoneHealthStatus::Degraded;
+        let json = serde_json::to_string(&status).unwrap();
+        let deserialized: ZoneHealthStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, status);
     }
 
     #[test]

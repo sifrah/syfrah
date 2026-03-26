@@ -1431,6 +1431,64 @@ pub async fn run_daemon(
                 }
             }
 
+            // ── Zone health aggregation ──────────────────────────────
+            {
+                use crate::events::ZoneHealthStatus;
+                use crate::topology::TopologyView;
+
+                let view = TopologyView::from_peers(&peers);
+                let mut all_zones: Vec<&syfrah_core::mesh::Zone> = view
+                    .regions()
+                    .iter()
+                    .flat_map(|r| view.zones_in_region(r))
+                    .collect();
+                all_zones.sort_by_key(|z| z.as_str());
+                all_zones.dedup_by_key(|z| z.as_str());
+
+                for zone in all_zones {
+                    let zone_peers = view.peers_in_zone(zone);
+                    let total = zone_peers.len();
+                    let active = view.active_count_in_zone(zone);
+                    let new_status = ZoneHealthStatus::from_counts(active, total);
+
+                    let prev_status = store::get_zone_health(zone.as_str()).unwrap_or(None);
+
+                    // Persist the new status
+                    if let Err(e) = store::set_zone_health(zone.as_str(), new_status) {
+                        warn!(zone = %zone.as_str(), error = %e, "failed to persist zone health");
+                    }
+
+                    // Emit event on transition (skip initial Healthy → Healthy)
+                    if let Some(prev) = prev_status {
+                        if prev != new_status {
+                            if let Some(event_type) = new_status.transition_event() {
+                                info!(
+                                    zone = %zone.as_str(),
+                                    from = %prev,
+                                    to = %new_status,
+                                    active,
+                                    total,
+                                    "zone health transition"
+                                );
+                                events::emit(
+                                    event_type,
+                                    None,
+                                    None,
+                                    Some(&format!(
+                                        "zone={} active={}/{} status={}",
+                                        zone.as_str(),
+                                        active,
+                                        total,
+                                        new_status,
+                                    )),
+                                    Some(health_max_events),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
             events::emit(
                 EventType::HealthCheckRun,
                 None,
