@@ -2266,6 +2266,21 @@ impl ControlHandler for DaemonControlHandler {
 /// Handle a config reload request: re-read config.toml, diff with current,
 /// apply hot-reloadable changes, and report results.
 fn handle_reload(max_events: u64) -> ControlResponse {
+    // Dry-run: parse and validate the config file before applying any changes.
+    if let Err(e) = config::validate_config_file() {
+        warn!("config reload rejected (validation failed): {e}");
+        events::emit(
+            EventType::ConfigReloadFailed,
+            None,
+            None,
+            Some(&e),
+            Some(max_events),
+        );
+        return ControlResponse::Error {
+            message: format!("Config validation failed: {e}. Keeping current configuration."),
+        };
+    }
+
     let current = config::load_tuning().unwrap_or_default();
     match config::load_tuning() {
         Ok(new_tuning) => {

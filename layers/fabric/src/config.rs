@@ -432,6 +432,26 @@ fn validate_config(config: &ConfigFile) -> Result<(), String> {
     }
 }
 
+/// Dry-run validation of `~/.syfrah/config.toml`.
+///
+/// Parses and validates the config file without applying any changes.
+/// Returns `Ok(())` when the file is absent (nothing to validate) or when
+/// the file is present and passes all validation checks.
+pub fn validate_config_file() -> Result<(), String> {
+    let path = syfrah_dir().join("config.toml");
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+
+    let config: ConfigFile =
+        toml::from_str(&content).map_err(|e| format!("invalid config.toml: {e}"))?;
+
+    validate_config(&config)
+}
+
 /// Load tuning from `~/.syfrah/config.toml`. Returns defaults if file
 /// doesn't exist. Returns error if file exists but is invalid or contains
 /// values that fail validation.
