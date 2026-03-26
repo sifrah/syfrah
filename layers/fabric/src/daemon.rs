@@ -789,6 +789,51 @@ pub async fn run_daemon(
         let plr = accepted_peer_limit_counter.clone();
         let sf = accepted_store_failures.clone();
         tokio::spawn(async move {
+            // Purge stale peers with the same node name but different WG key.
+            // This prevents phantom peer accumulation from repeated init/join
+            // cycles of the same node (issue #285).
+            match store::purge_stale_peers_by_name(&record.name, &record.wg_public_key) {
+                Ok(0) => {}
+                Ok(n) => {
+                    info!(
+                        peer = %sanitize(&record.name),
+                        purged = n,
+                        "purged stale peer records with same node name"
+                    );
+                }
+                Err(e) => {
+                    warn!(error = %e, "on_accepted: failed to purge stale peers");
+                }
+            }
+
+            // Reject peers whose endpoint is 0.0.0.0 — WireGuard cannot
+            // send packets to an unspecified address (issue #285).
+            if record.endpoint.ip().is_unspecified() {
+                warn!(
+                    peer = %sanitize(&record.name),
+                    endpoint = %record.endpoint,
+                    "on_accepted: rejecting peer with unspecified (0.0.0.0) endpoint"
+                );
+                return;
+            }
+
+            // Reject peers whose endpoint matches our own public IP —
+            // a node sending WG packets to itself causes Invalid MAC
+            // loops and disrupts the mesh (issue #285).
+            if let Ok(state) = store::load() {
+                if let Some(my_endpoint) = state.public_endpoint {
+                    if record.endpoint.ip() == my_endpoint.ip() {
+                        warn!(
+                            peer = %sanitize(&record.name),
+                            endpoint = %record.endpoint,
+                            my_ip = %my_endpoint.ip(),
+                            "on_accepted: rejecting peer with self-referencing endpoint"
+                        );
+                        return;
+                    }
+                }
+            }
+
             // Check store peer count + existence in a single read transaction (fail closed: skip on error).
             // The store is the source of truth for the peer limit — not the WG kernel
             // interface — because the store is always reachable (no root required for reads)
@@ -925,6 +970,7 @@ pub async fn run_daemon(
     let announce_enc_key = enc_key;
     let announce_peering_port = peering_port;
     let announce_tls_client = tls_client_config.clone();
+    let my_endpoint_for_announce = my_record.endpoint;
     let on_announce: Arc<dyn Fn(PeerRecord) + Send + Sync> = Arc::new(move |record| {
         announce_recv.fetch_add(1, Ordering::Relaxed);
         events::emit(
@@ -934,6 +980,30 @@ pub async fn run_daemon(
             Some(&format!("mesh_ipv6={}", record.mesh_ipv6)),
             Some(announce_max_events),
         );
+
+        // Reject announced peers with 0.0.0.0 endpoint — WireGuard cannot
+        // route packets to an unspecified address (issue #285).
+        if record.endpoint.ip().is_unspecified() {
+            warn!(
+                peer = %sanitize(&record.name),
+                endpoint = %record.endpoint,
+                "on_announce: dropping peer with unspecified (0.0.0.0) endpoint"
+            );
+            return;
+        }
+
+        // Reject announced peers whose endpoint matches our own public IP.
+        // A node sending WG packets to itself causes Invalid MAC loops (issue #285).
+        if !my_endpoint_for_announce.ip().is_unspecified()
+            && record.endpoint.ip() == my_endpoint_for_announce.ip()
+        {
+            warn!(
+                peer = %sanitize(&record.name),
+                endpoint = %record.endpoint,
+                "on_announce: dropping peer with self-referencing endpoint"
+            );
+            return;
+        }
 
         // Bound concurrent announce processing with a semaphore.
         // When the semaphore is full, queue the announce for retry instead of dropping it.
@@ -1377,6 +1447,39 @@ pub async fn run_daemon(
                     continue;
                 }
             };
+
+            // Fix 0.0.0.0 endpoints: if a stored peer has an unspecified endpoint
+            // but WireGuard has learned a real endpoint via roaming, update the
+            // store so the correct endpoint is propagated (issue #285).
+            if let Ok(summary) = wg::interface_summary() {
+                for peer in &stored_peers {
+                    if peer.endpoint.ip().is_unspecified() {
+                        if let Some(wg_peer) = summary
+                            .peers
+                            .iter()
+                            .find(|wp| wp.public_key == peer.wg_public_key)
+                        {
+                            if let Some(real_endpoint) = wg_peer.endpoint {
+                                if !real_endpoint.ip().is_unspecified()
+                                    && !real_endpoint.ip().is_loopback()
+                                {
+                                    info!(
+                                        peer = %sanitize(&peer.name),
+                                        old_endpoint = %peer.endpoint,
+                                        new_endpoint = %real_endpoint,
+                                        "correcting 0.0.0.0 endpoint from WG roaming data"
+                                    );
+                                    let _ = store::update_peer_endpoint(
+                                        &peer.wg_public_key,
+                                        real_endpoint,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Diff-based reconciliation: only touch peers that actually changed.
             // This avoids tearing down existing WireGuard sessions.
             // sync_peers handles diff, add/update, removal + route cleanup.
@@ -2504,5 +2607,59 @@ mod tests {
             assert_eq!(segs[6], 0, "segment 6 non-zero for secret [{};32]", i * 50);
             assert_eq!(segs[7], 0, "segment 7 non-zero for secret [{};32]", i * 50);
         }
+    }
+
+    // ── Phantom peer / endpoint validation tests (issue #285) ──
+
+    #[test]
+    fn resolve_endpoint_returns_unspecified_when_no_public_endpoint() {
+        let config = DaemonConfig {
+            mesh_name: "test".into(),
+            node_name: "node".into(),
+            wg_listen_port: 51820,
+            public_endpoint: None,
+            peering_port: 7946,
+            region: None,
+            zone: None,
+        };
+        let ep = resolve_endpoint(&config);
+        assert!(
+            ep.ip().is_unspecified(),
+            "with no --endpoint, resolve_endpoint should return 0.0.0.0"
+        );
+    }
+
+    #[test]
+    fn unspecified_endpoint_is_detectable() {
+        // Verify that our is_unspecified() check works as expected
+        // for both IPv4 and IPv6 unspecified addresses.
+        let v4_zero: SocketAddr = "0.0.0.0:51820".parse().unwrap();
+        assert!(v4_zero.ip().is_unspecified());
+
+        let v6_zero: SocketAddr = "[::]:51820".parse().unwrap();
+        assert!(v6_zero.ip().is_unspecified());
+
+        let real: SocketAddr = "65.21.178.96:51820".parse().unwrap();
+        assert!(!real.ip().is_unspecified());
+    }
+
+    #[test]
+    fn self_endpoint_detection() {
+        // Verify that we can detect when a peer's endpoint matches
+        // the local node's own public IP.
+        let my_endpoint: SocketAddr = "65.21.178.96:51820".parse().unwrap();
+        let peer_endpoint: SocketAddr = "65.21.178.96:51820".parse().unwrap();
+        let other_endpoint: SocketAddr = "65.21.140.60:51820".parse().unwrap();
+
+        assert_eq!(
+            peer_endpoint.ip(),
+            my_endpoint.ip(),
+            "peer with same IP as self should be detected"
+        );
+        assert_ne!(
+            other_endpoint.ip(),
+            my_endpoint.ip(),
+            "peer with different IP should not be flagged"
+        );
     }
 }
