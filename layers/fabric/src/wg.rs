@@ -7,7 +7,9 @@ use wireguard_control::{
     Backend, Device, DeviceUpdate, InterfaceName, Key, KeyPair, PeerConfigBuilder,
 };
 
-use syfrah_core::mesh::PeerRecord;
+use syfrah_core::mesh::{PeerRecord, Topology};
+
+use crate::config::{KeepalivePolicy, TopologyTier};
 
 pub const DEFAULT_INTERFACE_NAME: &str = "syfrah0";
 
@@ -50,6 +52,34 @@ fn backend() -> Backend {
 
 fn iface_name() -> Result<InterfaceName, WgError> {
     InterfaceName::from_str(interface_name()).map_err(|e| WgError::InvalidName(e.to_string()))
+}
+
+/// Determine the topology tier of `peer` relative to the local node.
+///
+/// Returns [`TopologyTier::CrossRegion`] when either side has no topology
+/// information, since unknown peers are treated conservatively.
+pub fn resolve_tier(local_topology: Option<&Topology>, peer: &PeerRecord) -> TopologyTier {
+    match (local_topology, peer.topology.as_ref()) {
+        (Some(local), Some(remote)) => {
+            if local.zone == remote.zone && local.region == remote.region {
+                TopologyTier::SameZone
+            } else if local.region == remote.region {
+                TopologyTier::SameRegion
+            } else {
+                TopologyTier::CrossRegion
+            }
+        }
+        _ => TopologyTier::CrossRegion,
+    }
+}
+
+/// Return the keepalive interval for `peer` using the per-tier policy.
+pub fn keepalive_for_peer(
+    policy: &KeepalivePolicy,
+    local_topology: Option<&Topology>,
+    peer: &PeerRecord,
+) -> u16 {
+    policy.for_tier(resolve_tier(local_topology, peer))
 }
 
 /// Generate a new WireGuard keypair.
@@ -103,6 +133,21 @@ pub fn apply_peers(
     peers: &[PeerRecord],
     keepalive_interval: u16,
 ) -> Result<(), WgError> {
+    apply_peers_tiered(self_pubkey, peers, keepalive_interval, None, None)
+}
+
+/// Full reconciliation with per-topology-tier keepalive support.
+///
+/// When `policy` and `local_topology` are provided, each peer gets a
+/// keepalive interval determined by its topology tier. When they are
+/// `None`, the flat `default_keepalive` is used for every peer.
+pub fn apply_peers_tiered(
+    self_pubkey: &Key,
+    peers: &[PeerRecord],
+    default_keepalive: u16,
+    policy: Option<&KeepalivePolicy>,
+    local_topology: Option<&Topology>,
+) -> Result<(), WgError> {
     let iface = iface_name()?;
 
     let mut update = DeviceUpdate::new().replace_peers();
@@ -121,11 +166,15 @@ pub fn apply_peers(
             continue;
         }
 
+        let ka = policy
+            .map(|p| keepalive_for_peer(p, local_topology, peer))
+            .unwrap_or(default_keepalive);
+
         let peer_config = PeerConfigBuilder::new(&peer_key)
             .set_endpoint(peer.endpoint)
             .replace_allowed_ips()
             .add_allowed_ip(IpAddr::V6(peer.mesh_ipv6), 128)
-            .set_persistent_keepalive_interval(keepalive_interval);
+            .set_persistent_keepalive_interval(ka);
 
         update = update.add_peer(peer_config);
     }
@@ -235,6 +284,21 @@ pub fn sync_peers(
     desired: &[PeerRecord],
     keepalive_interval: u16,
 ) -> Result<usize, WgError> {
+    sync_peers_tiered(self_pubkey, desired, keepalive_interval, None, None)
+}
+
+/// Non-disruptive peer sync with per-topology-tier keepalive support.
+///
+/// When `policy` and `local_topology` are provided, each peer gets a
+/// keepalive interval determined by its topology tier. Otherwise the flat
+/// `default_keepalive` is used.
+pub fn sync_peers_tiered(
+    self_pubkey: &Key,
+    desired: &[PeerRecord],
+    default_keepalive: u16,
+    policy: Option<&KeepalivePolicy>,
+    local_topology: Option<&Topology>,
+) -> Result<usize, WgError> {
     let summary = interface_summary()?;
     let (to_add_or_update, to_remove) = diff_peers(self_pubkey, desired, &summary.peers)?;
 
@@ -275,7 +339,10 @@ pub fn sync_peers(
 
     // Add or update peers that are new or changed
     for peer in &to_add_or_update {
-        upsert_peer(self_pubkey, peer, keepalive_interval)?;
+        let ka = policy
+            .map(|p| keepalive_for_peer(p, local_topology, peer))
+            .unwrap_or(default_keepalive);
+        upsert_peer(self_pubkey, peer, ka)?;
     }
 
     Ok(changes)
@@ -967,5 +1034,118 @@ mod tests {
         assert_eq!(device.peers[0].config.public_key, peer_kp.public);
 
         destroy_interface().unwrap();
+    }
+
+    // ── resolve_tier / keepalive_for_peer tests ──
+
+    fn make_topology(region: &str, zone: &str) -> Topology {
+        use syfrah_core::mesh::{Region, Zone};
+        Topology {
+            region: Region::new(region).unwrap(),
+            zone: Zone::new(zone).unwrap(),
+        }
+    }
+
+    fn make_peer_with_topo(
+        pubkey: &str,
+        status: syfrah_core::mesh::PeerStatus,
+        topo: Option<Topology>,
+    ) -> PeerRecord {
+        PeerRecord {
+            name: "test-peer".into(),
+            wg_public_key: pubkey.into(),
+            endpoint: "203.0.113.1:51820".parse().unwrap(),
+            mesh_ipv6: "fd12:3456:7800::1".parse().unwrap(),
+            last_seen: 0,
+            status,
+            region: topo.as_ref().map(|t| t.region.as_str().to_owned()),
+            zone: topo.as_ref().map(|t| t.zone.as_str().to_owned()),
+            topology: topo,
+        }
+    }
+
+    #[test]
+    fn resolve_tier_same_zone() {
+        let local = make_topology("eu-west", "eu-west-1a");
+        let peer_topo = make_topology("eu-west", "eu-west-1a");
+        let peer = make_peer_with_topo(
+            "dGVzdA==",
+            syfrah_core::mesh::PeerStatus::Active,
+            Some(peer_topo),
+        );
+        assert_eq!(resolve_tier(Some(&local), &peer), TopologyTier::SameZone);
+    }
+
+    #[test]
+    fn resolve_tier_same_region() {
+        let local = make_topology("eu-west", "eu-west-1a");
+        let peer_topo = make_topology("eu-west", "eu-west-1b");
+        let peer = make_peer_with_topo(
+            "dGVzdA==",
+            syfrah_core::mesh::PeerStatus::Active,
+            Some(peer_topo),
+        );
+        assert_eq!(resolve_tier(Some(&local), &peer), TopologyTier::SameRegion);
+    }
+
+    #[test]
+    fn resolve_tier_cross_region() {
+        let local = make_topology("eu-west", "eu-west-1a");
+        let peer_topo = make_topology("us-east", "us-east-1a");
+        let peer = make_peer_with_topo(
+            "dGVzdA==",
+            syfrah_core::mesh::PeerStatus::Active,
+            Some(peer_topo),
+        );
+        assert_eq!(resolve_tier(Some(&local), &peer), TopologyTier::CrossRegion);
+    }
+
+    #[test]
+    fn resolve_tier_unknown_topology_is_cross_region() {
+        let local = make_topology("eu-west", "eu-west-1a");
+        let peer = make_peer_with_topo("dGVzdA==", syfrah_core::mesh::PeerStatus::Active, None);
+        assert_eq!(resolve_tier(Some(&local), &peer), TopologyTier::CrossRegion);
+    }
+
+    #[test]
+    fn resolve_tier_no_local_topology_is_cross_region() {
+        let peer_topo = make_topology("eu-west", "eu-west-1a");
+        let peer = make_peer_with_topo(
+            "dGVzdA==",
+            syfrah_core::mesh::PeerStatus::Active,
+            Some(peer_topo),
+        );
+        assert_eq!(resolve_tier(None, &peer), TopologyTier::CrossRegion);
+    }
+
+    #[test]
+    fn keepalive_for_peer_uses_policy() {
+        let policy = KeepalivePolicy {
+            same_zone_keepalive: 10,
+            same_region_keepalive: 20,
+            cross_region_keepalive: 40,
+        };
+        let local = make_topology("eu-west", "eu-west-1a");
+
+        let sz = make_peer_with_topo(
+            "a",
+            syfrah_core::mesh::PeerStatus::Active,
+            Some(make_topology("eu-west", "eu-west-1a")),
+        );
+        assert_eq!(keepalive_for_peer(&policy, Some(&local), &sz), 10);
+
+        let sr = make_peer_with_topo(
+            "b",
+            syfrah_core::mesh::PeerStatus::Active,
+            Some(make_topology("eu-west", "eu-west-1b")),
+        );
+        assert_eq!(keepalive_for_peer(&policy, Some(&local), &sr), 20);
+
+        let cr = make_peer_with_topo(
+            "c",
+            syfrah_core::mesh::PeerStatus::Active,
+            Some(make_topology("us-east", "us-east-1a")),
+        );
+        assert_eq!(keepalive_for_peer(&policy, Some(&local), &cr), 40);
     }
 }
