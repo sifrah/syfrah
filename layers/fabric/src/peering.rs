@@ -1263,6 +1263,179 @@ pub async fn announce_peer_to_mesh(
     (succeeded, failed)
 }
 
+/// Announce a peer to the mesh using topology-aware waves.
+///
+/// Instead of broadcasting to all peers simultaneously, this function
+/// partitions peers by topology tier (same-zone, same-region, cross-region)
+/// and announces in three waves with configurable delays and concurrency.
+///
+/// This reduces queue saturation and announce drops at scale by prioritising
+/// nearby peers and rate-limiting cross-region traffic.
+///
+/// Returns (succeeded, failed) totals across all waves.
+pub async fn announce_peer_in_waves(
+    record: &PeerRecord,
+    source: &PeerRecord,
+    known_peers: &[PeerRecord],
+    encryption_key: &[u8; 32],
+    peering_port: u16,
+    tls_config: Option<Arc<rustls::ClientConfig>>,
+    announce_cfg: &crate::config::AnnouncementConfig,
+) -> (usize, usize) {
+    use crate::topology::partition_by_tier;
+
+    let tiers = partition_by_tier(source, known_peers);
+
+    let mut total_ok = 0usize;
+    let mut total_fail = 0usize;
+
+    // Wave 1: same-zone peers
+    if announce_cfg.same_zone_delay_ms > 0 {
+        tokio::time::sleep(Duration::from_millis(announce_cfg.same_zone_delay_ms)).await;
+    }
+    let (ok, fail) = announce_wave(
+        record,
+        &tiers.same_zone,
+        encryption_key,
+        peering_port,
+        tls_config.clone(),
+        announce_cfg.same_zone_concurrency,
+    )
+    .await;
+    total_ok += ok;
+    total_fail += fail;
+    debug!(
+        wave = 1,
+        tier = "same_zone",
+        targets = tiers.same_zone.len(),
+        succeeded = ok,
+        failed = fail,
+        "wave announce completed"
+    );
+
+    // Wave 2: same-region peers (different zone)
+    if !tiers.same_region.is_empty() {
+        if announce_cfg.same_region_delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(announce_cfg.same_region_delay_ms)).await;
+        }
+        let (ok, fail) = announce_wave(
+            record,
+            &tiers.same_region,
+            encryption_key,
+            peering_port,
+            tls_config.clone(),
+            announce_cfg.same_region_concurrency,
+        )
+        .await;
+        total_ok += ok;
+        total_fail += fail;
+        debug!(
+            wave = 2,
+            tier = "same_region",
+            targets = tiers.same_region.len(),
+            succeeded = ok,
+            failed = fail,
+            "wave announce completed"
+        );
+    }
+
+    // Wave 3: cross-region peers
+    if !tiers.cross_region.is_empty() {
+        if announce_cfg.cross_region_delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(announce_cfg.cross_region_delay_ms)).await;
+        }
+        let (ok, fail) = announce_wave(
+            record,
+            &tiers.cross_region,
+            encryption_key,
+            peering_port,
+            tls_config,
+            announce_cfg.cross_region_concurrency,
+        )
+        .await;
+        total_ok += ok;
+        total_fail += fail;
+        debug!(
+            wave = 3,
+            tier = "cross_region",
+            targets = tiers.cross_region.len(),
+            succeeded = ok,
+            failed = fail,
+            "wave announce completed"
+        );
+    }
+
+    (total_ok, total_fail)
+}
+
+/// Announce a peer to a set of targets with bounded concurrency.
+async fn announce_wave(
+    record: &PeerRecord,
+    targets: &[PeerRecord],
+    encryption_key: &[u8; 32],
+    peering_port: u16,
+    tls_config: Option<Arc<rustls::ClientConfig>>,
+    max_concurrency: usize,
+) -> (usize, usize) {
+    use tokio::sync::Semaphore as TokioSemaphore;
+
+    if targets.is_empty() {
+        return (0, 0);
+    }
+
+    let sem = Arc::new(TokioSemaphore::new(max_concurrency));
+    let succeeded = Arc::new(AtomicU64::new(0));
+    let failed = Arc::new(AtomicU64::new(0));
+
+    let mut handles = Vec::with_capacity(targets.len());
+
+    for peer in targets {
+        let permit = sem.clone().acquire_owned().await;
+        let record = record.clone();
+        let peer = peer.clone();
+        let enc = *encryption_key;
+        let tls = tls_config.clone();
+        let ok_counter = succeeded.clone();
+        let fail_counter = failed.clone();
+
+        handles.push(tokio::spawn(async move {
+            let _permit = permit;
+            if let Err(e) = announce_peer(peer.endpoint, peering_port, &record, &enc, tls).await {
+                warn!(
+                    target_peer = %sanitize(&peer.name),
+                    target_endpoint = %peer.endpoint,
+                    error = %e,
+                    "wave announcement failed"
+                );
+                events::emit(
+                    EventType::PeerAnnounceFailed,
+                    Some(&sanitize(&peer.name)),
+                    Some(&peer.endpoint.to_string()),
+                    Some(&format!("error={e}")),
+                    None,
+                );
+                fail_counter.fetch_add(1, Ordering::Relaxed);
+            } else {
+                debug!(
+                    target_peer = %sanitize(&peer.name),
+                    record = %sanitize(&record.name),
+                    "wave: announced peer"
+                );
+                ok_counter.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+    }
+
+    for h in handles {
+        let _ = h.await;
+    }
+
+    (
+        succeeded.load(Ordering::Relaxed) as usize,
+        failed.load(Ordering::Relaxed) as usize,
+    )
+}
+
 // --- Wire protocol helpers ---
 
 async fn write_message<S: AsyncWrite + Unpin>(

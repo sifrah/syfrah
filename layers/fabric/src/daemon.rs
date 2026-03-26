@@ -775,6 +775,8 @@ pub async fn run_daemon(
     let accepted_peer_limit_counter = metrics_peer_limit_reached.clone();
     let accepted_store_failures = metrics_store_failures.clone();
     let accepted_tls_client = tls_client_config.clone();
+    let accepted_my_record = my_record.clone();
+    let accepted_announce_cfg = tuning.announcements.clone();
     let on_accepted: peering::OnAccepted = Arc::new(move |new_record| {
         accepted_recv.fetch_add(1, Ordering::Relaxed);
         let pubkey = accepted_wg_pubkey.clone();
@@ -788,6 +790,8 @@ pub async fn run_daemon(
         let tls_cfg = accepted_tls_client.clone();
         let plr = accepted_peer_limit_counter.clone();
         let sf = accepted_store_failures.clone();
+        let wave_source = accepted_my_record.clone();
+        let wave_cfg = accepted_announce_cfg.clone();
         tokio::spawn(async move {
             // Purge stale peers with the same node name but different WG key.
             // This prevents phantom peer accumulation from repeated init/join
@@ -905,7 +909,7 @@ pub async fn run_daemon(
                 }
                 Ok(true) => {}
             }
-            // Announce to existing peers
+            // Announce to existing peers using topology-aware waves.
             let known = match store::get_peers() {
                 Ok(peers) => peers,
                 Err(e) => {
@@ -914,8 +918,16 @@ pub async fn run_daemon(
                     return;
                 }
             };
-            let (_ok, failed) =
-                peering::announce_peer_to_mesh(&record, &known, &enc, pp, Some(tls_cfg)).await;
+            let (_ok, failed) = peering::announce_peer_in_waves(
+                &record,
+                &wave_source,
+                &known,
+                &enc,
+                pp,
+                Some(tls_cfg),
+                &wave_cfg,
+            )
+            .await;
             if failed > 0 {
                 let _ = store::inc_metric("announcements_failed", failed as u64);
                 events::emit(
@@ -971,6 +983,8 @@ pub async fn run_daemon(
     let announce_peering_port = peering_port;
     let announce_tls_client = tls_client_config.clone();
     let my_endpoint_for_announce = my_record.endpoint;
+    let announce_my_record = my_record.clone();
+    let announce_wave_cfg = tuning.announcements.clone();
     let on_announce: Arc<dyn Fn(PeerRecord) + Send + Sync> = Arc::new(move |record| {
         announce_recv.fetch_add(1, Ordering::Relaxed);
         events::emit(
@@ -1055,6 +1069,8 @@ pub async fn run_daemon(
         let gossip_enc = announce_enc_key;
         let gossip_pp = announce_peering_port;
         let gossip_tls = announce_tls_client.clone();
+        let gossip_source = announce_my_record.clone();
+        let gossip_wave_cfg = announce_wave_cfg.clone();
         tokio::spawn(async move {
             let _permit = permit; // held until task completes
 
@@ -1135,12 +1151,14 @@ pub async fn run_daemon(
                         return;
                     }
                 };
-                let (_ok, _failed) = peering::announce_peer_to_mesh(
+                let (_ok, _failed) = peering::announce_peer_in_waves(
                     &record,
+                    &gossip_source,
                     &known,
                     &gossip_enc,
                     gossip_pp,
                     Some(gossip_tls),
+                    &gossip_wave_cfg,
                 )
                 .await;
             }

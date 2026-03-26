@@ -41,6 +41,42 @@ pub struct Tuning {
     /// Each round re-announces this node to a gossip subset of known peers,
     /// ensuring convergence even when initial announcements fail (default 10s).
     pub self_announce_interval: Duration,
+    /// Wave-based announce propagation settings.
+    pub announcements: AnnouncementConfig,
+}
+
+/// Configuration for topology-aware wave-based announce propagation.
+///
+/// When a new peer is announced, the mesh propagates the announcement in three
+/// waves: same-zone first, then same-region, then cross-region. Each wave has
+/// independent concurrency limits and delays.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnnouncementConfig {
+    /// Maximum concurrent announce connections to same-zone peers (default 50).
+    pub same_zone_concurrency: usize,
+    /// Maximum concurrent announce connections to same-region peers (default 20).
+    pub same_region_concurrency: usize,
+    /// Maximum concurrent announce connections to cross-region peers (default 5).
+    pub cross_region_concurrency: usize,
+    /// Delay before announcing to same-zone peers in milliseconds (default 0).
+    pub same_zone_delay_ms: u64,
+    /// Delay before announcing to same-region peers in milliseconds (default 5000).
+    pub same_region_delay_ms: u64,
+    /// Delay before announcing to cross-region peers in milliseconds (default 15000).
+    pub cross_region_delay_ms: u64,
+}
+
+impl Default for AnnouncementConfig {
+    fn default() -> Self {
+        Self {
+            same_zone_concurrency: 50,
+            same_region_concurrency: 20,
+            cross_region_concurrency: 5,
+            same_zone_delay_ms: 0,
+            same_region_delay_ms: 5000,
+            cross_region_delay_ms: 15000,
+        }
+    }
 }
 
 impl Default for Tuning {
@@ -62,6 +98,7 @@ impl Default for Tuning {
             interface_name: crate::wg::DEFAULT_INTERFACE_NAME.to_string(),
             log_max_size_mb: 10,
             self_announce_interval: Duration::from_secs(10),
+            announcements: AnnouncementConfig::default(),
         }
     }
 }
@@ -78,6 +115,8 @@ struct ConfigFile {
     events: EventsSection,
     #[serde(default)]
     limits: LimitsSection,
+    #[serde(default)]
+    announcements: AnnouncementsSection,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -114,6 +153,16 @@ struct LimitsSection {
     max_peers: Option<usize>,
     max_concurrent_announces: Option<usize>,
     announce_queue_size: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AnnouncementsSection {
+    same_zone_concurrency: Option<usize>,
+    same_region_concurrency: Option<usize>,
+    cross_region_concurrency: Option<usize>,
+    same_zone_delay_ms: Option<u64>,
+    same_region_delay_ms: Option<u64>,
+    cross_region_delay_ms: Option<u64>,
 }
 
 /// Parameters that cannot be changed without a daemon restart.
@@ -180,6 +229,27 @@ pub fn diff_tuning(old: &Tuning, new: &Tuning) -> (Vec<TuningChange>, Vec<Tuning
     cmp_val!(interface_name);
     cmp_val!(log_max_size_mb);
     cmp_dur!(self_announce_interval);
+
+    // Announcement wave config — compare nested fields manually.
+    macro_rules! cmp_announce {
+        ($field:ident) => {
+            if old.announcements.$field != new.announcements.$field {
+                let c = TuningChange {
+                    name: format!("announcements.{}", stringify!($field)),
+                    old_value: format!("{}", old.announcements.$field),
+                    new_value: format!("{}", new.announcements.$field),
+                };
+                changes.push(c);
+            }
+        };
+    }
+
+    cmp_announce!(same_zone_concurrency);
+    cmp_announce!(same_region_concurrency);
+    cmp_announce!(cross_region_concurrency);
+    cmp_announce!(same_zone_delay_ms);
+    cmp_announce!(same_region_delay_ms);
+    cmp_announce!(cross_region_delay_ms);
 
     (changes, skipped)
 }
@@ -265,6 +335,32 @@ pub fn load_tuning() -> Result<Tuning, String> {
             .self_announce_interval
             .map(Duration::from_secs)
             .unwrap_or(defaults.self_announce_interval),
+        announcements: AnnouncementConfig {
+            same_zone_concurrency: config
+                .announcements
+                .same_zone_concurrency
+                .unwrap_or(defaults.announcements.same_zone_concurrency),
+            same_region_concurrency: config
+                .announcements
+                .same_region_concurrency
+                .unwrap_or(defaults.announcements.same_region_concurrency),
+            cross_region_concurrency: config
+                .announcements
+                .cross_region_concurrency
+                .unwrap_or(defaults.announcements.cross_region_concurrency),
+            same_zone_delay_ms: config
+                .announcements
+                .same_zone_delay_ms
+                .unwrap_or(defaults.announcements.same_zone_delay_ms),
+            same_region_delay_ms: config
+                .announcements
+                .same_region_delay_ms
+                .unwrap_or(defaults.announcements.same_region_delay_ms),
+            cross_region_delay_ms: config
+                .announcements
+                .cross_region_delay_ms
+                .unwrap_or(defaults.announcements.cross_region_delay_ms),
+        },
     })
 }
 
@@ -329,5 +425,39 @@ mod tests {
         assert_eq!(changes[0].name, "reconcile_interval");
         assert_eq!(skipped.len(), 1);
         assert_eq!(skipped[0].name, "interface_name");
+    }
+
+    #[test]
+    fn announcement_config_defaults() {
+        let cfg = AnnouncementConfig::default();
+        assert_eq!(cfg.same_zone_concurrency, 50);
+        assert_eq!(cfg.same_region_concurrency, 20);
+        assert_eq!(cfg.cross_region_concurrency, 5);
+        assert_eq!(cfg.same_zone_delay_ms, 0);
+        assert_eq!(cfg.same_region_delay_ms, 5000);
+        assert_eq!(cfg.cross_region_delay_ms, 15000);
+    }
+
+    #[test]
+    fn diff_tuning_announcement_changes() {
+        let a = Tuning::default();
+        let b = Tuning {
+            announcements: AnnouncementConfig {
+                same_zone_concurrency: 30,
+                cross_region_delay_ms: 30000,
+                ..AnnouncementConfig::default()
+            },
+            ..Tuning::default()
+        };
+
+        let (changes, skipped) = diff_tuning(&a, &b);
+        assert!(skipped.is_empty());
+        assert_eq!(changes.len(), 2);
+        assert!(changes
+            .iter()
+            .any(|c| c.name == "announcements.same_zone_concurrency"));
+        assert!(changes
+            .iter()
+            .any(|c| c.name == "announcements.cross_region_delay_ms"));
     }
 }

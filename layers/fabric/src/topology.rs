@@ -2,6 +2,10 @@
 //!
 //! [`TopologyView`] indexes peers by [`Region`] and [`Zone`] at construction
 //! time (O(n)), then answers every query in O(1) via `HashMap` lookups.
+//!
+//! The [`partition_by_tier`] function classifies peers relative to a source
+//! node into same-zone, same-region (different zone), and cross-region tiers,
+//! enabling wave-based announce propagation.
 
 use std::collections::HashMap;
 
@@ -99,6 +103,62 @@ impl TopologyView {
             .iter()
             .filter(|p| p.status == PeerStatus::Active)
             .count()
+    }
+}
+
+/// Peers partitioned into topology tiers relative to a source node.
+///
+/// Used by wave-based announce propagation: same-zone peers are announced
+/// first, then same-region peers, then cross-region peers.
+#[derive(Debug, Clone)]
+pub struct TieredPeers {
+    /// Peers in the same zone as the source (excluding the source itself).
+    pub same_zone: Vec<PeerRecord>,
+    /// Peers in the same region but a different zone.
+    pub same_region: Vec<PeerRecord>,
+    /// Peers in a different region entirely.
+    pub cross_region: Vec<PeerRecord>,
+}
+
+/// Partition `peers` into topology tiers relative to the source node.
+///
+/// The source peer (matched by `wg_public_key`) is excluded from all tiers.
+/// Peers without topology information are treated as belonging to the
+/// `"default"` region and `"default"` zone.
+pub fn partition_by_tier(source: &PeerRecord, peers: &[PeerRecord]) -> TieredPeers {
+    let (src_region, src_zone) = source
+        .topology
+        .as_ref()
+        .map(|t| (t.region.clone(), t.zone.clone()))
+        .unwrap_or_else(|| {
+            let r = Region::new(DEFAULT_REGION).expect("default region is valid");
+            let z = Zone::new(DEFAULT_ZONE).expect("default zone is valid");
+            (r, z)
+        });
+
+    let mut same_zone = Vec::new();
+    let mut same_region = Vec::new();
+    let mut cross_region = Vec::new();
+
+    for peer in peers {
+        if peer.wg_public_key == source.wg_public_key {
+            continue;
+        }
+        let (peer_region, peer_zone) = resolve_topology(peer);
+
+        if peer_zone == src_zone && peer_region == src_region {
+            same_zone.push(peer.clone());
+        } else if peer_region == src_region {
+            same_region.push(peer.clone());
+        } else {
+            cross_region.push(peer.clone());
+        }
+    }
+
+    TieredPeers {
+        same_zone,
+        same_region,
+        cross_region,
     }
 }
 
@@ -271,5 +331,93 @@ mod tests {
 
         let default_zone = Zone::new("default").unwrap();
         assert_eq!(view.peers_in_zone(&default_zone).len(), 1);
+    }
+
+    // ── partition_by_tier tests ──
+
+    #[test]
+    fn partition_excludes_source() {
+        let source = make_peer("src", "eu-west", "eu-west-1a", PeerStatus::Active);
+        let peers = vec![
+            make_peer("src", "eu-west", "eu-west-1a", PeerStatus::Active),
+            make_peer("a", "eu-west", "eu-west-1a", PeerStatus::Active),
+        ];
+        let tiers = super::partition_by_tier(&source, &peers);
+        assert_eq!(tiers.same_zone.len(), 1);
+        assert_eq!(tiers.same_zone[0].name, "a");
+        assert!(tiers.same_region.is_empty());
+        assert!(tiers.cross_region.is_empty());
+    }
+
+    #[test]
+    fn partition_three_tiers() {
+        let source = make_peer("src", "eu-west", "eu-west-1a", PeerStatus::Active);
+        let peers = vec![
+            make_peer("same-zone", "eu-west", "eu-west-1a", PeerStatus::Active),
+            make_peer("same-region", "eu-west", "eu-west-1b", PeerStatus::Active),
+            make_peer("cross-region", "us-east", "us-east-1a", PeerStatus::Active),
+        ];
+        let tiers = super::partition_by_tier(&source, &peers);
+        assert_eq!(tiers.same_zone.len(), 1);
+        assert_eq!(tiers.same_zone[0].name, "same-zone");
+        assert_eq!(tiers.same_region.len(), 1);
+        assert_eq!(tiers.same_region[0].name, "same-region");
+        assert_eq!(tiers.cross_region.len(), 1);
+        assert_eq!(tiers.cross_region[0].name, "cross-region");
+    }
+
+    #[test]
+    fn partition_empty_peers() {
+        let source = make_peer("src", "eu-west", "eu-west-1a", PeerStatus::Active);
+        let tiers = super::partition_by_tier(&source, &[]);
+        assert!(tiers.same_zone.is_empty());
+        assert!(tiers.same_region.is_empty());
+        assert!(tiers.cross_region.is_empty());
+    }
+
+    #[test]
+    fn partition_peers_without_topology_use_defaults() {
+        let source = PeerRecord {
+            name: "src".to_owned(),
+            wg_public_key: "key-src".to_owned(),
+            endpoint: SocketAddr::new(std::net::IpAddr::V6(Ipv6Addr::LOCALHOST), 51820),
+            mesh_ipv6: Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1),
+            last_seen: 0,
+            status: PeerStatus::Active,
+            region: None,
+            zone: None,
+            topology: None,
+        };
+        let other = PeerRecord {
+            name: "other".to_owned(),
+            wg_public_key: "key-other".to_owned(),
+            endpoint: SocketAddr::new(std::net::IpAddr::V6(Ipv6Addr::LOCALHOST), 51820),
+            mesh_ipv6: Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2),
+            last_seen: 0,
+            status: PeerStatus::Active,
+            region: None,
+            zone: None,
+            topology: None,
+        };
+        // Both default to ("default", "default") → same zone
+        let tiers = super::partition_by_tier(&source, &[other]);
+        assert_eq!(tiers.same_zone.len(), 1);
+        assert!(tiers.same_region.is_empty());
+        assert!(tiers.cross_region.is_empty());
+    }
+
+    #[test]
+    fn partition_multiple_regions() {
+        let source = make_peer("src", "eu-west", "eu-west-1a", PeerStatus::Active);
+        let peers = vec![
+            make_peer("a", "eu-west", "eu-west-1a", PeerStatus::Active),
+            make_peer("b", "eu-west", "eu-west-1b", PeerStatus::Active),
+            make_peer("c", "us-east", "us-east-1a", PeerStatus::Active),
+            make_peer("d", "ap-south", "ap-south-1a", PeerStatus::Active),
+        ];
+        let tiers = super::partition_by_tier(&source, &peers);
+        assert_eq!(tiers.same_zone.len(), 1);
+        assert_eq!(tiers.same_region.len(), 1);
+        assert_eq!(tiers.cross_region.len(), 2);
     }
 }
