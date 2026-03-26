@@ -27,3 +27,8 @@ ipnet = { version = "2", features = ["serde"] }
 serde_json.workspace = true
 sha2 = "0.10"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "crypto_bench"
+harness = false
