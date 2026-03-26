@@ -14,7 +14,7 @@ use syfrah_core::secret::MeshSecret;
 
 use crate::audit::{self as audit_log, AuditEventType};
 use crate::config::{self, Tuning};
-use crate::control::{self, ControlHandler, ControlRequest, ControlResponse};
+use crate::control::{self, FabricHandler, FabricLayerHandler, FabricRequest, FabricResponse};
 use crate::events::{self, EventType};
 use crate::http_api;
 use crate::peering::{self, AutoAcceptConfig, PeeringState};
@@ -23,6 +23,7 @@ use crate::sd_watchdog;
 use crate::store::{self, NodeState};
 use crate::ui;
 use crate::wg;
+use syfrah_api::LayerRouter;
 
 /// TLS certificate verifier that skips trust-anchor verification but still
 /// validates TLS 1.3 handshake signatures.  Used only during the join
@@ -952,8 +953,9 @@ pub async fn run_daemon(
     let shared_mesh_secret = Arc::new(tokio::sync::RwLock::new(mesh_secret.clone()));
     let shared_tls_client = Arc::new(tokio::sync::RwLock::new(tls_client_config.clone()));
 
-    // Control handler
-    let ctrl_handler = Arc::new(DaemonControlHandler {
+    // Control handler — wrap the fabric handler in a LayerRouter so the
+    // daemon multiplexes all layers over a single socket.
+    let ctrl_handler = DaemonFabricHandler {
         peering_state: peering_state.clone(),
         mesh_secret: shared_mesh_secret.clone(),
         my_record: my_record.clone(),
@@ -963,12 +965,16 @@ pub async fn run_daemon(
         tls_client_config: shared_tls_client.clone(),
         max_events: tuning.max_events,
         max_peers,
-    });
+    };
+
+    let fabric_layer_handler = FabricLayerHandler::new(ctrl_handler);
+    let mut router = LayerRouter::new();
+    router.register("fabric", Arc::new(fabric_layer_handler));
+    let router = Arc::new(router);
 
     let control_path = store::control_socket_path();
-    let control_handler: Arc<dyn ControlHandler> = ctrl_handler;
     let mut control_task = tokio::spawn(async move {
-        control::start_control_listener(&control_path, control_handler).await;
+        control::start_control_listener(&control_path, router).await;
     });
 
     // Bounded retry queue for announces that cannot be processed immediately.
@@ -1882,7 +1888,7 @@ pub async fn run_daemon(
 }
 
 /// Control handler for the daemon.
-struct DaemonControlHandler {
+struct DaemonFabricHandler {
     peering_state: Arc<PeeringState>,
     mesh_secret: Arc<tokio::sync::RwLock<MeshSecret>>,
     my_record: PeerRecord,
@@ -1895,15 +1901,15 @@ struct DaemonControlHandler {
 }
 
 #[async_trait::async_trait]
-impl ControlHandler for DaemonControlHandler {
-    async fn handle(&self, req: ControlRequest, caller_uid: Option<u32>) -> ControlResponse {
+impl FabricHandler for DaemonFabricHandler {
+    async fn handle(&self, req: FabricRequest, caller_uid: Option<u32>) -> FabricResponse {
         match req {
-            ControlRequest::PeeringStart { port: _, pin } => {
+            FabricRequest::PeeringStart { port: _, pin } => {
                 if let Some(pin_val) = pin {
                     let state = match store::load() {
                         Ok(s) => s,
                         Err(e) => {
-                            return ControlResponse::Error {
+                            return FabricResponse::Error {
                                 message: format!("{e}"),
                             }
                         }
@@ -1930,9 +1936,9 @@ impl ControlHandler for DaemonControlHandler {
                     None,
                     caller_uid,
                 );
-                ControlResponse::Ok
+                FabricResponse::Ok
             }
-            ControlRequest::PeeringStop => {
+            FabricRequest::PeeringStop => {
                 self.peering_state.set_active(false).await;
                 self.peering_state.set_auto_accept(None).await;
                 audit_log::emit_with_uid(
@@ -1942,17 +1948,17 @@ impl ControlHandler for DaemonControlHandler {
                     None,
                     caller_uid,
                 );
-                ControlResponse::Ok
+                FabricResponse::Ok
             }
-            ControlRequest::PeeringList => {
+            FabricRequest::PeeringList => {
                 let requests = self.peering_state.list_pending().await;
-                ControlResponse::PeeringList { requests }
+                FabricResponse::PeeringList { requests }
             }
-            ControlRequest::PeeringAccept { request_id } => {
+            FabricRequest::PeeringAccept { request_id } => {
                 let state = match store::load() {
                     Ok(s) => s,
                     Err(e) => {
-                        return ControlResponse::Error {
+                        return FabricResponse::Error {
                             message: format!("{e}"),
                         }
                     }
@@ -1976,7 +1982,7 @@ impl ControlHandler for DaemonControlHandler {
                         let new_wg_pub = match Key::from_base64(&info.wg_public_key) {
                             Ok(k) => k,
                             Err(_) => {
-                                return ControlResponse::Error {
+                                return FabricResponse::Error {
                                     message: "invalid WG key".into(),
                                 }
                             }
@@ -2021,16 +2027,16 @@ impl ControlHandler for DaemonControlHandler {
                             caller_uid,
                         );
                         (self.on_accepted)(new_record);
-                        ControlResponse::PeeringAccepted {
+                        FabricResponse::PeeringAccepted {
                             peer_name: info.node_name,
                         }
                     }
-                    Err(e) => ControlResponse::Error {
+                    Err(e) => FabricResponse::Error {
                         message: e.to_string(),
                     },
                 }
             }
-            ControlRequest::PeeringReject { request_id, reason } => {
+            FabricRequest::PeeringReject { request_id, reason } => {
                 match self.peering_state.reject(&request_id, reason.clone()).await {
                     Ok(()) => {
                         events::emit(
@@ -2047,19 +2053,19 @@ impl ControlHandler for DaemonControlHandler {
                             reason.as_deref(),
                             caller_uid,
                         );
-                        ControlResponse::Ok
+                        FabricResponse::Ok
                     }
-                    Err(e) => ControlResponse::Error {
+                    Err(e) => FabricResponse::Error {
                         message: e.to_string(),
                     },
                 }
             }
-            ControlRequest::Reload => handle_reload(self.max_events, caller_uid),
-            ControlRequest::RemovePeer { name_or_key } => {
+            FabricRequest::Reload => handle_reload(self.max_events, caller_uid),
+            FabricRequest::RemovePeer { name_or_key } => {
                 let state = match store::load() {
                     Ok(s) => s,
                     Err(e) => {
-                        return ControlResponse::Error {
+                        return FabricResponse::Error {
                             message: format!("{e}"),
                         }
                     }
@@ -2067,7 +2073,7 @@ impl ControlHandler for DaemonControlHandler {
 
                 // Prevent removing self
                 if name_or_key == state.node_name || name_or_key == state.wg_public_key {
-                    return ControlResponse::Error {
+                    return FabricResponse::Error {
                         message: "Cannot remove self. Use 'syfrah fabric leave' instead.".into(),
                     };
                 }
@@ -2113,30 +2119,30 @@ impl ControlHandler for DaemonControlHandler {
                         )
                         .await;
 
-                        ControlResponse::PeerRemoved {
+                        FabricResponse::PeerRemoved {
                             peer_name: removed_peer.name.clone(),
                             announced_to: announced,
                         }
                     }
-                    Ok(None) => ControlResponse::Error {
+                    Ok(None) => FabricResponse::Error {
                         message: format!(
                             "No peer named '{}'. Run 'syfrah fabric peers' to list peers.",
                             name_or_key
                         ),
                     },
-                    Err(e) => ControlResponse::Error {
+                    Err(e) => FabricResponse::Error {
                         message: format!("Failed to remove peer: {e}"),
                     },
                 }
             }
-            ControlRequest::UpdatePeerEndpoint {
+            FabricRequest::UpdatePeerEndpoint {
                 name_or_key,
                 endpoint,
             } => {
                 let state = match store::load() {
                     Ok(s) => s,
                     Err(e) => {
-                        return ControlResponse::Error {
+                        return FabricResponse::Error {
                             message: format!("{e}"),
                         }
                     }
@@ -2164,24 +2170,24 @@ impl ControlHandler for DaemonControlHandler {
                             Some(self.max_events),
                         );
 
-                        ControlResponse::PeerEndpointUpdated {
+                        FabricResponse::PeerEndpointUpdated {
                             peer_name: updated_peer.name.clone(),
                             old_endpoint: old_endpoint.to_string(),
                             new_endpoint: endpoint.to_string(),
                         }
                     }
-                    Ok(None) => ControlResponse::Error {
+                    Ok(None) => FabricResponse::Error {
                         message: format!(
                             "No peer named '{}'. Run 'syfrah fabric peers' to list peers.",
                             name_or_key
                         ),
                     },
-                    Err(e) => ControlResponse::Error {
+                    Err(e) => FabricResponse::Error {
                         message: format!("Failed to update peer endpoint: {e}"),
                     },
                 }
             }
-            ControlRequest::RotateSecret => {
+            FabricRequest::RotateSecret => {
                 // 1. Read current secret for encrypting the rotation broadcast.
                 let old_secret = self.mesh_secret.read().await.clone();
                 let old_enc_key = old_secret.encryption_key();
@@ -2200,7 +2206,7 @@ impl ControlHandler for DaemonControlHandler {
                     match syfrah_core::mesh::encrypt_secret(&new_secret_str, &old_enc_key) {
                         Ok(ct) => ct,
                         Err(e) => {
-                            return ControlResponse::Error {
+                            return FabricResponse::Error {
                                 message: format!("failed to encrypt new secret: {e}"),
                             }
                         }
@@ -2224,13 +2230,13 @@ impl ControlHandler for DaemonControlHandler {
                         state.mesh_prefix = new_prefix;
                         state.mesh_ipv6 = new_ipv6;
                         if let Err(e) = store::save(&state) {
-                            return ControlResponse::Error {
+                            return FabricResponse::Error {
                                 message: format!("secret broadcast succeeded but save failed: {e}"),
                             };
                         }
                     }
                     Err(e) => {
-                        return ControlResponse::Error {
+                        return FabricResponse::Error {
                             message: format!(
                                 "secret broadcast succeeded but state load failed: {e}"
                             ),
@@ -2272,7 +2278,7 @@ impl ControlHandler for DaemonControlHandler {
                     "secret rotation completed"
                 );
 
-                ControlResponse::SecretRotated {
+                FabricResponse::SecretRotated {
                     new_secret: new_secret_str,
                     new_ipv6: new_ipv6.to_string(),
                     peers_notified: notified,
@@ -2285,7 +2291,7 @@ impl ControlHandler for DaemonControlHandler {
 
 /// Handle a config reload request: re-read config.toml, diff with current,
 /// apply hot-reloadable changes, and report results.
-fn handle_reload(max_events: u64, caller_uid: Option<u32>) -> ControlResponse {
+fn handle_reload(max_events: u64, caller_uid: Option<u32>) -> FabricResponse {
     // Dry-run: parse and validate the config file before applying any changes.
     if let Err(e) = config::validate_config_file() {
         warn!("config reload rejected (validation failed): {e}");
@@ -2296,7 +2302,7 @@ fn handle_reload(max_events: u64, caller_uid: Option<u32>) -> ControlResponse {
             Some(&e),
             Some(max_events),
         );
-        return ControlResponse::Error {
+        return FabricResponse::Error {
             message: format!("Config validation failed: {e}. Keeping current configuration."),
         };
     }
@@ -2347,7 +2353,7 @@ fn handle_reload(max_events: u64, caller_uid: Option<u32>) -> ControlResponse {
                 caller_uid,
             );
 
-            ControlResponse::ConfigReloaded {
+            FabricResponse::ConfigReloaded {
                 changes: change_strs,
                 skipped: skip_strs,
             }
@@ -2361,7 +2367,7 @@ fn handle_reload(max_events: u64, caller_uid: Option<u32>) -> ControlResponse {
                 Some(&e),
                 Some(max_events),
             );
-            ControlResponse::Error {
+            FabricResponse::Error {
                 message: format!("Config reload failed: {e}. Keeping current configuration."),
             }
         }

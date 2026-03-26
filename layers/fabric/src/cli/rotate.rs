@@ -1,5 +1,5 @@
 use crate::audit::{self as audit_log, AuditEventType};
-use crate::control::{self, ControlRequest, ControlResponse};
+use crate::control::{self, FabricRequest, FabricResponse};
 use crate::ui;
 use crate::{no_mesh_error, store};
 use anyhow::Result;
@@ -18,12 +18,12 @@ pub async fn run(skip_confirm: bool) -> Result<()> {
 
         let sp = ui::spinner("Rotating mesh secret (live)...");
         let socket_path = store::control_socket_path();
-        let resp = control::send_control_request(&socket_path, &ControlRequest::RotateSecret)
+        let resp = control::send_control_request(&socket_path, &FabricRequest::RotateSecret)
             .await
             .map_err(|e| anyhow::anyhow!("failed to contact daemon: {e}"))?;
 
         match resp {
-            ControlResponse::SecretRotated {
+            FabricResponse::SecretRotated {
                 new_secret,
                 new_ipv6,
                 peers_notified,
@@ -39,7 +39,7 @@ pub async fn run(skip_confirm: bool) -> Result<()> {
                     println!("Some peers could not be reached. They will need to rejoin.");
                 }
             }
-            ControlResponse::Error { message } => {
+            FabricResponse::Error { message } => {
                 ui::step_fail(&sp, "Secret rotation failed");
                 anyhow::bail!("{message}");
             }
