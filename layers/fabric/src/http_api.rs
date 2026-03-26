@@ -9,6 +9,7 @@
 //! ```
 //!
 //! Endpoints:
+//! - `GET /v1/topology`                 — full topology overview
 //! - `GET /v1/topology/regions`         — list all regions
 //! - `GET /v1/topology/regions/{r}`     — region detail + zones
 //! - `GET /v1/topology/zones/{z}/peers` — peers in zone
@@ -94,6 +95,7 @@ pub async fn serve(config: ApiConfig, shutdown: tokio::sync::watch::Receiver<boo
 /// Build the axum [`Router`] with all topology endpoints.
 pub fn router() -> Router {
     Router::new()
+        .route("/v1/topology", get(full_topology))
         .route("/v1/topology/regions", get(list_regions))
         .route("/v1/topology/regions/{region}", get(region_detail))
         .route("/v1/topology/zones/{zone}/peers", get(zone_peers))
@@ -106,6 +108,21 @@ pub fn router() -> Router {
 // ---------------------------------------------------------------------------
 // Response types
 // ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct TopologyOverview {
+    regions: Vec<TopologyRegionSummary>,
+    total_peers: usize,
+    total_active: usize,
+}
+
+#[derive(Serialize)]
+struct TopologyRegionSummary {
+    region: String,
+    zones: Vec<String>,
+    peer_count: usize,
+    active_count: usize,
+}
 
 #[derive(Serialize)]
 struct RegionListResponse {
@@ -184,6 +201,44 @@ fn peer_to_summary(p: &syfrah_core::mesh::PeerRecord) -> PeerSummary {
         region: p.region.clone(),
         zone: p.zone.clone(),
     }
+}
+
+async fn full_topology() -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let view = load_view()?;
+
+    let mut total_peers: usize = 0;
+    let mut total_active: usize = 0;
+    let mut regions_out = Vec::new();
+
+    let mut region_list: Vec<&Region> = view.regions();
+    region_list.sort_by_key(|r| r.as_str());
+
+    for region in region_list {
+        let peers = view.peers_in_region(region);
+        let active = view.active_count_in_region(region);
+        total_peers += peers.len();
+        total_active += active;
+
+        let mut zones: Vec<String> = view
+            .zones_in_region(region)
+            .into_iter()
+            .map(|z| z.as_str().to_owned())
+            .collect();
+        zones.sort();
+
+        regions_out.push(TopologyRegionSummary {
+            region: region.as_str().to_owned(),
+            zones,
+            peer_count: peers.len(),
+            active_count: active,
+        });
+    }
+
+    Ok(Json(TopologyOverview {
+        regions: regions_out,
+        total_peers,
+        total_active,
+    }))
 }
 
 async fn list_regions() -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
@@ -402,6 +457,19 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["status"], "ok");
+    }
+
+    #[tokio::test]
+    async fn topology_overview_returns_json() {
+        let (status, body) = get_response("/v1/topology").await;
+        // Without a store the handler returns SERVICE_UNAVAILABLE or OK with
+        // empty regions — either is acceptable. We just verify the endpoint
+        // is routed and returns valid JSON.
+        assert!(
+            status == StatusCode::OK || status == StatusCode::SERVICE_UNAVAILABLE,
+            "unexpected status: {status}"
+        );
+        let _v: serde_json::Value = serde_json::from_str(&body).unwrap();
     }
 
     #[tokio::test]
