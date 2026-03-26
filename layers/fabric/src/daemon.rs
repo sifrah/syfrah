@@ -1507,6 +1507,73 @@ pub async fn run_daemon(
         }
     };
 
+    // Periodic self-announce (anti-entropy): re-announce our own record to
+    // ALL known peers so that any announcements lost during initial join
+    // propagation are eventually recovered. Without this, a failed announce
+    // between two peers can leave them permanently unaware of each other.
+    //
+    // Unlike event-driven gossip (which uses fanout to limit traffic), the
+    // self-announce loop broadcasts to every peer because it runs infrequently
+    // and must guarantee convergence within a bounded number of rounds.
+    let self_announce_record = my_record.clone();
+    let self_announce_enc = enc_key;
+    let self_announce_port = peering_port;
+    let self_announce_tls = tls_client_config.clone();
+    let self_announce_interval = tuning.self_announce_interval;
+    let self_announce = async move {
+        // Stagger initial delay to avoid thundering herd at mesh startup.
+        tokio::time::sleep(self_announce_interval).await;
+        let mut interval = tokio::time::interval(self_announce_interval);
+        loop {
+            interval.tick().await;
+            let known = match store::get_peers() {
+                Ok(p) => p,
+                Err(e) => {
+                    debug!(error = %e, "self-announce: failed to load peers, skipping round");
+                    continue;
+                }
+            };
+            if known.is_empty() {
+                continue;
+            }
+            // Broadcast to ALL peers (not gossip subset) for reliable convergence.
+            let mut succeeded = 0usize;
+            let mut failed = 0usize;
+            for peer in &known {
+                if peer.wg_public_key == self_announce_record.wg_public_key {
+                    continue; // skip self
+                }
+                if let Err(e) = peering::announce_peer(
+                    peer.endpoint,
+                    self_announce_port,
+                    &self_announce_record,
+                    &self_announce_enc,
+                    Some(self_announce_tls.clone()),
+                )
+                .await
+                {
+                    debug!(
+                        target_peer = %sanitize(&peer.name),
+                        error = %e,
+                        "self-announce to peer failed"
+                    );
+                    failed += 1;
+                } else {
+                    succeeded += 1;
+                }
+            }
+            if failed > 0 {
+                debug!(
+                    succeeded = succeeded,
+                    failed = failed,
+                    "self-announce round completed with failures"
+                );
+            } else if succeeded > 0 {
+                debug!(succeeded = succeeded, "self-announce round completed");
+            }
+        }
+    };
+
     // Listen for both SIGINT (Ctrl+C) and SIGTERM so the daemon shuts down
     // gracefully in either case. Without SIGTERM handling, `run_leave` sends
     // SIGTERM but the daemon dies immediately without cleanup.
@@ -1541,6 +1608,7 @@ pub async fn run_daemon(
         _ = persist => {}
         _ = health_check => {}
         _ = reconcile => {}
+        _ = self_announce => {}
         _ = sighup_reload => {}
         _ = tokio::signal::ctrl_c() => {
             info!("received SIGINT, shutting down");
