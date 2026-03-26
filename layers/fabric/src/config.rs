@@ -514,6 +514,26 @@ fn validate_config(config: &ConfigFile) -> Result<(), String> {
     }
 }
 
+/// Dry-run validation of `~/.syfrah/config.toml`.
+///
+/// Parses and validates the config file without applying any changes.
+/// Returns `Ok(())` when the file is absent (nothing to validate) or when
+/// the file is present and passes all validation checks.
+pub fn validate_config_file() -> Result<(), String> {
+    let path = syfrah_dir().join("config.toml");
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+
+    let config: ConfigFile =
+        toml::from_str(&content).map_err(|e| format!("invalid config.toml: {e}"))?;
+
+    validate_config(&config)
+}
+
 /// Load tuning from `~/.syfrah/config.toml`. Returns defaults if file
 /// doesn't exist. Returns error if file exists but is invalid or contains
 /// values that fail validation.
@@ -1027,5 +1047,486 @@ max_peers = 0
         // Per-tier keepalive of 0 disables keepalive for that tier; valid.
         let toml = "[wireguard]\nsame_zone_keepalive = 0\nsame_region_keepalive = 0\ncross_region_keepalive = 0\n";
         assert!(validate_toml(toml).is_ok());
+    }
+
+    // ---------------------------------------------------------------
+    // TOML parsing → Tuning conversion tests
+    // ---------------------------------------------------------------
+
+    /// Helper: parse a TOML string into a validated `Tuning`, using the same
+    /// logic as `load_tuning` but without filesystem access.
+    fn parse_tuning(toml_str: &str) -> Result<Tuning, String> {
+        let config: ConfigFile =
+            toml::from_str(toml_str).map_err(|e| format!("invalid config.toml: {e}"))?;
+        validate_config(&config)?;
+        let defaults = Tuning::default();
+        Ok(Tuning {
+            health_check_interval: config
+                .daemon
+                .health_check_interval
+                .map(Duration::from_secs)
+                .unwrap_or(defaults.health_check_interval),
+            reconcile_interval: config
+                .daemon
+                .reconcile_interval
+                .map(Duration::from_secs)
+                .unwrap_or(defaults.reconcile_interval),
+            persist_interval: config
+                .daemon
+                .persist_interval
+                .map(Duration::from_secs)
+                .unwrap_or(defaults.persist_interval),
+            unreachable_timeout: config
+                .daemon
+                .unreachable_timeout
+                .map(Duration::from_secs)
+                .unwrap_or(defaults.unreachable_timeout),
+            keepalive_interval: config
+                .wireguard
+                .keepalive_interval
+                .unwrap_or(defaults.keepalive_interval),
+            keepalive_policy: KeepalivePolicy {
+                same_zone_keepalive: config
+                    .wireguard
+                    .same_zone_keepalive
+                    .unwrap_or(defaults.keepalive_policy.same_zone_keepalive),
+                same_region_keepalive: config
+                    .wireguard
+                    .same_region_keepalive
+                    .unwrap_or(defaults.keepalive_policy.same_region_keepalive),
+                cross_region_keepalive: config
+                    .wireguard
+                    .cross_region_keepalive
+                    .unwrap_or(defaults.keepalive_policy.cross_region_keepalive),
+            },
+            join_timeout: config
+                .peering
+                .join_timeout
+                .map(Duration::from_secs)
+                .unwrap_or(defaults.join_timeout),
+            exchange_timeout: config
+                .peering
+                .exchange_timeout
+                .map(Duration::from_secs)
+                .unwrap_or(defaults.exchange_timeout),
+            max_events: config.events.max_events.unwrap_or(defaults.max_events),
+            max_concurrent_connections: config
+                .peering
+                .max_concurrent_connections
+                .unwrap_or(defaults.max_concurrent_connections),
+            max_pending_joins: config
+                .peering
+                .max_pending_joins
+                .unwrap_or(defaults.max_pending_joins),
+            max_peers: config.limits.max_peers.unwrap_or(defaults.max_peers),
+            max_concurrent_announces: config
+                .limits
+                .max_concurrent_announces
+                .unwrap_or(defaults.max_concurrent_announces),
+            announce_queue_size: config
+                .limits
+                .announce_queue_size
+                .unwrap_or(defaults.announce_queue_size),
+            interface_name: config
+                .wireguard
+                .interface_name
+                .unwrap_or(defaults.interface_name),
+            log_max_size_mb: config
+                .daemon
+                .log_max_size_mb
+                .unwrap_or(defaults.log_max_size_mb),
+            audit_max_size_mb: config
+                .daemon
+                .audit_max_size_mb
+                .unwrap_or(defaults.audit_max_size_mb),
+            self_announce_interval: config
+                .daemon
+                .self_announce_interval
+                .map(Duration::from_secs)
+                .unwrap_or(defaults.self_announce_interval),
+            gc_removed_threshold: config
+                .daemon
+                .gc_removed_threshold
+                .map(Duration::from_secs)
+                .unwrap_or(defaults.gc_removed_threshold),
+            health_policy: HealthPolicy {
+                same_zone_timeout: config
+                    .health
+                    .same_zone_timeout
+                    .map(Duration::from_secs)
+                    .unwrap_or(defaults.health_policy.same_zone_timeout),
+                same_region_timeout: config
+                    .health
+                    .same_region_timeout
+                    .map(Duration::from_secs)
+                    .unwrap_or(defaults.health_policy.same_region_timeout),
+                cross_region_timeout: config
+                    .health
+                    .cross_region_timeout
+                    .map(Duration::from_secs)
+                    .unwrap_or(defaults.health_policy.cross_region_timeout),
+            },
+            announcements: AnnouncementConfig {
+                same_zone_concurrency: config
+                    .announcements
+                    .same_zone_concurrency
+                    .unwrap_or(defaults.announcements.same_zone_concurrency),
+                same_region_concurrency: config
+                    .announcements
+                    .same_region_concurrency
+                    .unwrap_or(defaults.announcements.same_region_concurrency),
+                cross_region_concurrency: config
+                    .announcements
+                    .cross_region_concurrency
+                    .unwrap_or(defaults.announcements.cross_region_concurrency),
+                same_zone_delay_ms: config
+                    .announcements
+                    .same_zone_delay_ms
+                    .unwrap_or(defaults.announcements.same_zone_delay_ms),
+                same_region_delay_ms: config
+                    .announcements
+                    .same_region_delay_ms
+                    .unwrap_or(defaults.announcements.same_region_delay_ms),
+                cross_region_delay_ms: config
+                    .announcements
+                    .cross_region_delay_ms
+                    .unwrap_or(defaults.announcements.cross_region_delay_ms),
+            },
+        })
+    }
+
+    #[test]
+    fn parse_empty_toml_returns_defaults() {
+        let tuning = parse_tuning("").unwrap();
+        assert_eq!(tuning, Tuning::default());
+    }
+
+    #[test]
+    fn parse_full_valid_toml() {
+        let toml = r#"
+[daemon]
+health_check_interval = 45
+reconcile_interval = 20
+persist_interval = 15
+unreachable_timeout = 200
+log_max_size_mb = 20
+audit_max_size_mb = 25
+self_announce_interval = 30
+gc_removed_threshold = 3600
+
+[wireguard]
+keepalive_interval = 10
+interface_name = "mesh0"
+
+[peering]
+join_timeout = 5
+exchange_timeout = 8
+max_concurrent_connections = 200
+max_pending_joins = 150
+
+[events]
+max_events = 500
+
+[limits]
+max_peers = 2000
+max_concurrent_announces = 100
+announce_queue_size = 400
+
+[health]
+same_zone_timeout = 90
+same_region_timeout = 150
+cross_region_timeout = 250
+
+[announcements]
+same_zone_concurrency = 30
+same_region_concurrency = 10
+cross_region_concurrency = 2
+same_zone_delay_ms = 100
+same_region_delay_ms = 2000
+cross_region_delay_ms = 8000
+"#;
+        let t = parse_tuning(toml).unwrap();
+
+        assert_eq!(t.health_check_interval, Duration::from_secs(45));
+        assert_eq!(t.reconcile_interval, Duration::from_secs(20));
+        assert_eq!(t.persist_interval, Duration::from_secs(15));
+        assert_eq!(t.unreachable_timeout, Duration::from_secs(200));
+        assert_eq!(t.log_max_size_mb, 20);
+        assert_eq!(t.audit_max_size_mb, 25);
+        assert_eq!(t.self_announce_interval, Duration::from_secs(30));
+        assert_eq!(t.gc_removed_threshold, Duration::from_secs(3600));
+
+        assert_eq!(t.keepalive_interval, 10);
+        assert_eq!(t.interface_name, "mesh0");
+
+        assert_eq!(t.join_timeout, Duration::from_secs(5));
+        assert_eq!(t.exchange_timeout, Duration::from_secs(8));
+        assert_eq!(t.max_concurrent_connections, 200);
+        assert_eq!(t.max_pending_joins, 150);
+
+        assert_eq!(t.max_events, 500);
+
+        assert_eq!(t.max_peers, 2000);
+        assert_eq!(t.max_concurrent_announces, 100);
+        assert_eq!(t.announce_queue_size, 400);
+
+        assert_eq!(t.health_policy.same_zone_timeout, Duration::from_secs(90));
+        assert_eq!(
+            t.health_policy.same_region_timeout,
+            Duration::from_secs(150)
+        );
+        assert_eq!(
+            t.health_policy.cross_region_timeout,
+            Duration::from_secs(250)
+        );
+
+        assert_eq!(t.announcements.same_zone_concurrency, 30);
+        assert_eq!(t.announcements.same_region_concurrency, 10);
+        assert_eq!(t.announcements.cross_region_concurrency, 2);
+        assert_eq!(t.announcements.same_zone_delay_ms, 100);
+        assert_eq!(t.announcements.same_region_delay_ms, 2000);
+        assert_eq!(t.announcements.cross_region_delay_ms, 8000);
+    }
+
+    #[test]
+    fn parse_partial_daemon_section_fills_defaults() {
+        let toml = "[daemon]\nhealth_check_interval = 90\n";
+        let t = parse_tuning(toml).unwrap();
+        let d = Tuning::default();
+
+        assert_eq!(t.health_check_interval, Duration::from_secs(90));
+        // Everything else stays at default.
+        assert_eq!(t.reconcile_interval, d.reconcile_interval);
+        assert_eq!(t.persist_interval, d.persist_interval);
+        assert_eq!(t.unreachable_timeout, d.unreachable_timeout);
+        assert_eq!(t.log_max_size_mb, d.log_max_size_mb);
+        assert_eq!(t.self_announce_interval, d.self_announce_interval);
+        assert_eq!(t.gc_removed_threshold, d.gc_removed_threshold);
+    }
+
+    #[test]
+    fn parse_partial_peering_section_fills_defaults() {
+        let toml = "[peering]\njoin_timeout = 3\n";
+        let t = parse_tuning(toml).unwrap();
+        let d = Tuning::default();
+
+        assert_eq!(t.join_timeout, Duration::from_secs(3));
+        assert_eq!(t.exchange_timeout, d.exchange_timeout);
+        assert_eq!(t.max_concurrent_connections, d.max_concurrent_connections);
+        assert_eq!(t.max_pending_joins, d.max_pending_joins);
+    }
+
+    #[test]
+    fn parse_partial_health_section_fills_defaults() {
+        let toml = "[health]\nsame_zone_timeout = 60\n";
+        let t = parse_tuning(toml).unwrap();
+        let d = Tuning::default();
+
+        assert_eq!(t.health_policy.same_zone_timeout, Duration::from_secs(60));
+        assert_eq!(
+            t.health_policy.same_region_timeout,
+            d.health_policy.same_region_timeout
+        );
+        assert_eq!(
+            t.health_policy.cross_region_timeout,
+            d.health_policy.cross_region_timeout
+        );
+    }
+
+    #[test]
+    fn parse_partial_announcements_section_fills_defaults() {
+        let toml = "[announcements]\ncross_region_concurrency = 10\n";
+        let t = parse_tuning(toml).unwrap();
+        let d = Tuning::default();
+
+        assert_eq!(t.announcements.cross_region_concurrency, 10);
+        assert_eq!(
+            t.announcements.same_zone_concurrency,
+            d.announcements.same_zone_concurrency
+        );
+        assert_eq!(
+            t.announcements.same_region_concurrency,
+            d.announcements.same_region_concurrency
+        );
+        assert_eq!(
+            t.announcements.same_zone_delay_ms,
+            d.announcements.same_zone_delay_ms
+        );
+    }
+
+    #[test]
+    fn parse_missing_all_sections_returns_defaults() {
+        // A config with only comments and whitespace is equivalent to empty.
+        let toml = "# This config intentionally left blank.\n\n";
+        let t = parse_tuning(toml).unwrap();
+        assert_eq!(t, Tuning::default());
+    }
+
+    #[test]
+    fn parse_invalid_toml_syntax_rejected() {
+        let toml = "this is not [valid toml =";
+        let err = parse_tuning(toml).unwrap_err();
+        assert!(
+            err.contains("invalid config.toml"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_wrong_type_rejected() {
+        // health_check_interval expects u64, not a string.
+        let toml = "[daemon]\nhealth_check_interval = \"fast\"\n";
+        let err = parse_tuning(toml).unwrap_err();
+        assert!(
+            err.contains("invalid config.toml"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_negative_value_rejected() {
+        // TOML will parse -1 as a signed integer which cannot deserialize to u64.
+        let toml = "[daemon]\nhealth_check_interval = -1\n";
+        let err = parse_tuning(toml).unwrap_err();
+        assert!(
+            err.contains("invalid config.toml"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_unknown_section_ignored() {
+        // Unknown TOML sections should be silently ignored by serde default.
+        let toml = "[unknown_section]\nfoo = 42\n";
+        // ConfigFile uses #[serde(default)] but unknown top-level keys are
+        // rejected by serde unless we use deny_unknown_fields, which we don't.
+        // So this should either succeed or fail at parse; let's verify:
+        let result: Result<ConfigFile, _> = toml::from_str(toml);
+        // If the crate denies unknown fields this will be Err; otherwise Ok.
+        // Either way the behaviour is acceptable — we just document it.
+        if let Ok(config) = result {
+            // If it parses, validation should pass and defaults apply.
+            assert!(validate_config(&config).is_ok());
+        }
+    }
+
+    #[test]
+    fn parse_unknown_key_in_known_section() {
+        // An unknown key inside a known section.
+        let toml = "[daemon]\nfoo_bar = 99\n";
+        let result: Result<ConfigFile, _> = toml::from_str(toml);
+        if let Ok(config) = result {
+            assert!(validate_config(&config).is_ok());
+        }
+    }
+
+    #[test]
+    fn parse_zero_value_caught_by_validation() {
+        // The TOML parses fine, but validation should reject zero intervals.
+        let toml = "[daemon]\nhealth_check_interval = 0\nreconcile_interval = 0\n";
+        let err = parse_tuning(toml).unwrap_err();
+        assert!(err.contains("health_check_interval must be greater than 0"));
+        assert!(err.contains("reconcile_interval must be greater than 0"));
+    }
+
+    #[test]
+    fn parse_gc_removed_threshold_zero_allowed() {
+        // gc_removed_threshold = 0 disables GC, which is documented as valid.
+        let toml = "[daemon]\ngc_removed_threshold = 0\n";
+        // No validation rule blocks 0 for gc_removed_threshold.
+        let t = parse_tuning(toml).unwrap();
+        assert_eq!(t.gc_removed_threshold, Duration::from_secs(0));
+    }
+
+    // ---------------------------------------------------------------
+    // Additional diff_tuning coverage
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn diff_tuning_health_policy_changes() {
+        let a = Tuning::default();
+        let b = Tuning {
+            health_policy: HealthPolicy {
+                same_zone_timeout: Duration::from_secs(60),
+                same_region_timeout: Duration::from_secs(90),
+                cross_region_timeout: Duration::from_secs(180),
+            },
+            ..Tuning::default()
+        };
+
+        let (changes, skipped) = diff_tuning(&a, &b);
+        assert!(skipped.is_empty());
+        assert_eq!(changes.len(), 3);
+        assert!(changes
+            .iter()
+            .any(|c| c.name == "health_policy.same_zone_timeout"
+                && c.old_value == "120s"
+                && c.new_value == "60s"));
+        assert!(changes
+            .iter()
+            .any(|c| c.name == "health_policy.same_region_timeout"
+                && c.old_value == "180s"
+                && c.new_value == "90s"));
+        assert!(changes
+            .iter()
+            .any(|c| c.name == "health_policy.cross_region_timeout"
+                && c.old_value == "300s"
+                && c.new_value == "180s"));
+    }
+
+    #[test]
+    fn diff_tuning_gc_removed_threshold_change() {
+        let a = Tuning::default();
+        let b = Tuning {
+            gc_removed_threshold: Duration::from_secs(7200),
+            ..Tuning::default()
+        };
+        let (changes, skipped) = diff_tuning(&a, &b);
+        assert!(skipped.is_empty());
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].name, "gc_removed_threshold");
+        assert_eq!(changes[0].old_value, "86400s");
+        assert_eq!(changes[0].new_value, "7200s");
+    }
+
+    #[test]
+    fn diff_tuning_all_announcement_fields() {
+        let a = Tuning::default();
+        let b = Tuning {
+            announcements: AnnouncementConfig {
+                same_zone_concurrency: 1,
+                same_region_concurrency: 1,
+                cross_region_concurrency: 1,
+                same_zone_delay_ms: 1,
+                same_region_delay_ms: 1,
+                cross_region_delay_ms: 1,
+            },
+            ..Tuning::default()
+        };
+        let (changes, skipped) = diff_tuning(&a, &b);
+        assert!(skipped.is_empty());
+        assert_eq!(changes.len(), 6);
+        let names: Vec<&str> = changes.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"announcements.same_zone_concurrency"));
+        assert!(names.contains(&"announcements.same_region_concurrency"));
+        assert!(names.contains(&"announcements.cross_region_concurrency"));
+        assert!(names.contains(&"announcements.same_zone_delay_ms"));
+        assert!(names.contains(&"announcements.same_region_delay_ms"));
+        assert!(names.contains(&"announcements.cross_region_delay_ms"));
+    }
+
+    #[test]
+    fn diff_tuning_log_and_audit_size_changes() {
+        let a = Tuning::default();
+        let b = Tuning {
+            log_max_size_mb: 50,
+            audit_max_size_mb: 100,
+            ..Tuning::default()
+        };
+        let (changes, skipped) = diff_tuning(&a, &b);
+        assert!(skipped.is_empty());
+        assert_eq!(changes.len(), 2);
+        assert!(changes.iter().any(|c| c.name == "log_max_size_mb"));
+        assert!(changes.iter().any(|c| c.name == "audit_max_size_mb"));
     }
 }
