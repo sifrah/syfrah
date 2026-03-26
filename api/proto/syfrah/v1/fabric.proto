@@ -1,0 +1,246 @@
+syntax = "proto3";
+
+package syfrah.v1;
+
+option go_package = "github.com/sacha-ops/syfrah/gen/go/syfrah/v1;syfrahv1";
+
+import "syfrah/v1/common.proto";
+import "google/protobuf/timestamp.proto";
+
+// FabricService exposes the syfrah mesh fabric control plane.
+service FabricService {
+  // --- Peer management ---
+
+  // ListPeers returns all peers in the mesh.
+  rpc ListPeers(ListPeersRequest) returns (ListPeersResponse);
+
+  // RemovePeer removes a peer from the mesh by name or public key.
+  rpc RemovePeer(RemovePeerRequest) returns (RemovePeerResponse);
+
+  // UpdatePeerEndpoint changes a peer's WireGuard endpoint address.
+  rpc UpdatePeerEndpoint(UpdatePeerEndpointRequest) returns (UpdatePeerEndpointResponse);
+
+  // --- Topology & status ---
+
+  // GetTopology returns the current mesh topology graph.
+  rpc GetTopology(GetTopologyRequest) returns (GetTopologyResponse);
+
+  // GetStatus returns the health and summary of the local node.
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+
+  // --- Peering lifecycle ---
+
+  // StartPeering opens the peering listener to accept join requests.
+  rpc StartPeering(StartPeeringRequest) returns (StartPeeringResponse);
+
+  // StopPeering closes the peering listener.
+  rpc StopPeering(StopPeeringRequest) returns (StopPeeringResponse);
+
+  // ListPendingJoins lists unapproved join requests.
+  rpc ListPendingJoins(ListPendingJoinsRequest) returns (ListPendingJoinsResponse);
+
+  // AcceptJoin approves a pending join request.
+  rpc AcceptJoin(AcceptJoinRequest) returns (AcceptJoinResponse);
+
+  // RejectJoin denies a pending join request.
+  rpc RejectJoin(RejectJoinRequest) returns (RejectJoinResponse);
+
+  // --- Operations ---
+
+  // RotateSecret generates a new mesh secret and re-keys all peers.
+  rpc RotateSecret(RotateSecretRequest) returns (RotateSecretResponse);
+
+  // ReloadConfig hot-reloads configuration from disk.
+  rpc ReloadConfig(ReloadConfigRequest) returns (ReloadConfigResponse);
+
+  // --- Observability ---
+
+  // GetEvents streams or lists recent fabric events.
+  rpc GetEvents(GetEventsRequest) returns (GetEventsResponse);
+
+  // GetAudit returns the audit log of administrative actions.
+  rpc GetAudit(GetAuditRequest) returns (GetAuditResponse);
+
+  // GetMetrics returns fabric metrics in a structured format.
+  rpc GetMetrics(GetMetricsRequest) returns (GetMetricsResponse);
+}
+
+// ---- Peer management messages ----
+
+message Peer {
+  string name = 1;
+  string public_key = 2;
+  string endpoint = 3;
+  string ipv6_address = 4;
+  uint32 wg_listen_port = 5;
+  HealthStatus status = 6;
+  google.protobuf.Timestamp last_handshake = 7;
+  optional string region = 8;
+  optional string zone = 9;
+}
+
+message ListPeersRequest {
+  PaginationRequest pagination = 1;
+}
+
+message ListPeersResponse {
+  repeated Peer peers = 1;
+  PaginationResponse pagination = 2;
+}
+
+message RemovePeerRequest {
+  // Peer name or WireGuard public key.
+  string name_or_key = 1;
+}
+
+message RemovePeerResponse {
+  string peer_name = 1;
+  uint32 announced_to = 2;
+}
+
+message UpdatePeerEndpointRequest {
+  string name_or_key = 1;
+  string endpoint = 2;
+}
+
+message UpdatePeerEndpointResponse {
+  string peer_name = 1;
+  string old_endpoint = 2;
+  string new_endpoint = 3;
+}
+
+// ---- Topology & status messages ----
+
+message TopologyEdge {
+  string from_peer = 1;
+  string to_peer = 2;
+  uint64 latency_us = 3;
+}
+
+message GetTopologyRequest {}
+
+message GetTopologyResponse {
+  repeated Peer peers = 1;
+  repeated TopologyEdge edges = 2;
+}
+
+message GetStatusRequest {}
+
+message GetStatusResponse {
+  string node_name = 1;
+  string public_key = 2;
+  string ipv6_address = 3;
+  HealthStatus status = 4;
+  uint32 peer_count = 5;
+  bool peering_active = 6;
+  google.protobuf.Timestamp uptime_since = 7;
+}
+
+// ---- Peering lifecycle messages ----
+
+message StartPeeringRequest {
+  uint32 port = 1;
+  optional string pin = 2;
+}
+
+message StartPeeringResponse {}
+
+message StopPeeringRequest {}
+
+message StopPeeringResponse {}
+
+message JoinRequest {
+  string request_id = 1;
+  string node_name = 2;
+  string wg_public_key = 3;
+  string endpoint = 4;
+  uint32 wg_listen_port = 5;
+  google.protobuf.Timestamp received_at = 6;
+  optional string region = 7;
+  optional string zone = 8;
+}
+
+message ListPendingJoinsRequest {}
+
+message ListPendingJoinsResponse {
+  repeated JoinRequest requests = 1;
+}
+
+message AcceptJoinRequest {
+  string request_id = 1;
+}
+
+message AcceptJoinResponse {
+  string peer_name = 1;
+}
+
+message RejectJoinRequest {
+  string request_id = 1;
+  optional string reason = 2;
+}
+
+message RejectJoinResponse {}
+
+// ---- Operations messages ----
+
+message RotateSecretRequest {}
+
+message RotateSecretResponse {
+  string new_ipv6 = 1;
+  uint32 peers_notified = 2;
+  uint32 peers_failed = 3;
+}
+
+message ReloadConfigRequest {}
+
+message ReloadConfigResponse {
+  repeated string changes = 1;
+  repeated string skipped = 2;
+}
+
+// ---- Observability messages ----
+
+message FabricEvent {
+  string id = 1;
+  string kind = 2;
+  string message = 3;
+  google.protobuf.Timestamp timestamp = 4;
+}
+
+message GetEventsRequest {
+  PaginationRequest pagination = 1;
+  // Optional filter: only events of this kind.
+  optional string kind = 2;
+}
+
+message GetEventsResponse {
+  repeated FabricEvent events = 1;
+  PaginationResponse pagination = 2;
+}
+
+message AuditEntry {
+  string id = 1;
+  string action = 2;
+  string actor = 3;
+  string details = 4;
+  google.protobuf.Timestamp timestamp = 5;
+}
+
+message GetAuditRequest {
+  PaginationRequest pagination = 1;
+}
+
+message GetAuditResponse {
+  repeated AuditEntry entries = 1;
+  PaginationResponse pagination = 2;
+}
+
+message GetMetricsRequest {}
+
+message GetMetricsResponse {
+  uint32 peer_count = 1;
+  uint64 bytes_sent = 2;
+  uint64 bytes_received = 3;
+  uint32 handshakes_completed = 4;
+  uint32 handshakes_failed = 5;
+}
