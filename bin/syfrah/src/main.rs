@@ -90,6 +90,9 @@ enum FabricCommand {
         port: u16,
         #[arg(long)]
         endpoint: Option<SocketAddr>,
+        /// Port for the peering protocol [default: WireGuard port + 1]
+        #[arg(long)]
+        peering_port: Option<u16>,
         /// PIN for auto-accept (skip manual approval)
         #[arg(long)]
         pin: Option<String>,
@@ -150,9 +153,11 @@ enum FabricCommand {
         #[arg(long)]
         limit: Option<usize>,
     },
-    /// List all peers
+    /// List and manage peers
     Peers {
-        /// Output as JSON
+        #[command(subcommand)]
+        action: Option<PeersAction>,
+        /// Output as JSON (for listing peers)
         #[arg(long)]
         json: bool,
     },
@@ -176,6 +181,8 @@ enum FabricCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Export metrics in Prometheus text format
+    Metrics,
     /// Manage the systemd service
     Service {
         #[command(subcommand)]
@@ -221,6 +228,18 @@ enum PeeringAction {
 }
 
 #[derive(Subcommand)]
+enum PeersAction {
+    /// Remove a peer from the mesh
+    Remove {
+        /// Peer node name or WireGuard public key
+        name_or_key: String,
+        /// Skip confirmation prompt
+        #[arg(long, short)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum ServiceAction {
     /// Install and enable the systemd service
     Install,
@@ -228,6 +247,54 @@ enum ServiceAction {
     Uninstall,
     /// Show systemd service status
     Status,
+}
+
+/// Maximum allowed length for mesh and node names.
+const MAX_NAME_LEN: usize = 64;
+
+/// Validate port configuration for fabric init/join.
+fn validate_ports(port: u16, peering_port: Option<u16>) -> Result<u16> {
+    // Port overflow: default peering port is port + 1, which overflows at 65535
+    let resolved = match peering_port {
+        Some(pp) => pp,
+        None => {
+            if port == 65535 {
+                anyhow::bail!(
+                    "Port 65535 cannot use default peering port (65536 overflows). \
+                     Set --peering-port explicitly."
+                );
+            }
+            port + 1
+        }
+    };
+
+    // Port conflict: both ports must differ
+    if resolved == port {
+        anyhow::bail!("--peering-port must differ from --port (both are {port})");
+    }
+
+    // Privileged port warning (non-blocking)
+    if port < 1024 {
+        eprintln!("Warning: port {port} is privileged (< 1024). The daemon must run as root.");
+    }
+    if resolved < 1024 {
+        eprintln!(
+            "Warning: peering port {resolved} is privileged (< 1024). The daemon must run as root."
+        );
+    }
+
+    Ok(resolved)
+}
+
+/// Validate name length for mesh and node names.
+fn validate_name(label: &str, value: &str) -> Result<()> {
+    if value.len() > MAX_NAME_LEN {
+        anyhow::bail!(
+            "{label} must be {MAX_NAME_LEN} characters or fewer (got {})",
+            value.len()
+        );
+    }
+    Ok(())
 }
 
 fn default_node_name() -> String {
@@ -443,10 +510,13 @@ async fn run() -> Result<()> {
                 foreground,
                 peering,
             } => {
-                let peering_port = peering_port.unwrap_or(port + 1);
+                validate_name("Mesh name", &name)?;
+                let resolved_node = node_name.unwrap_or_else(default_node_name);
+                validate_name("Node name", &resolved_node)?;
+                let peering_port = validate_ports(port, peering_port)?;
                 let config = DaemonConfig {
                     mesh_name: name,
-                    node_name: node_name.unwrap_or_else(default_node_name),
+                    node_name: resolved_node,
                     wg_listen_port: port,
                     public_endpoint: endpoint,
                     peering_port,
@@ -471,17 +541,21 @@ async fn run() -> Result<()> {
                 node_name,
                 port,
                 endpoint,
+                peering_port,
                 pin,
                 region,
                 zone,
                 foreground,
             } => {
+                let resolved_node = node_name.unwrap_or_else(default_node_name);
+                validate_name("Node name", &resolved_node)?;
+                let peering_port = validate_ports(port, peering_port)?;
                 let config = DaemonConfig {
                     mesh_name: String::new(),
-                    node_name: node_name.unwrap_or_else(default_node_name),
+                    node_name: resolved_node,
                     wg_listen_port: port,
                     public_endpoint: endpoint,
-                    peering_port: port + 1,
+                    peering_port,
                     region,
                     zone,
                 };
@@ -552,9 +626,14 @@ async fn run() -> Result<()> {
                 setup_logging(false);
                 cli::audit::run(json, limit, since, event_type).await
             }
-            FabricCommand::Peers { json } => {
+            FabricCommand::Peers { action, json } => {
                 setup_logging(false);
-                cli::peers::run(json).await
+                match action {
+                    None => cli::peers::run(json).await,
+                    Some(PeersAction::Remove { name_or_key, yes }) => {
+                        cli::peers_remove::run(name_or_key, yes).await
+                    }
+                }
             }
             FabricCommand::Token => {
                 setup_logging(false);
@@ -571,6 +650,10 @@ async fn run() -> Result<()> {
             FabricCommand::Diagnose { json } => {
                 setup_logging(false);
                 cli::diagnose::run(json).await
+            }
+            FabricCommand::Metrics => {
+                setup_logging(false);
+                cli::metrics::run().await
             }
             FabricCommand::Service { action } => {
                 setup_logging(false);
@@ -617,5 +700,75 @@ async fn run() -> Result<()> {
                 update::run(no_restart, force)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── validate_ports ───────────────────────────────────────────
+
+    #[test]
+    fn valid_default_peering_port() {
+        let pp = validate_ports(51820, None).unwrap();
+        assert_eq!(pp, 51821);
+    }
+
+    #[test]
+    fn valid_explicit_peering_port() {
+        let pp = validate_ports(51820, Some(9000)).unwrap();
+        assert_eq!(pp, 9000);
+    }
+
+    #[test]
+    fn port_overflow_rejected() {
+        let err = validate_ports(65535, None).unwrap_err();
+        assert!(
+            err.to_string().contains("65536 overflows"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[test]
+    fn port_65535_with_explicit_peering_ok() {
+        let pp = validate_ports(65535, Some(65534)).unwrap();
+        assert_eq!(pp, 65534);
+    }
+
+    #[test]
+    fn same_port_rejected() {
+        let err = validate_ports(8080, Some(8080)).unwrap_err();
+        assert!(err.to_string().contains("must differ"), "unexpected: {err}");
+    }
+
+    // ── validate_name ────────────────────────────────────────────
+
+    #[test]
+    fn short_name_ok() {
+        assert!(validate_name("Mesh name", "my-mesh").is_ok());
+    }
+
+    #[test]
+    fn exactly_64_chars_ok() {
+        let name = "a".repeat(64);
+        assert!(validate_name("Mesh name", &name).is_ok());
+    }
+
+    #[test]
+    fn name_65_chars_rejected() {
+        let name = "a".repeat(65);
+        let err = validate_name("Mesh name", &name).unwrap_err();
+        assert!(
+            err.to_string().contains("64 characters or fewer"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[test]
+    fn node_name_too_long_rejected() {
+        let name = "x".repeat(100);
+        let err = validate_name("Node name", &name).unwrap_err();
+        assert!(err.to_string().contains("Node name"), "unexpected: {err}");
     }
 }

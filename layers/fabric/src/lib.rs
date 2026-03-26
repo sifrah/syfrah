@@ -4,6 +4,7 @@ pub mod config;
 pub mod control;
 pub mod daemon;
 pub mod events;
+pub mod metrics;
 pub mod peering;
 pub mod sanitize;
 pub mod store;

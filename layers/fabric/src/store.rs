@@ -360,6 +360,28 @@ pub fn peer_count_and_exists(wg_public_key: &str) -> Result<(usize, bool), Store
     Ok((count as usize, exists))
 }
 
+/// Mark a peer as Removed by name or WG public key.
+/// Returns the updated PeerRecord if found, or None if no matching peer exists.
+pub fn remove_peer(name_or_key: &str) -> Result<Option<PeerRecord>, StoreError> {
+    if !LayerDb::layer_exists(LAYER_NAME) {
+        return Ok(None);
+    }
+    let db = open_db()?;
+    let entries: Vec<(String, PeerRecord)> = db.list("peers")?;
+    let found = entries
+        .into_iter()
+        .find(|(_, p)| p.name == name_or_key || p.wg_public_key == name_or_key);
+    match found {
+        Some((key, mut peer)) => {
+            peer.status = syfrah_core::mesh::PeerStatus::Removed;
+            db.set("peers", &key, &peer)?;
+            maybe_write_json(&db);
+            Ok(Some(peer))
+        }
+        None => Ok(None),
+    }
+}
+
 /// Get all peers from redb.
 pub fn get_peers() -> Result<Vec<PeerRecord>, StoreError> {
     if !LayerDb::layer_exists(LAYER_NAME) {
