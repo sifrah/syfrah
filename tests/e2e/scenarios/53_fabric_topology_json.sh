@@ -25,7 +25,7 @@ start_peering "e2e-tjson-1"
 
 join_mesh "e2e-tjson-2" "172.20.0.10" "172.20.0.11" "node-2"
 
-sleep 3
+wait_for_convergence "e2e-tjson-" 2 1 30 || true
 
 # Get JSON output
 json=$(docker exec "e2e-tjson-1" syfrah fabric topology --json 2>&1)

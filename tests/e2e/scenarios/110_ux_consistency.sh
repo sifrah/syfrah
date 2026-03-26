@@ -15,15 +15,14 @@ start_node "e2e-consist-3" "172.20.0.12"
 
 # Set up 3-node mesh
 info "Setting up 3-node mesh..."
-output_init=$(docker exec "e2e-consist-1" syfrah fabric init \
-    --name consist-mesh --node-name consist-srv-1 --endpoint 172.20.0.10:51820 2>&1)
-wait_daemon "e2e-consist-1" 30
+E2E_MESH="consist-mesh"
+init_mesh "e2e-consist-1" "172.20.0.10" "consist-srv-1"
 start_peering "e2e-consist-1"
 join_mesh "e2e-consist-2" "172.20.0.10" "172.20.0.11" "consist-srv-2"
 sleep 3
 join_mesh "e2e-consist-3" "172.20.0.10" "172.20.0.12" "consist-srv-3"
 
-wait_for_convergence "e2e-consist-" 3 2 30 || true
+wait_for_convergence "e2e-consist-" 3 2 45 || true
 
 # === Version consistency ===
 info "Testing: version consistency..."
