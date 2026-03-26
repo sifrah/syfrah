@@ -272,9 +272,11 @@ mod tests {
     #[test]
     fn diff_tuning_hot_reloadable_change() {
         let a = Tuning::default();
-        let mut b = Tuning::default();
-        b.health_check_interval = Duration::from_secs(30);
-        b.max_peers = 500;
+        let b = Tuning {
+            health_check_interval: Duration::from_secs(30),
+            max_peers: 500,
+            ..Tuning::default()
+        };
 
         let (changes, skipped) = diff_tuning(&a, &b);
         assert_eq!(changes.len(), 2);
@@ -288,9 +290,11 @@ mod tests {
     #[test]
     fn diff_tuning_non_hot_reloadable_skipped() {
         let a = Tuning::default();
-        let mut b = Tuning::default();
-        b.interface_name = "wg1".to_string();
-        b.keepalive_interval = 50;
+        let b = Tuning {
+            interface_name: "wg1".to_string(),
+            keepalive_interval: 50,
+            ..Tuning::default()
+        };
 
         let (changes, skipped) = diff_tuning(&a, &b);
         assert!(changes.is_empty());
@@ -302,9 +306,11 @@ mod tests {
     #[test]
     fn diff_tuning_mixed_changes() {
         let a = Tuning::default();
-        let mut b = Tuning::default();
-        b.reconcile_interval = Duration::from_secs(10);
-        b.interface_name = "wg1".to_string();
+        let b = Tuning {
+            reconcile_interval: Duration::from_secs(10),
+            interface_name: "wg1".to_string(),
+            ..Tuning::default()
+        };
 
         let (changes, skipped) = diff_tuning(&a, &b);
         assert_eq!(changes.len(), 1);
