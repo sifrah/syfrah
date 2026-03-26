@@ -9,6 +9,7 @@ pub mod peering;
 pub mod sanitize;
 pub mod sd_watchdog;
 pub mod store;
+pub mod topology;
 pub mod ui;
 pub mod wg;
 
