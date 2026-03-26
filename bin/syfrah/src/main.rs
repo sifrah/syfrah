@@ -220,6 +220,11 @@ enum FabricCommand {
         #[command(subcommand)]
         action: PeeringAction,
     },
+    /// Manage zone drain state for workload scheduling
+    Zone {
+        #[command(subcommand)]
+        action: ZoneAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -282,6 +287,29 @@ enum ServiceAction {
     Uninstall,
     /// Show systemd service status
     Status,
+}
+
+#[derive(Subcommand)]
+enum ZoneAction {
+    /// Mark a zone as draining (stops new workload placement)
+    Drain {
+        /// Zone path in region/zone format (e.g. eu-west/par-ovh)
+        zone_path: String,
+        /// Skip confirmation prompt
+        #[arg(long, short)]
+        yes: bool,
+    },
+    /// Restore a draining zone to active
+    Undrain {
+        /// Zone path in region/zone format (e.g. eu-west/par-ovh)
+        zone_path: String,
+    },
+    /// Show all zones with health and drain status
+    Status {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Maximum allowed length for mesh and node names.
@@ -804,6 +832,14 @@ async fn run() -> Result<()> {
                     ServiceAction::Install => cli::service::install().await,
                     ServiceAction::Uninstall => cli::service::uninstall().await,
                     ServiceAction::Status => cli::service::status().await,
+                }
+            }
+            FabricCommand::Zone { action } => {
+                setup_logging(false);
+                match action {
+                    ZoneAction::Drain { zone_path, yes } => cli::zone::drain(&zone_path, yes).await,
+                    ZoneAction::Undrain { zone_path } => cli::zone::undrain(&zone_path).await,
+                    ZoneAction::Status { json } => cli::zone::status(json).await,
                 }
             }
             FabricCommand::Peering { action } => {
