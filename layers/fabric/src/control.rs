@@ -79,6 +79,13 @@ pub trait FabricHandler: Send + Sync {
     async fn handle(&self, req: FabricRequest, caller_uid: Option<u32>) -> FabricResponse;
 }
 
+#[async_trait::async_trait]
+impl<T: FabricHandler> FabricHandler for std::sync::Arc<T> {
+    async fn handle(&self, req: FabricRequest, caller_uid: Option<u32>) -> FabricResponse {
+        (**self).handle(req, caller_uid).await
+    }
+}
+
 /// Adapter that wraps a [`FabricHandler`] as a [`LayerHandler`], bridging the
 /// typed fabric request/response to the opaque byte-level handler interface.
 pub struct FabricLayerHandler<H: FabricHandler> {

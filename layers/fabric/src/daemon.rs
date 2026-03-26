@@ -720,6 +720,9 @@ pub async fn run_daemon(
     // Load HTTP API config (includes /metrics endpoint).
     let api_config = http_api::load_api_config();
 
+    // Load gRPC-compatible API config.
+    let grpc_config = crate::grpc_api::load_grpc_config();
+
     let announce_semaphore = Arc::new(Semaphore::new(tuning.max_concurrent_announces));
     let max_peers = tuning.max_peers;
     let keepalive_interval = tuning.keepalive_interval;
@@ -955,7 +958,7 @@ pub async fn run_daemon(
 
     // Control handler — wrap the fabric handler in a LayerRouter so the
     // daemon multiplexes all layers over a single socket.
-    let ctrl_handler = DaemonFabricHandler {
+    let ctrl_handler = Arc::new(DaemonFabricHandler {
         peering_state: peering_state.clone(),
         mesh_secret: shared_mesh_secret.clone(),
         my_record: my_record.clone(),
@@ -965,7 +968,10 @@ pub async fn run_daemon(
         tls_client_config: shared_tls_client.clone(),
         max_events: tuning.max_events,
         max_peers,
-    };
+    });
+
+    // Share the handler with the gRPC API server.
+    let grpc_handler: Arc<dyn FabricHandler> = ctrl_handler.clone();
 
     let fabric_layer_handler = FabricLayerHandler::new(ctrl_handler);
     let mut router = LayerRouter::new();
@@ -1817,6 +1823,14 @@ pub async fn run_daemon(
     let (api_shutdown_tx, api_shutdown_rx) = tokio::sync::watch::channel(false);
     let api_task = tokio::spawn(http_api::serve(api_config, api_shutdown_rx));
 
+    // gRPC-compatible API server (external fabric API on configurable port).
+    let (grpc_shutdown_tx, grpc_shutdown_rx) = tokio::sync::watch::channel(false);
+    let grpc_task = tokio::spawn(crate::grpc_api::serve(
+        grpc_config,
+        grpc_handler,
+        grpc_shutdown_rx,
+    ));
+
     // Wait for a shutdown signal (SIGINT or SIGTERM) or an unexpected task exit.
     tokio::select! {
         _ = &mut control_task => {
@@ -1834,6 +1848,7 @@ pub async fn run_daemon(
         _ = self_announce => {}
         _ = sighup_reload => {}
         _ = api_task => {}
+        _ = grpc_task => {}
         _ = tokio::signal::ctrl_c() => {
             info!("received SIGINT, shutting down");
         }
@@ -1847,6 +1862,9 @@ pub async fn run_daemon(
 
     // Signal HTTP API server to shut down gracefully.
     let _ = api_shutdown_tx.send(true);
+
+    // Signal gRPC API server to shut down gracefully.
+    let _ = grpc_shutdown_tx.send(true);
 
     // Tell systemd we are shutting down gracefully.
     sd_watchdog::notify_stopping();
