@@ -132,4 +132,78 @@ mod tests {
             other => panic!("unexpected: {other:?}"),
         }
     }
+
+    #[tokio::test]
+    async fn register_fabric_send_request_get_response() {
+        let mut router = LayerRouter::new();
+        router.register("fabric", Arc::new(UpperHandler));
+
+        // Send a fabric request and verify we get the uppercased response.
+        let req = LayerRequest::Fabric(b"syfrah".to_vec());
+        let resp = router.dispatch(req, Some(1000)).await;
+
+        match resp {
+            LayerResponse::Fabric(data) => {
+                assert_eq!(data, b"SYFRAH");
+            }
+            other => panic!("expected Fabric response, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn replacing_handler_uses_latest() {
+        struct ReverseHandler;
+
+        #[async_trait::async_trait]
+        impl LayerHandler for ReverseHandler {
+            async fn handle(&self, request: Vec<u8>, _caller_uid: Option<u32>) -> Vec<u8> {
+                request.into_iter().rev().collect()
+            }
+        }
+
+        let mut router = LayerRouter::new();
+        // Register first handler (uppercase).
+        router.register("fabric", Arc::new(UpperHandler));
+        // Replace with second handler (reverse).
+        router.register("fabric", Arc::new(ReverseHandler));
+
+        let req = LayerRequest::Fabric(b"abc".to_vec());
+        let resp = router.dispatch(req, None).await;
+
+        match resp {
+            LayerResponse::Fabric(data) => {
+                assert_eq!(data, b"cba", "should use the latest registered handler");
+            }
+            other => panic!("expected Fabric response, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn caller_uid_forwarded_to_handler() {
+        struct UidEchoHandler;
+
+        #[async_trait::async_trait]
+        impl LayerHandler for UidEchoHandler {
+            async fn handle(&self, _request: Vec<u8>, caller_uid: Option<u32>) -> Vec<u8> {
+                match caller_uid {
+                    Some(uid) => uid.to_be_bytes().to_vec(),
+                    None => vec![],
+                }
+            }
+        }
+
+        let mut router = LayerRouter::new();
+        router.register("fabric", Arc::new(UidEchoHandler));
+
+        let req = LayerRequest::Fabric(vec![]);
+        let resp = router.dispatch(req, Some(42)).await;
+
+        match resp {
+            LayerResponse::Fabric(data) => {
+                let uid = u32::from_be_bytes(data.try_into().unwrap());
+                assert_eq!(uid, 42);
+            }
+            other => panic!("expected Fabric response, got: {other:?}"),
+        }
+    }
 }

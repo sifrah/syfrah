@@ -167,6 +167,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn empty_message_roundtrip() {
+        let (mut client, mut server) = duplex(4096);
+
+        // An empty JSON object serialised as a TestMsg won't work, but we can
+        // write a zero-length payload (len prefix = 0) and verify it fails
+        // gracefully at the JSON parse stage (empty slice is not valid JSON).
+        let len: u32 = 0;
+        tokio::io::AsyncWriteExt::write_all(&mut client, &len.to_be_bytes())
+            .await
+            .unwrap();
+        drop(client);
+
+        let result: Result<TestMsg, _> = read_message(&mut server).await;
+        assert!(
+            result.is_err(),
+            "zero-length payload should fail JSON parse"
+        );
+    }
+
+    #[tokio::test]
     async fn bind_unix_listener_creates_socket() {
         let dir = tempfile::tempdir().unwrap();
         let sock_path = dir.path().join("test.sock");
