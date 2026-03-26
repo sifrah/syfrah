@@ -64,6 +64,8 @@ pub struct Tuning {
     pub interface_name: String,
     /// Maximum log file size in megabytes before rotation (default 10).
     pub log_max_size_mb: u64,
+    /// Maximum audit log file size in megabytes before rotation (default 10).
+    pub audit_max_size_mb: u64,
     /// Interval between periodic self-announce rounds (anti-entropy).
     /// Each round re-announces this node to a gossip subset of known peers,
     /// ensuring convergence even when initial announcements fail (default 10s).
@@ -125,6 +127,7 @@ impl Default for Tuning {
             announce_queue_size: 200,
             interface_name: crate::wg::DEFAULT_INTERFACE_NAME.to_string(),
             log_max_size_mb: 10,
+            audit_max_size_mb: 10,
             self_announce_interval: Duration::from_secs(10),
             announcements: AnnouncementConfig::default(),
         }
@@ -163,6 +166,7 @@ struct DaemonSection {
     persist_interval: Option<u64>,
     unreachable_timeout: Option<u64>,
     log_max_size_mb: Option<u64>,
+    audit_max_size_mb: Option<u64>,
     self_announce_interval: Option<u64>,
 }
 
@@ -265,6 +269,7 @@ pub fn diff_tuning(old: &Tuning, new: &Tuning) -> (Vec<TuningChange>, Vec<Tuning
     cmp_val!(max_concurrent_announces);
     cmp_val!(interface_name);
     cmp_val!(log_max_size_mb);
+    cmp_val!(audit_max_size_mb);
     cmp_dur!(self_announce_interval);
 
     // HealthPolicy fields (nested, compare manually)
@@ -310,8 +315,119 @@ pub fn diff_tuning(old: &Tuning, new: &Tuning) -> (Vec<TuningChange>, Vec<Tuning
     (changes, skipped)
 }
 
+/// Validate a parsed config file and return all validation errors.
+fn validate_config(config: &ConfigFile) -> Result<(), String> {
+    let mut errors: Vec<String> = Vec::new();
+
+    // Helper: check that a duration (seconds) is > 0
+    macro_rules! check_interval {
+        ($section:ident . $field:ident, $label:expr) => {
+            if let Some(v) = config.$section.$field {
+                if v == 0 {
+                    errors.push(format!("{} must be greater than 0", $label));
+                }
+            }
+        };
+    }
+
+    // Helper: check that a usize limit is > 0
+    macro_rules! check_limit {
+        ($section:ident . $field:ident, $label:expr) => {
+            if let Some(v) = config.$section.$field {
+                if v == 0 {
+                    errors.push(format!("{} must be greater than 0", $label));
+                }
+            }
+        };
+    }
+
+    // Daemon intervals (seconds, must be > 0)
+    check_interval!(daemon.health_check_interval, "daemon.health_check_interval");
+    check_interval!(daemon.reconcile_interval, "daemon.reconcile_interval");
+    check_interval!(daemon.persist_interval, "daemon.persist_interval");
+    check_interval!(daemon.unreachable_timeout, "daemon.unreachable_timeout");
+    check_interval!(
+        daemon.self_announce_interval,
+        "daemon.self_announce_interval"
+    );
+
+    // Log max size must be > 0
+    if let Some(v) = config.daemon.log_max_size_mb {
+        if v == 0 {
+            errors.push("daemon.log_max_size_mb must be greater than 0".to_string());
+        }
+    }
+
+    // WireGuard keepalive: 0 is valid (disables keepalive), but the type is
+    // already u16 so 1-65535 is the valid non-zero range — no extra check needed.
+
+    // Interface name must not be empty
+    if let Some(ref name) = config.wireguard.interface_name {
+        if name.trim().is_empty() {
+            errors.push("wireguard.interface_name must not be empty".to_string());
+        }
+    }
+
+    // Peering intervals (seconds, must be > 0)
+    check_interval!(peering.join_timeout, "peering.join_timeout");
+    check_interval!(peering.exchange_timeout, "peering.exchange_timeout");
+
+    // Peering limits (must be > 0)
+    check_limit!(
+        peering.max_concurrent_connections,
+        "peering.max_concurrent_connections"
+    );
+    check_limit!(peering.max_pending_joins, "peering.max_pending_joins");
+
+    // Events limit (must be > 0)
+    if let Some(v) = config.events.max_events {
+        if v == 0 {
+            errors.push("events.max_events must be greater than 0".to_string());
+        }
+    }
+
+    // Limits section (must be > 0)
+    check_limit!(limits.max_peers, "limits.max_peers");
+    check_limit!(
+        limits.max_concurrent_announces,
+        "limits.max_concurrent_announces"
+    );
+    check_limit!(limits.announce_queue_size, "limits.announce_queue_size");
+
+    // Health timeouts (seconds, must be > 0)
+    check_interval!(health.same_zone_timeout, "health.same_zone_timeout");
+    check_interval!(health.same_region_timeout, "health.same_region_timeout");
+    check_interval!(health.cross_region_timeout, "health.cross_region_timeout");
+
+    // Announcement concurrency limits (must be > 0)
+    check_limit!(
+        announcements.same_zone_concurrency,
+        "announcements.same_zone_concurrency"
+    );
+    check_limit!(
+        announcements.same_region_concurrency,
+        "announcements.same_region_concurrency"
+    );
+    check_limit!(
+        announcements.cross_region_concurrency,
+        "announcements.cross_region_concurrency"
+    );
+
+    // Announcement delays: 0 is valid (no delay), no check needed for delay_ms fields.
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "config validation failed:\n  - {}",
+            errors.join("\n  - ")
+        ))
+    }
+}
+
 /// Load tuning from `~/.syfrah/config.toml`. Returns defaults if file
-/// doesn't exist. Returns error only if file exists but is invalid.
+/// doesn't exist. Returns error if file exists but is invalid or contains
+/// values that fail validation.
 pub fn load_tuning() -> Result<Tuning, String> {
     let path = syfrah_dir().join("config.toml");
     if !path.exists() {
@@ -323,6 +439,8 @@ pub fn load_tuning() -> Result<Tuning, String> {
 
     let config: ConfigFile =
         toml::from_str(&content).map_err(|e| format!("invalid config.toml: {e}"))?;
+
+    validate_config(&config)?;
 
     let defaults = Tuning::default();
     Ok(Tuning {
@@ -386,6 +504,10 @@ pub fn load_tuning() -> Result<Tuning, String> {
             .daemon
             .log_max_size_mb
             .unwrap_or(defaults.log_max_size_mb),
+        audit_max_size_mb: config
+            .daemon
+            .audit_max_size_mb
+            .unwrap_or(defaults.audit_max_size_mb),
         self_announce_interval: config
             .daemon
             .self_announce_interval
@@ -532,5 +654,226 @@ mod tests {
         assert!(changes
             .iter()
             .any(|c| c.name == "announcements.cross_region_delay_ms"));
+    }
+
+    // --- Config validation tests ---
+
+    /// Helper: parse a TOML string into ConfigFile and validate it.
+    fn validate_toml(toml_str: &str) -> Result<(), String> {
+        let config: ConfigFile =
+            toml::from_str(toml_str).map_err(|e| format!("parse error: {e}"))?;
+        validate_config(&config)
+    }
+
+    #[test]
+    fn validate_empty_config_ok() {
+        assert!(validate_toml("").is_ok());
+    }
+
+    #[test]
+    fn validate_valid_config_ok() {
+        let toml = r#"
+[daemon]
+health_check_interval = 30
+reconcile_interval = 15
+persist_interval = 10
+unreachable_timeout = 120
+log_max_size_mb = 5
+self_announce_interval = 20
+
+[wireguard]
+keepalive_interval = 25
+interface_name = "syfrah0"
+
+[peering]
+join_timeout = 10
+exchange_timeout = 10
+max_concurrent_connections = 50
+max_pending_joins = 50
+
+[events]
+max_events = 200
+
+[limits]
+max_peers = 500
+max_concurrent_announces = 25
+announce_queue_size = 100
+
+[health]
+same_zone_timeout = 60
+same_region_timeout = 120
+cross_region_timeout = 300
+
+[announcements]
+same_zone_concurrency = 40
+same_region_concurrency = 15
+cross_region_concurrency = 3
+same_zone_delay_ms = 0
+same_region_delay_ms = 3000
+cross_region_delay_ms = 10000
+"#;
+        assert!(validate_toml(toml).is_ok());
+    }
+
+    #[test]
+    fn validate_zero_interval_rejected() {
+        let toml = "[daemon]\nhealth_check_interval = 0\n";
+        let err = validate_toml(toml).unwrap_err();
+        assert!(
+            err.contains("daemon.health_check_interval must be greater than 0"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_zero_reconcile_interval_rejected() {
+        let toml = "[daemon]\nreconcile_interval = 0\n";
+        let err = validate_toml(toml).unwrap_err();
+        assert!(err.contains("daemon.reconcile_interval must be greater than 0"));
+    }
+
+    #[test]
+    fn validate_zero_persist_interval_rejected() {
+        let toml = "[daemon]\npersist_interval = 0\n";
+        let err = validate_toml(toml).unwrap_err();
+        assert!(err.contains("daemon.persist_interval must be greater than 0"));
+    }
+
+    #[test]
+    fn validate_zero_unreachable_timeout_rejected() {
+        let toml = "[daemon]\nunreachable_timeout = 0\n";
+        let err = validate_toml(toml).unwrap_err();
+        assert!(err.contains("daemon.unreachable_timeout must be greater than 0"));
+    }
+
+    #[test]
+    fn validate_zero_self_announce_interval_rejected() {
+        let toml = "[daemon]\nself_announce_interval = 0\n";
+        let err = validate_toml(toml).unwrap_err();
+        assert!(err.contains("daemon.self_announce_interval must be greater than 0"));
+    }
+
+    #[test]
+    fn validate_zero_log_max_size_mb_rejected() {
+        let toml = "[daemon]\nlog_max_size_mb = 0\n";
+        let err = validate_toml(toml).unwrap_err();
+        assert!(err.contains("daemon.log_max_size_mb must be greater than 0"));
+    }
+
+    #[test]
+    fn validate_empty_interface_name_rejected() {
+        let toml = "[wireguard]\ninterface_name = \"  \"\n";
+        let err = validate_toml(toml).unwrap_err();
+        assert!(err.contains("wireguard.interface_name must not be empty"));
+    }
+
+    #[test]
+    fn validate_zero_join_timeout_rejected() {
+        let toml = "[peering]\njoin_timeout = 0\n";
+        let err = validate_toml(toml).unwrap_err();
+        assert!(err.contains("peering.join_timeout must be greater than 0"));
+    }
+
+    #[test]
+    fn validate_zero_exchange_timeout_rejected() {
+        let toml = "[peering]\nexchange_timeout = 0\n";
+        let err = validate_toml(toml).unwrap_err();
+        assert!(err.contains("peering.exchange_timeout must be greater than 0"));
+    }
+
+    #[test]
+    fn validate_zero_max_concurrent_connections_rejected() {
+        let toml = "[peering]\nmax_concurrent_connections = 0\n";
+        let err = validate_toml(toml).unwrap_err();
+        assert!(err.contains("peering.max_concurrent_connections must be greater than 0"));
+    }
+
+    #[test]
+    fn validate_zero_max_pending_joins_rejected() {
+        let toml = "[peering]\nmax_pending_joins = 0\n";
+        let err = validate_toml(toml).unwrap_err();
+        assert!(err.contains("peering.max_pending_joins must be greater than 0"));
+    }
+
+    #[test]
+    fn validate_zero_max_events_rejected() {
+        let toml = "[events]\nmax_events = 0\n";
+        let err = validate_toml(toml).unwrap_err();
+        assert!(err.contains("events.max_events must be greater than 0"));
+    }
+
+    #[test]
+    fn validate_zero_max_peers_rejected() {
+        let toml = "[limits]\nmax_peers = 0\n";
+        let err = validate_toml(toml).unwrap_err();
+        assert!(err.contains("limits.max_peers must be greater than 0"));
+    }
+
+    #[test]
+    fn validate_zero_max_concurrent_announces_rejected() {
+        let toml = "[limits]\nmax_concurrent_announces = 0\n";
+        let err = validate_toml(toml).unwrap_err();
+        assert!(err.contains("limits.max_concurrent_announces must be greater than 0"));
+    }
+
+    #[test]
+    fn validate_zero_announce_queue_size_rejected() {
+        let toml = "[limits]\nannounce_queue_size = 0\n";
+        let err = validate_toml(toml).unwrap_err();
+        assert!(err.contains("limits.announce_queue_size must be greater than 0"));
+    }
+
+    #[test]
+    fn validate_zero_health_timeouts_rejected() {
+        let toml =
+            "[health]\nsame_zone_timeout = 0\nsame_region_timeout = 0\ncross_region_timeout = 0\n";
+        let err = validate_toml(toml).unwrap_err();
+        assert!(err.contains("health.same_zone_timeout must be greater than 0"));
+        assert!(err.contains("health.same_region_timeout must be greater than 0"));
+        assert!(err.contains("health.cross_region_timeout must be greater than 0"));
+    }
+
+    #[test]
+    fn validate_zero_announcement_concurrency_rejected() {
+        let toml = "[announcements]\nsame_zone_concurrency = 0\nsame_region_concurrency = 0\ncross_region_concurrency = 0\n";
+        let err = validate_toml(toml).unwrap_err();
+        assert!(err.contains("announcements.same_zone_concurrency must be greater than 0"));
+        assert!(err.contains("announcements.same_region_concurrency must be greater than 0"));
+        assert!(err.contains("announcements.cross_region_concurrency must be greater than 0"));
+    }
+
+    #[test]
+    fn validate_zero_announcement_delay_allowed() {
+        // Delay of 0 means "no delay" and is valid.
+        let toml = "[announcements]\nsame_zone_delay_ms = 0\nsame_region_delay_ms = 0\ncross_region_delay_ms = 0\n";
+        assert!(validate_toml(toml).is_ok());
+    }
+
+    #[test]
+    fn validate_multiple_errors_collected() {
+        let toml = r#"
+[daemon]
+health_check_interval = 0
+reconcile_interval = 0
+
+[peering]
+max_concurrent_connections = 0
+
+[limits]
+max_peers = 0
+"#;
+        let err = validate_toml(toml).unwrap_err();
+        // All four errors should be reported in one message.
+        assert!(err.contains("daemon.health_check_interval"));
+        assert!(err.contains("daemon.reconcile_interval"));
+        assert!(err.contains("peering.max_concurrent_connections"));
+        assert!(err.contains("limits.max_peers"));
+    }
+
+    #[test]
+    fn validate_wireguard_keepalive_zero_allowed() {
+        // keepalive_interval = 0 disables persistent keepalive; that is valid.
+        let toml = "[wireguard]\nkeepalive_interval = 0\n";
+        assert!(validate_toml(toml).is_ok());
     }
 }

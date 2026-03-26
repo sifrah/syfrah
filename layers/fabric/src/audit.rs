@@ -136,6 +136,11 @@ fn emit_inner(
         }
     }
 
+    // Rotate if the audit log exceeds the configured maximum size.
+    let tuning = crate::config::load_tuning().unwrap_or_default();
+    let max_bytes = tuning.audit_max_size_mb * 1024 * 1024;
+    rotate_if_needed(&path, max_bytes);
+
     let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
 
     #[cfg(unix)]
@@ -172,6 +177,22 @@ pub fn read_entries() -> std::io::Result<Vec<AuditEntry>> {
         }
     }
     Ok(entries)
+}
+
+/// Rotate the audit log file if it exceeds `max_bytes`.
+/// Renames the current file to `.log.old` and lets the caller create a fresh one.
+fn rotate_if_needed(path: &std::path::Path, max_bytes: u64) {
+    if let Ok(meta) = fs::metadata(path) {
+        if meta.len() > max_bytes {
+            let old = path.with_extension("log.old");
+            let _ = fs::rename(path, &old);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&old, fs::Permissions::from_mode(0o600));
+            }
+        }
+    }
 }
 
 fn now() -> u64 {
@@ -246,6 +267,53 @@ mod tests {
         assert_eq!(entries[0].details.as_deref(), Some("test-start"));
         assert_eq!(entries[1].event_type, "peer.join.accepted");
         assert_eq!(entries[1].peer_name.as_deref(), Some("peer-1"));
+    }
+
+    #[test]
+    fn rotates_audit_log_when_exceeding_max_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log_path = tmp.path().join("audit.log");
+        let old_path = tmp.path().join("audit.log.old");
+
+        // Write a file larger than the threshold.
+        let big_data = vec![b'x'; 2 * 1024 * 1024];
+        std::fs::write(&log_path, &big_data).unwrap();
+        assert!(!old_path.exists());
+
+        // Rotation should rename to .old when file exceeds max_bytes.
+        let max_bytes: u64 = 1024 * 1024; // 1 MB threshold
+        rotate_if_needed(&log_path, max_bytes);
+
+        assert!(
+            old_path.exists(),
+            "audit.log.old should exist after rotation"
+        );
+        assert!(
+            !log_path.exists(),
+            "original audit.log should be gone after rename"
+        );
+    }
+
+    #[test]
+    fn does_not_rotate_audit_log_under_max_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log_path = tmp.path().join("audit.log");
+        let old_path = tmp.path().join("audit.log.old");
+
+        // Write a small file.
+        std::fs::write(&log_path, b"small").unwrap();
+
+        let max_bytes: u64 = 1024 * 1024; // 1 MB threshold
+        rotate_if_needed(&log_path, max_bytes);
+
+        assert!(
+            log_path.exists(),
+            "audit.log should remain when under threshold"
+        );
+        assert!(
+            !old_path.exists(),
+            "audit.log.old should not exist when under threshold"
+        );
     }
 
     #[test]
