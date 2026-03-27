@@ -1,3 +1,27 @@
+//! # syfrah-compute
+//!
+//! Cloud Hypervisor driver for the Syfrah control plane.
+//!
+//! This crate owns the full lifecycle of a VM on a single node: create, boot,
+//! monitor, shutdown, delete, and reconnect after daemon restarts. It is the
+//! specialist that interfaces with [Cloud Hypervisor](https://github.com/cloud-hypervisor/cloud-hypervisor)
+//! and manages VM processes.
+//!
+//! ## Public API for forge
+//!
+//! Forge interacts with compute through [`VmManager`], which provides:
+//! - [`VmManager::create_vm`] — spawn and boot a VM from a [`VmSpec`]
+//! - [`VmManager::shutdown_vm`] — graceful shutdown via the 4-level kill chain
+//! - [`VmManager::delete_vm`] — stop + clean up all artifacts
+//! - [`VmManager::info`] / [`VmManager::list`] — query VM status
+//! - [`VmManager::subscribe`] — receive lifecycle [`VmEvent`]s via broadcast
+//! - [`VmManager::reconnect`] — recover VMs after daemon restart
+//!
+//! ## Event model
+//!
+//! See the [`events`] module for the two-level event model (internal tracing
+//! vs external broadcast channel).
+
 pub mod binary;
 pub mod client;
 pub mod config;
@@ -15,6 +39,9 @@ mod runtime;
 pub mod test_utils;
 pub mod types;
 
+// -- Public re-exports for forge consumption ----------------------------------
+
+pub use binary::VersionReport;
 pub use error::{
     ClientError, ComputeError, ConcurrencyError, ConfigError, PreflightError, ProcessError,
     TransitionError,
