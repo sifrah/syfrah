@@ -1,0 +1,441 @@
+openapi: 3.0.3
+info:
+  title: Syfrah API
+  version: "1.0"
+  description: |
+    REST/JSON gateway for the Syfrah mesh fabric control plane.
+
+    Every endpoint mirrors a gRPC RPC defined in `fabric.proto`. Field names
+    match the proto messages so the migration to native gRPC will be
+    transparent to clients.
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: https://{gateway}/v1
+    description: Fabric gateway
+    variables:
+      gateway:
+        default: localhost:8443
+
+security:
+  - BearerApiKey: []
+
+tags:
+  - name: Status
+    description: Health and node information
+  - name: Peering
+    description: Peering lifecycle (start/stop listener, accept/reject joins)
+  - name: Peers
+    description: Peer management (remove, update endpoint)
+  - name: Operations
+    description: Operational actions (reload config, rotate secret)
+
+paths:
+  # --- Status ---------------------------------------------------------------
+  /fabric/status:
+    get:
+      operationId: getStatus
+      summary: Get node status
+      description: Returns the health and summary of the local node.
+      tags: [Status]
+      responses:
+        "200":
+          description: Node status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetStatusResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # --- Peering --------------------------------------------------------------
+  /fabric/peering/requests:
+    get:
+      operationId: listPeeringRequests
+      summary: List pending join requests
+      description: Returns all unapproved join requests.
+      tags: [Peering]
+      responses:
+        "200":
+          description: Pending join requests
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListPeeringRequestsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /fabric/peering/start:
+    post:
+      operationId: startPeering
+      summary: Start peering listener
+      description: Opens the peering listener to accept join requests.
+      tags: [Peering]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartPeeringRequest"
+      responses:
+        "200":
+          description: Peering started
+          content:
+            application/json:
+              schema:
+                type: object
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /fabric/peering/stop:
+    post:
+      operationId: stopPeering
+      summary: Stop peering listener
+      description: Closes the peering listener.
+      tags: [Peering]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Peering stopped
+          content:
+            application/json:
+              schema:
+                type: object
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /fabric/peering/accept:
+    post:
+      operationId: acceptPeering
+      summary: Accept a join request
+      description: Approves a pending join request by its request ID.
+      tags: [Peering]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AcceptPeeringRequest"
+      responses:
+        "200":
+          description: Join request accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcceptPeeringResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /fabric/peering/reject:
+    post:
+      operationId: rejectPeering
+      summary: Reject a join request
+      description: Denies a pending join request by its request ID.
+      tags: [Peering]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RejectPeeringRequest"
+      responses:
+        "200":
+          description: Join request rejected
+          content:
+            application/json:
+              schema:
+                type: object
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # --- Peers ----------------------------------------------------------------
+  /fabric/peers/remove:
+    post:
+      operationId: removePeer
+      summary: Remove a peer
+      description: Removes a peer from the mesh by name or public key.
+      tags: [Peers]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RemovePeerRequest"
+      responses:
+        "200":
+          description: Peer removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RemovePeerResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /fabric/peers/update-endpoint:
+    post:
+      operationId: updatePeerEndpoint
+      summary: Update a peer's endpoint
+      description: Changes a peer's WireGuard endpoint address.
+      tags: [Peers]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePeerEndpointRequest"
+      responses:
+        "200":
+          description: Endpoint updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdatePeerEndpointResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # --- Operations -----------------------------------------------------------
+  /fabric/reload:
+    post:
+      operationId: reloadConfig
+      summary: Reload configuration
+      description: Hot-reloads configuration from disk.
+      tags: [Operations]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Configuration reloaded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReloadResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /fabric/rotate-secret:
+    post:
+      operationId: rotateSecret
+      summary: Rotate mesh secret
+      description: |
+        Generates a new mesh secret and re-keys all peers. Returns the new
+        IPv6 address and notification results.
+      tags: [Operations]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Secret rotated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RotateSecretResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+components:
+  securitySchemes:
+    BearerApiKey:
+      type: http
+      scheme: bearer
+      description: |
+        API key prefixed with `syf_key_`. Pass as `Authorization: Bearer syf_key_...`.
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    # -- Common --------------------------------------------------------------
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Human-readable error message.
+
+    # -- Status --------------------------------------------------------------
+    GetStatusResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          description: Health status of the local node.
+          example: ok
+
+    # -- Peering -------------------------------------------------------------
+    StartPeeringRequest:
+      type: object
+      required: [port]
+      properties:
+        port:
+          type: integer
+          format: uint16
+          description: TCP port on which the peering listener binds.
+          example: 9735
+        pin:
+          type: string
+          nullable: true
+          description: Optional PIN that joining nodes must present.
+          example: "4821"
+
+    AcceptPeeringRequest:
+      type: object
+      required: [request_id]
+      properties:
+        request_id:
+          type: string
+          description: ID of the pending join request to accept.
+
+    AcceptPeeringResponse:
+      type: object
+      required: [peer_name]
+      properties:
+        peer_name:
+          type: string
+          description: Name assigned to the newly accepted peer.
+
+    RejectPeeringRequest:
+      type: object
+      required: [request_id]
+      properties:
+        request_id:
+          type: string
+          description: ID of the pending join request to reject.
+        reason:
+          type: string
+          nullable: true
+          description: Optional human-readable reason for rejection.
+
+    PeeringRequestInfo:
+      type: object
+      required:
+        - request_id
+        - node_name
+        - wg_public_key
+        - endpoint
+        - wg_listen_port
+        - received_at
+      properties:
+        request_id:
+          type: string
+        node_name:
+          type: string
+        wg_public_key:
+          type: string
+        endpoint:
+          type: string
+          description: Host and port of the requesting node.
+        wg_listen_port:
+          type: integer
+          format: uint16
+        received_at:
+          type: integer
+          format: uint64
+          description: Unix timestamp (seconds) when the request was received.
+        region:
+          type: string
+          nullable: true
+        zone:
+          type: string
+          nullable: true
+
+    ListPeeringRequestsResponse:
+      type: object
+      required: [requests]
+      properties:
+        requests:
+          type: array
+          items:
+            $ref: "#/components/schemas/PeeringRequestInfo"
+
+    # -- Peers ---------------------------------------------------------------
+    RemovePeerRequest:
+      type: object
+      required: [name_or_key]
+      properties:
+        name_or_key:
+          type: string
+          description: Peer name or WireGuard public key.
+
+    RemovePeerResponse:
+      type: object
+      required: [peer_name, announced_to]
+      properties:
+        peer_name:
+          type: string
+        announced_to:
+          type: integer
+          description: Number of remaining peers notified about the removal.
+
+    UpdatePeerEndpointRequest:
+      type: object
+      required: [name_or_key, endpoint]
+      properties:
+        name_or_key:
+          type: string
+          description: Peer name or WireGuard public key.
+        endpoint:
+          type: string
+          description: New WireGuard endpoint (host:port).
+
+    UpdatePeerEndpointResponse:
+      type: object
+      required: [peer_name, old_endpoint, new_endpoint]
+      properties:
+        peer_name:
+          type: string
+        old_endpoint:
+          type: string
+        new_endpoint:
+          type: string
+
+    # -- Operations ----------------------------------------------------------
+    ReloadResponse:
+      type: object
+      required: [changes, skipped]
+      properties:
+        changes:
+          type: array
+          items:
+            type: string
+          description: List of configuration keys that were updated.
+        skipped:
+          type: array
+          items:
+            type: string
+          description: List of configuration keys that could not be hot-reloaded.
+
+    RotateSecretResponse:
+      type: object
+      required: [new_secret, new_ipv6, peers_notified, peers_failed]
+      properties:
+        new_secret:
+          type: string
+          description: The newly generated mesh secret.
+        new_ipv6:
+          type: string
+          description: New IPv6 ULA address derived from the new secret.
+        peers_notified:
+          type: integer
+          description: Number of peers that successfully received the new key.
+        peers_failed:
+          type: integer
+          description: Number of peers that failed to re-key.

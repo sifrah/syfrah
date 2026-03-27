@@ -7,6 +7,8 @@ on:
       - 'layers/*/README.md'
       - 'handbook/**'
       - 'api/proto/**/*.md'
+      - 'api/openapi.yaml'
+      - 'api/redocly.yaml'
       - 'dev/**/*.md'
       - 'benchmarks/**/*.md'
       - 'post_release_audit/**/*.md'
@@ -44,6 +46,9 @@ jobs:
       - name: Sync content and build
         working-directory: docs
         run: bash sync.sh && npm run build
+
+      - name: Build API docs (Redocly)
+        run: npx @redocly/cli build-docs api/openapi.yaml -o docs/dist/api/index.html
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
