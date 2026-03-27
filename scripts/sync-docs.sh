@@ -102,6 +102,92 @@ strip_frontmatter_line() {
     echo "1"
 }
 
+# Extract page type from YAML frontmatter: type: reference|guide|concept
+# Returns the type string or empty if not specified
+extract_page_type() {
+    local file="$1"
+    local in_frontmatter=false
+
+    while IFS= read -r line; do
+        if [ "$in_frontmatter" = false ]; then
+            if [ "$line" = "---" ]; then
+                in_frontmatter=true
+                continue
+            else
+                break
+            fi
+        else
+            if [ "$line" = "---" ]; then
+                break
+            fi
+            if echo "$line" | grep -qE '^type:\s*(reference|guide|concept)'; then
+                echo "$line" | sed -E 's/^type:\s*//' | sed 's/[[:space:]]*$//'
+                return
+            fi
+        fi
+    done < "$file"
+    echo ""
+}
+
+# Heuristically detect the page type from file content
+# - Contains `syfrah ` CLI commands -> reference
+# - Contains numbered steps or "## Step" -> guide
+# - Default -> concept
+detect_page_type() {
+    local file="$1"
+
+    # Check for CLI commands (syfrah followed by a subcommand)
+    if grep -qE 'syfrah\s+[a-z]' "$file" 2>/dev/null; then
+        echo "reference"
+        return
+    fi
+
+    # Check for step-by-step patterns
+    if grep -qE '^#{1,3}\s+Step\b' "$file" 2>/dev/null; then
+        echo "guide"
+        return
+    fi
+    # Check for numbered step lists (e.g., "1. Do something", "2. Do another")
+    if grep -cE '^\s*[0-9]+\.\s+' "$file" 2>/dev/null | grep -q '^[3-9]\|^[1-9][0-9]'; then
+        echo "guide"
+        return
+    fi
+
+    echo "concept"
+}
+
+# Resolve page type: frontmatter overrides heuristic
+resolve_page_type() {
+    local file="$1"
+    local ft
+    ft=$(extract_page_type "$file")
+    if [ -n "$ft" ]; then
+        echo "$ft"
+    else
+        detect_page_type "$file"
+    fi
+}
+
+# Return the icon for a page type
+page_type_icon() {
+    case "$1" in
+        reference) echo "\xF0\x9F\x93\x98" ;; # blue book
+        guide)     echo "\xF0\x9F\x93\x97" ;; # green book
+        concept)   echo "\xF0\x9F\x93\x99" ;; # orange book
+        *)         echo "\xF0\x9F\x93\x99" ;;
+    esac
+}
+
+# Return the label for a page type
+page_type_label() {
+    case "$1" in
+        reference) echo "Reference" ;;
+        guide)     echo "Guide" ;;
+        concept)   echo "Concept" ;;
+        *)         echo "Concept" ;;
+    esac
+}
+
 # Extract H1 title from a markdown file, fallback to provided default
 extract_title() {
     local file="$1"
@@ -173,7 +259,7 @@ humanize() {
 }
 
 # Generate an MDX page from a markdown file
-# Args: src outdir title desc rel_src [badge]
+# Args: src outdir title desc rel_src [tags_csv] [badge] [page_type]
 generate_page() {
     local src="$1"
     local outdir="$2"
@@ -182,6 +268,7 @@ generate_page() {
     local rel_src="$5"
     local tags_csv="${6:-}"
     local badge="${7:-}"
+    local page_type="${8:-concept}"
 
     mkdir -p "$outdir"
 
@@ -225,6 +312,13 @@ generate_page() {
 "
     fi
 
+    # Build page type indicator line
+    local type_icon
+    type_icon=$(printf "$(page_type_icon "$page_type")")
+    local type_label
+    type_label=$(page_type_label "$page_type")
+    local type_line="<p className=\"inline-block rounded-full bg-zinc-100 px-3 py-1 text-sm font-medium dark:bg-zinc-800 mb-2\">${type_icon} ${type_label}</p>"
+
     cat > "$outdir/page.mdx" << MDXEOF
 {/* AUTO-GENERATED from ${rel_src} — do not edit */}
 ${tags_import}
@@ -235,6 +329,8 @@ export const metadata = {
 }
 
 # ${title}
+
+${type_line}
 
 ${badge_line}<p className="text-sm text-gray-500">Last updated: ${last_updated}</p>
 ${tags_jsx}
@@ -405,8 +501,11 @@ for scan_dir in "${SCAN_DIRS[@]}"; do
             fi
         fi
 
+        # Resolve page type (frontmatter overrides heuristic)
+        page_type=$(resolve_page_type "$md_file")
+
         echo "  $local_path"
-        generate_page "$md_file" "$outdir" "$title" "$title" "$rel_path" "$file_tags" "$page_badge"
+        generate_page "$md_file" "$outdir" "$title" "$title" "$rel_path" "$file_tags" "$page_badge" "$page_type"
 
         # Track for navigation
         # Build tags JSON for nav entry
@@ -430,16 +529,19 @@ for scan_dir in "${SCAN_DIRS[@]}"; do
             tags_nav_field=",\"tags\":$tags_json_nav"
         fi
 
+        # Build pageType JSON field for nav
+        page_type_field=",\"pageType\":\"$page_type\""
+
         # Determine the parent nav node for this file
         if [ "$filename" = "README.md" ]; then
             # This file IS the page for its directory
-            dir_readmes["$dir_inside"]="$title|$url_path|$layer_status"
+            dir_readmes["$dir_inside"]="$title|$url_path|$layer_status|$page_type"
         else
             # Regular file: its parent is dir_inside
             name_no_ext="${filename%.md}"
             key="$dir_inside"
             existing="${dir_children[$key]:-}"
-            entry="{\"title\":\"$title\",\"href\":\"$url_path\"$tags_nav_field}"
+            entry="{\"title\":\"$title\",\"href\":\"$url_path\"$tags_nav_field$page_type_field}"
             if [ -z "$existing" ]; then
                 dir_children["$key"]="$entry"
             else
@@ -481,12 +583,17 @@ for scan_dir in "${SCAN_DIRS[@]}"; do
                     t="${info%%|*}"
                     rest="${info#*|}"
                     h="${rest%%|*}"
-                    s="${rest##*|}"
+                    rest2="${rest#*|}"
+                    s="${rest2%%|*}"
+                    pt="${rest2##*|}"
+                    entry="{\"title\":\"$t\",\"href\":\"$h\""
                     if [ -n "$s" ] && [ "$scan_dir" = "layers" ]; then
-                        entry="{\"title\":\"$t\",\"href\":\"$h\",\"status\":\"$s\"}"
-                    else
-                        entry="{\"title\":\"$t\",\"href\":\"$h\"}"
+                        entry="$entry,\"status\":\"$s\""
                     fi
+                    if [ -n "$pt" ]; then
+                        entry="$entry,\"pageType\":\"$pt\""
+                    fi
+                    entry="$entry}"
                     if [ -z "$top_level_links" ]; then
                         top_level_links="$entry"
                     else
@@ -520,7 +627,10 @@ for scan_dir in "${SCAN_DIRS[@]}"; do
                     nav_tags_json="$nav_tags_json]"
                     nav_tags_field=",\"tags\":$nav_tags_json"
                 fi
-                entry="{\"title\":\"$title\",\"href\":\"$url_path\"$nav_tags_field}"
+                # Resolve page type for nav entry
+                nav_page_type=$(resolve_page_type "$md_file")
+                nav_pt_field=",\"pageType\":\"$nav_page_type\""
+                entry="{\"title\":\"$title\",\"href\":\"$url_path\"$nav_tags_field$nav_pt_field}"
                 if [ -z "$top_level_links" ]; then
                     top_level_links="$entry"
                 else
@@ -536,11 +646,14 @@ for scan_dir in "${SCAN_DIRS[@]}"; do
                 # Build this top-level dir's nav entry with children
                 dir_info="${dir_readmes[$top_dir]:-}"
                 nav_status=""
+                dir_page_type=""
                 if [ -n "$dir_info" ]; then
                     t="${dir_info%%|*}"
                     rest="${dir_info#*|}"
                     h="${rest%%|*}"
-                    nav_status="${rest##*|}"
+                    rest2="${rest#*|}"
+                    nav_status="${rest2%%|*}"
+                    dir_page_type="${rest2##*|}"
                 else
                     t="$(humanize "$top_dir")"
                     h="/$scan_dir/$top_dir"
@@ -557,7 +670,13 @@ for scan_dir in "${SCAN_DIRS[@]}"; do
                         st="${sub_info%%|*}"
                         sub_rest="${sub_info#*|}"
                         sh="${sub_rest%%|*}"
-                        sub_entry="{\"title\":\"$st\",\"href\":\"$sh\"}"
+                        sub_rest2="${sub_rest#*|}"
+                        sub_pt="${sub_rest2##*|}"
+                        sub_entry="{\"title\":\"$st\",\"href\":\"$sh\""
+                        if [ -n "$sub_pt" ]; then
+                            sub_entry="$sub_entry,\"pageType\":\"$sub_pt\""
+                        fi
+                        sub_entry="$sub_entry}"
                         if [ -z "$children" ]; then
                             children="$sub_entry"
                         else
@@ -581,10 +700,16 @@ for scan_dir in "${SCAN_DIRS[@]}"; do
                     status_fragment=",\"status\":\"$nav_status\""
                 fi
 
+                # Build pageType fragment
+                pt_fragment=""
+                if [ -n "$dir_page_type" ]; then
+                    pt_fragment=",\"pageType\":\"$dir_page_type\""
+                fi
+
                 if [ -n "$children" ]; then
-                    entry="{\"title\":\"$t\",\"href\":\"$h\"${status_fragment},\"children\":[$children]}"
+                    entry="{\"title\":\"$t\",\"href\":\"$h\"${status_fragment}${pt_fragment},\"children\":[$children]}"
                 else
-                    entry="{\"title\":\"$t\",\"href\":\"$h\"${status_fragment}}"
+                    entry="{\"title\":\"$t\",\"href\":\"$h\"${status_fragment}${pt_fragment}}"
                 fi
 
                 if [ -z "$top_level_links" ]; then

@@ -18,7 +18,14 @@ interface NavLink {
   title: string
   href: string
   status?: 'implemented' | 'stub' | 'planned'
+  pageType?: 'reference' | 'guide' | 'concept'
   children?: NavLink[]
+}
+
+const pageTypeBadge: Record<string, { emoji: string; label: string }> = {
+  reference: { emoji: '\u{1F4D8}', label: 'Reference' },
+  guide:     { emoji: '\u{1F4D7}', label: 'Guide' },
+  concept:   { emoji: '\u{1F4D9}', label: 'Concept' },
 }
 
 const statusBadge: Record<string, { emoji: string; label: string }> = {
@@ -42,6 +49,7 @@ function NavLinkItem({
   children,
   tag,
   status,
+  pageType,
   active = false,
   isAnchorLink = false,
   depth = 0,
@@ -50,11 +58,13 @@ function NavLinkItem({
   children: React.ReactNode
   tag?: string
   status?: string
+  pageType?: string
   active?: boolean
   isAnchorLink?: boolean
   depth?: number
 }) {
   let badge = status ? statusBadge[status] : undefined
+  let typeBadge = pageType ? pageTypeBadge[pageType] : undefined
   return (
     <CloseButton
       as={Link}
@@ -69,6 +79,9 @@ function NavLinkItem({
       )}
     >
       <span className="truncate">
+        {typeBadge && (
+          <span className="mr-1.5" title={typeBadge.label}>{typeBadge.emoji}</span>
+        )}
         {children}
         {badge && (
           <span className="ml-1.5" title={badge.label}>{badge.emoji}</span>
@@ -104,6 +117,7 @@ function NavItemWithChildren({
             href={link.href}
             active={isSelfActive}
             status={link.status}
+            pageType={link.pageType}
           >
             {link.title}
           </NavLinkItem>
@@ -145,6 +159,7 @@ function NavItemWithChildren({
                 <NavLinkItem
                   href={child.href}
                   active={child.href === pathname}
+                  pageType={child.pageType}
                   depth={1}
                 >
                   {child.title}
@@ -283,7 +298,7 @@ function NavigationGroup({
               />
             ) : (
               <motion.li key={link.href} layout="position" className="relative">
-                <NavLinkItem href={link.href} active={link.href === pathname} status={link.status}>
+                <NavLinkItem href={link.href} active={link.href === pathname} status={link.status} pageType={link.pageType}>
                   {link.title}
                 </NavLinkItem>
                 <AnimatePresence mode="popLayout" initial={false}>
