@@ -2,7 +2,9 @@ name: Release
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - 'release/v*'
   workflow_dispatch:
 
 permissions:
@@ -18,6 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       next: ${{ steps.calc.outputs.next }}
+      tag: ${{ steps.calc.outputs.tag }}
+      channel: ${{ steps.calc.outputs.channel }}
       should_release: ${{ steps.calc.outputs.should_release }}
     steps:
       - uses: actions/checkout@v4
@@ -27,9 +31,14 @@ jobs:
       - name: Calculate next version
         id: calc
         run: |
-          # Get latest tag
-          LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-          echo "Latest tag: $LATEST"
+          set -euo pipefail
+
+          # Skip release: commits (loop prevention)
+          if git log -1 --pretty=%s | grep -q '^release:'; then
+            echo "Release commit detected — skipping"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           # Skip if HEAD is already tagged
           HEAD_TAGS=$(git tag --points-at HEAD)
@@ -39,14 +48,30 @@ jobs:
             exit 0
           fi
 
-          # Parse semver
+          # Detect channel from branch
+          BRANCH="${GITHUB_REF#refs/heads/}"
+          if [[ "$BRANCH" == release/v* ]]; then
+            CHANNEL="stable"
+          else
+            CHANNEL="beta"
+          fi
+          echo "Branch: $BRANCH → Channel: $CHANNEL"
+
+          # Get latest stable tag (ignore beta tags for base version)
+          LATEST=$(git tag -l 'v*' --sort=-v:refname | grep -v 'beta' | head -1 || echo "v0.0.0")
+          if [ -z "$LATEST" ]; then
+            LATEST="v0.0.0"
+          fi
+          echo "Latest stable tag: $LATEST"
+
+          # Parse semver from latest stable tag
           SEMVER=${LATEST#v}
           MAJOR=$(echo "$SEMVER" | cut -d. -f1)
           MINOR=$(echo "$SEMVER" | cut -d. -f2)
-          PATCH=$(echo "$SEMVER" | cut -d. -f3)
+          PATCH=$(echo "$SEMVER" | cut -d. -f3 | cut -d- -f1)
 
-          # Check commit messages since last tag
-          COMMITS=$(git log "${LATEST}..HEAD" --oneline)
+          # Check commit messages since last tag for bump type
+          COMMITS=$(git log "${LATEST}..HEAD" --oneline 2>/dev/null || echo "")
           echo "Commits since $LATEST:"
           echo "$COMMITS"
 
@@ -58,10 +83,37 @@ jobs:
             PATCH=$((PATCH + 1))
           fi
 
-          NEXT="${MAJOR}.${MINOR}.${PATCH}"
-          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
+          BASE_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+
+          if [ "$CHANNEL" = "beta" ]; then
+            # Find the highest beta N for this base version
+            LAST_BETA=$(git tag -l "v${BASE_VERSION}-beta.*" --sort=-v:refname | head -1 || echo "")
+            if [ -n "$LAST_BETA" ]; then
+              # Extract N from vX.Y.Z-beta.N
+              LAST_N=$(echo "$LAST_BETA" | sed 's/.*-beta\.//')
+              NEXT_N=$((LAST_N + 1))
+            else
+              NEXT_N=1
+            fi
+            NEXT_VERSION="${BASE_VERSION}-beta.${NEXT_N}"
+            TAG="v${NEXT_VERSION}"
+          else
+            NEXT_VERSION="${BASE_VERSION}"
+            TAG="v${NEXT_VERSION}"
+
+            # For stable, check this exact tag doesn't exist already
+            if git tag -l "$TAG" | grep -q .; then
+              echo "Tag $TAG already exists — skipping"
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          echo "next=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
           echo "should_release=true" >> "$GITHUB_OUTPUT"
-          echo "Next version: v$NEXT"
+          echo "Next version: $TAG ($CHANNEL)"
 
   # ── Build all targets ─────────────────────────────────────
   build:
@@ -150,14 +202,16 @@ jobs:
 
       - name: Create git tag
         env:
-          VERSION: ${{ needs.version.outputs.next }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
-          git tag "v${VERSION}"
-          git push origin "v${VERSION}"
+          git tag "$TAG"
+          git push origin "$TAG"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ needs.version.outputs.next }}
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: ${{ needs.version.outputs.tag }}
+          prerelease: ${{ needs.version.outputs.channel == 'beta' }}
           generate_release_notes: true
           files: release/*
