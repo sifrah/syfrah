@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package syfrah.v1;
+package syfrah.compute.v1;
 
 option go_package = "github.com/sacha-ops/syfrah/gen/go/syfrah/v1;syfrahv1";
 
