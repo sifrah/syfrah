@@ -60,3 +60,60 @@ impl VmRuntimeState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_runtime(phase: VmPhase) -> VmRuntimeState {
+        VmRuntimeState {
+            vm_id: VmId("vm-rt-1".to_string()),
+            pid: 4242,
+            socket_path: PathBuf::from("/tmp/ch-vm-rt-1.sock"),
+            cgroup_path: Some(PathBuf::from("/sys/fs/cgroup/syfrah/vm-rt-1")),
+            ch_binary_path: PathBuf::from("/usr/bin/cloud-hypervisor"),
+            ch_binary_version: "38.0".to_string(),
+            launched_at: 1_700_000_000,
+            last_ping_at: Some(1_700_000_060),
+            last_error: None,
+            current_phase: phase,
+            reconnect_source: ReconnectSource::FreshSpawn,
+        }
+    }
+
+    #[test]
+    fn to_status_running_has_uptime() {
+        let rt = sample_runtime(VmPhase::Running);
+        let now = 1_700_000_100;
+        let status = rt.to_status(now);
+        assert_eq!(status.vm_id, VmId("vm-rt-1".to_string()));
+        assert_eq!(status.phase, VmPhase::Running);
+        assert_eq!(status.uptime_secs, Some(100));
+        assert_eq!(status.created_at, Some(1_700_000_000));
+    }
+
+    #[test]
+    fn to_status_stopped_has_no_uptime() {
+        let rt = sample_runtime(VmPhase::Stopped);
+        let status = rt.to_status(1_700_000_200);
+        assert_eq!(status.phase, VmPhase::Stopped);
+        assert_eq!(status.uptime_secs, None);
+    }
+
+    #[test]
+    fn to_status_pending_has_no_uptime() {
+        let rt = sample_runtime(VmPhase::Pending);
+        let status = rt.to_status(1_700_000_050);
+        assert_eq!(status.uptime_secs, None);
+    }
+
+    #[test]
+    fn reconnect_source_clone_and_debug() {
+        let fresh = ReconnectSource::FreshSpawn;
+        let cloned = fresh.clone();
+        assert!(format!("{cloned:?}").contains("FreshSpawn"));
+
+        let recovered = ReconnectSource::Recovered;
+        assert!(format!("{recovered:?}").contains("Recovered"));
+    }
+}

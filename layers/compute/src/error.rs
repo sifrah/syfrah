@@ -138,3 +138,175 @@ pub struct ConcurrencyError {
     pub vm_id: VmId,
     pub blocked_by: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- PreflightError display -----------------------------------------------
+
+    #[test]
+    fn preflight_ch_binary_not_found_display() {
+        let e = PreflightError::ChBinaryNotFound;
+        assert_eq!(e.to_string(), "cloud-hypervisor binary not found");
+    }
+
+    #[test]
+    fn preflight_vfio_not_bound_display() {
+        let e = PreflightError::VfioNotBound {
+            bdf: "0000:03:00.0".to_string(),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("0000:03:00.0"));
+        assert!(msg.contains("VFIO"));
+    }
+
+    #[test]
+    fn preflight_insufficient_resources_display() {
+        let e = PreflightError::InsufficientResources {
+            resource: "memory".to_string(),
+            available: "4096 MB".to_string(),
+            required: "8192 MB".to_string(),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("memory"));
+        assert!(msg.contains("4096 MB"));
+        assert!(msg.contains("8192 MB"));
+    }
+
+    // -- ConfigError display --------------------------------------------------
+
+    #[test]
+    fn config_invalid_vcpu_display() {
+        let e = ConfigError::InvalidVcpuCount { value: 0 };
+        assert!(e.to_string().contains('0'));
+    }
+
+    #[test]
+    fn config_missing_kernel_display() {
+        let e = ConfigError::MissingKernel;
+        assert!(e.to_string().contains("kernel"));
+    }
+
+    #[test]
+    fn config_conflicting_settings_display() {
+        let e = ConfigError::ConflictingSettings {
+            detail: "gpu and nested virt".to_string(),
+        };
+        assert!(e.to_string().contains("gpu and nested virt"));
+    }
+
+    // -- ClientError display --------------------------------------------------
+
+    #[test]
+    fn client_connection_refused_display() {
+        let e = ClientError::ConnectionRefused;
+        assert_eq!(e.to_string(), "connection refused");
+    }
+
+    #[test]
+    fn client_timeout_display() {
+        let e = ClientError::Timeout {
+            operation: "boot".to_string(),
+        };
+        assert!(e.to_string().contains("boot"));
+    }
+
+    #[test]
+    fn client_unexpected_status_display() {
+        let e = ClientError::UnexpectedStatus {
+            status: 500,
+            body: "internal error".to_string(),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("500"));
+        assert!(msg.contains("internal error"));
+    }
+
+    // -- ProcessError display -------------------------------------------------
+
+    #[test]
+    fn process_spawn_failed_display() {
+        let e = ProcessError::SpawnFailed {
+            reason: "permission denied".to_string(),
+        };
+        assert!(e.to_string().contains("permission denied"));
+    }
+
+    #[test]
+    fn process_signal_failed_display() {
+        let e = ProcessError::SignalFailed {
+            signal: "SIGTERM".to_string(),
+            pid: 12345,
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("SIGTERM"));
+        assert!(msg.contains("12345"));
+    }
+
+    // -- TransitionError display ----------------------------------------------
+
+    #[test]
+    fn transition_error_display() {
+        let e = TransitionError {
+            from: "Running".to_string(),
+            to: "Pending".to_string(),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("Running"));
+        assert!(msg.contains("Pending"));
+    }
+
+    // -- ComputeError From impls ----------------------------------------------
+
+    #[test]
+    fn compute_error_from_preflight() {
+        let inner = PreflightError::KvmNotAvailable;
+        let outer: ComputeError = inner.into();
+        assert!(matches!(outer, ComputeError::Preflight(_)));
+        assert!(outer.to_string().contains("preflight"));
+    }
+
+    #[test]
+    fn compute_error_from_config() {
+        let inner = ConfigError::InvalidMemory { value: 0 };
+        let outer: ComputeError = inner.into();
+        assert!(matches!(outer, ComputeError::Config(_)));
+        assert!(outer.to_string().contains("configuration"));
+    }
+
+    #[test]
+    fn compute_error_from_client() {
+        let inner = ClientError::ConnectionRefused;
+        let outer: ComputeError = inner.into();
+        assert!(matches!(outer, ComputeError::Client(_)));
+    }
+
+    #[test]
+    fn compute_error_from_process() {
+        let inner = ProcessError::PidNotFound { pid: 99 };
+        let outer: ComputeError = inner.into();
+        assert!(matches!(outer, ComputeError::Process(_)));
+    }
+
+    #[test]
+    fn compute_error_from_transition() {
+        let inner = TransitionError {
+            from: "Pending".to_string(),
+            to: "Running".to_string(),
+        };
+        let outer: ComputeError = inner.into();
+        assert!(matches!(outer, ComputeError::Transition(_)));
+    }
+
+    #[test]
+    fn compute_error_from_concurrency() {
+        let inner = ConcurrencyError {
+            vm_id: VmId("vm-1".to_string()),
+            blocked_by: "delete".to_string(),
+        };
+        let outer: ComputeError = inner.into();
+        assert!(matches!(outer, ComputeError::Concurrency(_)));
+        assert!(outer.to_string().contains("vm-1"));
+    }
+}
