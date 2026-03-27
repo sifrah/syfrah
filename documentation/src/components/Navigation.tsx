@@ -17,7 +17,14 @@ import navData from '@/navigation.json'
 interface NavLink {
   title: string
   href: string
+  status?: 'implemented' | 'stub' | 'planned'
   children?: NavLink[]
+}
+
+const statusBadge: Record<string, { emoji: string; label: string }> = {
+  implemented: { emoji: '\u{1F7E2}', label: 'Implemented' },
+  stub:        { emoji: '\u{1F535}', label: 'Stub' },
+  planned:     { emoji: '\u{26AA}',  label: 'Planned' },
 }
 
 interface NavGroup {
@@ -34,6 +41,7 @@ function NavLinkItem({
   href,
   children,
   tag,
+  status,
   active = false,
   isAnchorLink = false,
   depth = 0,
@@ -41,10 +49,12 @@ function NavLinkItem({
   href: string
   children: React.ReactNode
   tag?: string
+  status?: string
   active?: boolean
   isAnchorLink?: boolean
   depth?: number
 }) {
+  let badge = status ? statusBadge[status] : undefined
   return (
     <CloseButton
       as={Link}
@@ -58,7 +68,12 @@ function NavLinkItem({
           : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white',
       )}
     >
-      <span className="truncate">{children}</span>
+      <span className="truncate">
+        {children}
+        {badge && (
+          <span className="ml-1.5" title={badge.label}>{badge.emoji}</span>
+        )}
+      </span>
       {tag && (
         <Tag variant="small" color="zinc">
           {tag}
@@ -88,6 +103,7 @@ function NavItemWithChildren({
           <NavLinkItem
             href={link.href}
             active={isSelfActive}
+            status={link.status}
           >
             {link.title}
           </NavLinkItem>
@@ -267,7 +283,7 @@ function NavigationGroup({
               />
             ) : (
               <motion.li key={link.href} layout="position" className="relative">
-                <NavLinkItem href={link.href} active={link.href === pathname}>
+                <NavLinkItem href={link.href} active={link.href === pathname} status={link.status}>
                   {link.title}
                 </NavLinkItem>
                 <AnimatePresence mode="popLayout" initial={false}>
