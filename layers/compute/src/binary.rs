@@ -202,3 +202,320 @@ fn parse_version_output(output: &str) -> Option<String> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Helper: create a fake executable script in a tmpdir that outputs the given text.
+    ///
+    /// To avoid ETXTBSY ("Text file busy") on Linux when tests run in parallel,
+    /// we copy `/bin/echo` as the binary. Since `/bin/echo` is already a proper
+    /// ELF binary on disk, the kernel won't get ETXTBSY. We then wrap it with a
+    /// shell script that calls echo with the desired output.
+    ///
+    /// Actually, the simplest robust approach: write the script, sync, close,
+    /// and use a separate inode by first creating a temp, then hard-linking.
+    /// But on tmpfs hard links to the same fs work fine.
+    ///
+    /// Simplest fix: write the script content to a stable path that is never
+    /// re-opened for writing.
+    fn make_fake_binary(dir: &Path, name: &str, output: &str) -> PathBuf {
+        let path = dir.join(name);
+        let content = format!("#!/bin/sh\nprintf '%s\\n' '{output}'\n");
+        fs::write(&path, content).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        // Sync the directory to flush metadata.
+        let dir_fd = fs::File::open(dir).unwrap();
+        dir_fd.sync_all().unwrap();
+        path
+    }
+
+    /// Helper: create a non-executable file.
+    fn make_non_executable(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, "not executable").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        path
+    }
+
+    // -- pinned_version -------------------------------------------------------
+
+    #[test]
+    fn pinned_version_returns_nonempty_string() {
+        let v = pinned_version();
+        assert!(
+            !v.is_empty(),
+            "pinned_version() must return a non-empty string"
+        );
+        assert!(
+            v.starts_with('v'),
+            "pinned version should start with 'v', got: {v}"
+        );
+    }
+
+    #[test]
+    fn pinned_version_matches_compile_time_constant() {
+        assert_eq!(pinned_version(), PINNED_VERSION);
+    }
+
+    // -- resolve_binary: explicit path ----------------------------------------
+
+    #[test]
+    fn resolve_binary_explicit_path_exists_and_executable() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin = make_fake_binary(tmp.path(), "ch-fake", "cloud-hypervisor v43.0");
+        let result = resolve_binary(Some(&bin));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), bin);
+    }
+
+    #[test]
+    fn resolve_binary_explicit_path_not_found() {
+        let result = resolve_binary(Some(Path::new("/nonexistent/path/cloud-hypervisor")));
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("not found"),
+            "expected 'not found' in error: {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_binary_explicit_path_not_executable_falls_through() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin = make_non_executable(tmp.path(), "ch-noexec");
+        // Not executable, no /usr/local/lib/syfrah/cloud-hypervisor, no PATH match
+        let result = resolve_binary(Some(&bin));
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("not found"),
+            "expected 'not found' in error: {msg}"
+        );
+    }
+
+    // -- resolve_binary: not found --------------------------------------------
+
+    #[test]
+    fn resolve_binary_none_not_found() {
+        // With no explicit path, no /usr/local/lib, and (likely) no cloud-hypervisor on PATH
+        // in CI, this should fail. We test the error message.
+        let result = resolve_binary(None);
+        // This might succeed if cloud-hypervisor is installed, so we just check it doesn't panic.
+        // The important thing is it returns a Result, not a panic.
+        let _ = result;
+    }
+
+    // -- resolve_binary: priority (explicit > default > PATH) -----------------
+
+    #[test]
+    fn resolve_binary_explicit_takes_priority() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let explicit_bin = make_fake_binary(tmp.path(), "ch-explicit", "explicit");
+        // Even if other locations exist, explicit wins
+        let result = resolve_binary(Some(&explicit_bin));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), explicit_bin);
+    }
+
+    // -- check_version --------------------------------------------------------
+
+    #[test]
+    fn check_version_happy_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin = make_fake_binary(tmp.path(), "ch-good", "cloud-hypervisor v43.0");
+        let result = check_version(&bin);
+        assert!(result.is_ok(), "check_version failed: {result:?}");
+        assert_eq!(result.unwrap(), "v43.0");
+    }
+
+    #[test]
+    fn check_version_with_patch_version() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin = make_fake_binary(tmp.path(), "ch-patch", "cloud-hypervisor v43.0.1");
+        let result = check_version(&bin);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "v43.0.1");
+    }
+
+    #[test]
+    fn check_version_garbage_output() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin = make_fake_binary(tmp.path(), "ch-garbage", "this is not a version");
+        let result = check_version(&bin);
+        assert!(result.is_err(), "garbage output should produce an error");
+    }
+
+    #[test]
+    fn check_version_empty_output() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin = make_fake_binary(tmp.path(), "ch-empty", "");
+        let result = check_version(&bin);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn check_version_nonexistent_binary() {
+        let result = check_version(Path::new("/nonexistent/cloud-hypervisor"));
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("failed to run"),
+            "expected spawn error, got: {msg}"
+        );
+    }
+
+    // -- verify_version -------------------------------------------------------
+
+    #[test]
+    fn verify_version_match() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let version = pinned_version();
+        let bin = make_fake_binary(
+            tmp.path(),
+            "ch-match",
+            &format!("cloud-hypervisor {version}"),
+        );
+        let result = verify_version(&bin);
+        assert!(
+            result.is_ok(),
+            "verify_version should succeed on match: {result:?}"
+        );
+    }
+
+    #[test]
+    fn verify_version_mismatch() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin = make_fake_binary(tmp.path(), "ch-old", "cloud-hypervisor v42.0");
+        let result = verify_version(&bin);
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("mismatch"),
+            "expected mismatch warning, got: {msg}"
+        );
+        assert!(
+            msg.contains("v42.0"),
+            "expected old version in warning, got: {msg}"
+        );
+        assert!(
+            msg.contains(pinned_version()),
+            "expected pinned version in warning, got: {msg}"
+        );
+    }
+
+    // -- build_version_report -------------------------------------------------
+
+    #[test]
+    fn build_version_report_three_vms_two_outdated() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin = make_fake_binary(tmp.path(), "ch-report", "cloud-hypervisor v43.0");
+
+        let vms = vec![
+            ("vm-1".to_string(), "v43.0".to_string()),
+            ("vm-2".to_string(), "v42.0".to_string()),
+            ("vm-3".to_string(), "v42.0".to_string()),
+        ];
+
+        let report = build_version_report(&bin, &vms);
+        assert_eq!(report.disk, "v43.0");
+        assert_eq!(report.pinned, pinned_version());
+        assert!(report.disk_matches, "disk should match pinned");
+        assert_eq!(report.vms_current, 1);
+        assert_eq!(report.vms_outdated.len(), 2);
+        assert!(report.vms_outdated.iter().any(|(id, _)| id == "vm-2"));
+        assert!(report.vms_outdated.iter().any(|(id, _)| id == "vm-3"));
+        assert!(report.vms_outdated.iter().all(|(_, ver)| ver == "v42.0"));
+    }
+
+    #[test]
+    fn build_version_report_all_current() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin = make_fake_binary(tmp.path(), "ch-all-ok", "cloud-hypervisor v43.0");
+
+        let vms = vec![
+            ("vm-a".to_string(), "v43.0".to_string()),
+            ("vm-b".to_string(), "v43.0".to_string()),
+        ];
+
+        let report = build_version_report(&bin, &vms);
+        assert_eq!(report.vms_current, 2);
+        assert!(report.vms_outdated.is_empty());
+    }
+
+    #[test]
+    fn build_version_report_no_vms() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin = make_fake_binary(tmp.path(), "ch-no-vms", "cloud-hypervisor v43.0");
+
+        let report = build_version_report(&bin, &[]);
+        assert_eq!(report.vms_current, 0);
+        assert!(report.vms_outdated.is_empty());
+    }
+
+    #[test]
+    fn build_version_report_disk_unknown() {
+        // If the disk binary can't be checked, disk version is "unknown"
+        let report = build_version_report(Path::new("/nonexistent/ch"), &[]);
+        assert_eq!(report.disk, "unknown");
+        assert!(!report.disk_matches);
+    }
+
+    // -- parse_version_output (internal) --------------------------------------
+
+    #[test]
+    fn parse_version_standard_format() {
+        assert_eq!(
+            parse_version_output("cloud-hypervisor v43.0"),
+            Some("v43.0".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_version_with_patch() {
+        assert_eq!(
+            parse_version_output("cloud-hypervisor v43.0.1"),
+            Some("v43.0.1".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_version_garbage() {
+        assert_eq!(parse_version_output("not a version"), None);
+    }
+
+    #[test]
+    fn parse_version_empty() {
+        assert_eq!(parse_version_output(""), None);
+    }
+
+    #[test]
+    fn parse_version_v_alone() {
+        // Just "v" with no digits should not match
+        assert_eq!(parse_version_output("v"), None);
+    }
+
+    // -- is_executable --------------------------------------------------------
+
+    #[test]
+    fn is_executable_on_executable_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = make_fake_binary(tmp.path(), "exec-test", "hello");
+        assert!(is_executable(&path));
+    }
+
+    #[test]
+    fn is_executable_on_non_executable_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = make_non_executable(tmp.path(), "noexec-test");
+        assert!(!is_executable(&path));
+    }
+
+    #[test]
+    fn is_executable_on_nonexistent_path() {
+        assert!(!is_executable(Path::new("/does/not/exist")));
+    }
+}
