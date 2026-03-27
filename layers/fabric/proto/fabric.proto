@@ -6,63 +6,94 @@ option go_package = "github.com/sacha-ops/syfrah/gen/go/syfrah/v1;syfrahv1";
 
 import "syfrah/v1/common.proto";
 import "google/protobuf/timestamp.proto";
+import "google/api/annotations.proto";
 
 // FabricService exposes the syfrah mesh fabric control plane.
 service FabricService {
   // --- Peer management ---
 
   // ListPeers returns all peers in the mesh.
-  rpc ListPeers(ListPeersRequest) returns (ListPeersResponse);
+  rpc ListPeers(ListPeersRequest) returns (ListPeersResponse) {
+    option (google.api.http) = { get: "/v1/fabric/peers" };
+  }
 
   // RemovePeer removes a peer from the mesh by name or public key.
-  rpc RemovePeer(RemovePeerRequest) returns (RemovePeerResponse);
+  rpc RemovePeer(RemovePeerRequest) returns (RemovePeerResponse) {
+    option (google.api.http) = { post: "/v1/fabric/peers/remove" body: "*" };
+  }
 
   // UpdatePeerEndpoint changes a peer's WireGuard endpoint address.
-  rpc UpdatePeerEndpoint(UpdatePeerEndpointRequest) returns (UpdatePeerEndpointResponse);
+  rpc UpdatePeerEndpoint(UpdatePeerEndpointRequest) returns (UpdatePeerEndpointResponse) {
+    option (google.api.http) = { post: "/v1/fabric/peers/update-endpoint" body: "*" };
+  }
 
   // --- Topology & status ---
 
   // GetTopology returns the current mesh topology graph.
-  rpc GetTopology(GetTopologyRequest) returns (GetTopologyResponse);
+  rpc GetTopology(GetTopologyRequest) returns (GetTopologyResponse) {
+    option (google.api.http) = { get: "/v1/fabric/topology" };
+  }
 
   // GetStatus returns the health and summary of the local node.
-  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse) {
+    option (google.api.http) = { get: "/v1/fabric/status" };
+  }
 
   // --- Peering lifecycle ---
 
   // StartPeering opens the peering listener to accept join requests.
-  rpc StartPeering(StartPeeringRequest) returns (StartPeeringResponse);
+  rpc StartPeering(StartPeeringRequest) returns (StartPeeringResponse) {
+    option (google.api.http) = { post: "/v1/fabric/peering/start" body: "*" };
+  }
 
   // StopPeering closes the peering listener.
-  rpc StopPeering(StopPeeringRequest) returns (StopPeeringResponse);
+  rpc StopPeering(StopPeeringRequest) returns (StopPeeringResponse) {
+    option (google.api.http) = { post: "/v1/fabric/peering/stop" body: "*" };
+  }
 
   // ListPendingJoins lists unapproved join requests.
-  rpc ListPendingJoins(ListPendingJoinsRequest) returns (ListPendingJoinsResponse);
+  rpc ListPendingJoins(ListPendingJoinsRequest) returns (ListPendingJoinsResponse) {
+    option (google.api.http) = { get: "/v1/fabric/peering/requests" };
+  }
 
   // AcceptJoin approves a pending join request.
-  rpc AcceptJoin(AcceptJoinRequest) returns (AcceptJoinResponse);
+  rpc AcceptJoin(AcceptJoinRequest) returns (AcceptJoinResponse) {
+    option (google.api.http) = { post: "/v1/fabric/peering/accept" body: "*" };
+  }
 
   // RejectJoin denies a pending join request.
-  rpc RejectJoin(RejectJoinRequest) returns (RejectJoinResponse);
+  rpc RejectJoin(RejectJoinRequest) returns (RejectJoinResponse) {
+    option (google.api.http) = { post: "/v1/fabric/peering/reject" body: "*" };
+  }
 
   // --- Operations ---
 
   // RotateSecret generates a new mesh secret and re-keys all peers.
-  rpc RotateSecret(RotateSecretRequest) returns (RotateSecretResponse);
+  rpc RotateSecret(RotateSecretRequest) returns (RotateSecretResponse) {
+    option (google.api.http) = { post: "/v1/fabric/rotate-secret" body: "*" };
+  }
 
   // ReloadConfig hot-reloads configuration from disk.
-  rpc ReloadConfig(ReloadConfigRequest) returns (ReloadConfigResponse);
+  rpc ReloadConfig(ReloadConfigRequest) returns (ReloadConfigResponse) {
+    option (google.api.http) = { post: "/v1/fabric/reload" body: "*" };
+  }
 
   // --- Observability ---
 
   // GetEvents streams or lists recent fabric events.
-  rpc GetEvents(GetEventsRequest) returns (GetEventsResponse);
+  rpc GetEvents(GetEventsRequest) returns (GetEventsResponse) {
+    option (google.api.http) = { get: "/v1/fabric/events" };
+  }
 
   // GetAudit returns the audit log of administrative actions.
-  rpc GetAudit(GetAuditRequest) returns (GetAuditResponse);
+  rpc GetAudit(GetAuditRequest) returns (GetAuditResponse) {
+    option (google.api.http) = { get: "/v1/fabric/audit" };
+  }
 
   // GetMetrics returns fabric metrics in a structured format.
-  rpc GetMetrics(GetMetricsRequest) returns (GetMetricsResponse);
+  rpc GetMetrics(GetMetricsRequest) returns (GetMetricsResponse) {
+    option (google.api.http) = { get: "/v1/fabric/metrics" };
+  }
 }
 
 // ---- Peer management messages ----
