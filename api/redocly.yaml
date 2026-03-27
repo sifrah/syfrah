@@ -1,0 +1,16 @@
+apis:
+  syfrah@v1:
+    root: openapi.yaml
+
+theme:
+  openapi:
+    generateCodeSamples:
+      languages:
+        - lang: curl
+        - lang: Python
+        - lang: JavaScript
+
+rules:
+  no-unused-components: warn
+  no-empty-servers: error
+  operation-operationId: error
