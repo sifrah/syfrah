@@ -4,4 +4,5 @@ pub mod phase;
 mod runtime;
 pub mod types;
 
-pub use types::{GpuMode, NetworkConfig, VmId, VmSpec, VolumeAttachment};
+pub use phase::VmPhase;
+pub use types::{GpuMode, NetworkConfig, VmEvent, VmId, VmSpec, VmStatus, VolumeAttachment};
