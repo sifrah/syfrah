@@ -107,7 +107,7 @@ Ensure Docker daemon has IPv6 enabled. Check `/etc/docker/daemon.json`:
 
 ## Running E2E Tests Locally
 
-The CI E2E suite (`tests/e2e/run.sh`) rebuilds a full Docker image on every run (~3 min), which makes local iteration slow. `dev/e2e.sh` solves this by volume-mounting a locally-compiled binary into lightweight containers.
+There are two different E2E setups. **CI mode** (`tests/e2e/run.sh`) builds a full Docker image via `tests/e2e/Dockerfile` that compiles syfrah with musl -- the binary is baked into the image. This takes ~3 min per run, which makes local iteration slow. **Local dev mode** (`dev/e2e.sh`) solves this by building a lightweight base image (no Rust compilation) and volume-mounting a locally-compiled binary into each container.
 
 ### Quick start
 

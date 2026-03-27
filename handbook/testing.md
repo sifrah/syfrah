@@ -302,7 +302,14 @@ just e2e-local 01_fabric    # single scenario
 just ci && just e2e
 ```
 
-The `just e2e-local` command uses `dev/e2e.sh`, which volume-mounts a locally-compiled static binary into lightweight containers. This avoids the ~3 min Docker image rebuild, making the edit-build-test cycle much faster. See `handbook/local-dev.md` for details.
+There are **two different E2E setups** depending on the context:
+
+| Setup | Command | How it works |
+|---|---|---|
+| **CI mode** | `just e2e` / `./tests/e2e/run.sh` | Builds a Docker image via `tests/e2e/Dockerfile` that compiles syfrah with musl for static linking. The binary is baked into the image. This is what CI uses. |
+| **Local dev mode** | `just e2e-local` / `./dev/e2e.sh` | Builds a lightweight base image (debian + wireguard-tools, no Rust compilation), then volume-mounts a locally-compiled static binary into each container. Much faster iteration (~10s vs ~3 min). |
+
+Both setups run the same scenarios from `tests/e2e/scenarios/` via the same `run.sh` orchestrator and `lib.sh` helpers. The only difference is how the syfrah binary gets into the containers. See `handbook/local-dev.md` for local dev details.
 
 ## What we test at each layer
 
