@@ -38,11 +38,15 @@ api/proto/syfrah/v1/common.proto     # Shared types (pagination, errors, health)
 
 ## 2. Package Conventions
 
-Every proto file declares its package as:
+Every per-layer proto file declares its package as `syfrah.{layer}.v1`:
 
 ```protobuf
-package syfrah.v1;
+package syfrah.fabric.v1;   // layers/fabric/proto/fabric.proto
+package syfrah.compute.v1;   // layers/compute/proto/compute.proto
+package syfrah.overlay.v1;   // layers/overlay/proto/overlay.proto
 ```
+
+Shared types in `api/proto/syfrah/v1/common.proto` use `package syfrah.v1`.
 
 The version number in the package name (`v1`) corresponds to the API version.
 
@@ -230,7 +234,7 @@ These changes are all non-breaking and require no version bump.
 
 When a breaking change is unavoidable:
 
-1. Create a new package: `syfrah.v2` (reflected in the proto file and URL paths).
+1. Create a new package: `syfrah.{layer}.v2` (reflected in the proto file and URL paths).
 2. Serve both `v1` and `v2` simultaneously for at least one release cycle.
 3. Announce deprecation of the old version.
 4. After two minor releases, remove the old version.
@@ -324,7 +328,7 @@ Create `layers/{name}/proto/{name}.proto`:
 ```protobuf
 syntax = "proto3";
 
-package syfrah.v1;
+package syfrah.{name}.v1;
 
 option go_package = "github.com/sacha-ops/syfrah/gen/go/syfrah/v1;syfrahv1";
 

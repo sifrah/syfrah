@@ -127,15 +127,17 @@ HTTP/JSON over the fabric. Same serde types as local IPC. Same version, same bin
 
 ### Location
 
+Per-layer protos live alongside their layer crate; shared types live in `api/proto/`:
+
 ```
-api/proto/syfrah/v1/
-  fabric.proto         # Fabric service (peers, topology, peering)
-  compute.proto        # Compute service (VMs, images)
-  overlay.proto        # Overlay service (VPCs, subnets, security groups)
-  storage.proto        # Storage service (volumes, snapshots)
-  org.proto            # Organization service (orgs, projects, envs)
-  iam.proto            # IAM service (users, roles, API keys)
-  common.proto         # Shared types (pagination, errors, health)
+layers/fabric/proto/fabric.proto     # Fabric service (peers, topology, peering)
+layers/forge/proto/forge.proto       # Forge service (per-node ops)
+layers/compute/proto/compute.proto   # Compute service (VMs, images)
+layers/overlay/proto/overlay.proto   # Overlay service (VPCs, subnets, security groups)
+layers/storage/proto/storage.proto   # Storage service (volumes, snapshots)
+layers/org/proto/org.proto           # Organization service (orgs, projects, envs)
+
+api/proto/syfrah/v1/common.proto     # Shared types (pagination, errors, health)
 
 buf.yaml              # buf lint + breaking config
 buf.gen.yaml          # code generation config
@@ -324,19 +326,7 @@ Implementation: in-memory token bucket per gateway instance. No external depende
 
 ### Error codes per layer
 
-Each layer defines its error codes. Examples:
-
-```
-FABRIC_PEER_NOT_FOUND
-FABRIC_MESH_NOT_INITIALIZED
-FABRIC_DAEMON_NOT_RUNNING
-COMPUTE_VM_NOT_FOUND
-COMPUTE_INSUFFICIENT_RESOURCES
-IAM_KEY_EXPIRED
-IAM_UNAUTHORIZED
-```
-
-The gRPC status codes map to these: `NOT_FOUND`, `UNAUTHENTICATED`, `PERMISSION_DENIED`, `RESOURCE_EXHAUSTED`, etc.
+Each layer prefixes its error codes with the layer name (e.g. `FABRIC_PEER_NOT_FOUND`, `COMPUTE_VM_NOT_FOUND`). See [external-api.md](external-api.md#error-codes) for the canonical error code table with HTTP status mappings.
 
 ---
 
@@ -463,7 +453,7 @@ Replace `Error { message }` with `Error { code, message, trace_id }`. Add `SO_PE
 
 ### Phase 3: Proto definitions (2 days)
 
-Create `api/proto/syfrah/v1/fabric.proto` mirroring current `FabricRequest`/`FabricResponse`. Add `buf.yaml`, CI lint/breaking checks.
+Create `layers/fabric/proto/fabric.proto` mirroring current `FabricRequest`/`FabricResponse`. Add `buf.yaml`, CI lint/breaking checks.
 
 ### Phase 4: gRPC server (3 days)
 

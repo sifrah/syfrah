@@ -3,6 +3,7 @@
 This document covers exposing the syfrah control plane API to external clients (laptop CLI, Terraform provider, SDKs) via a dedicated gateway node. It includes gateway setup, API key management, authentication, rate limiting, a full endpoint reference, and troubleshooting.
 
 For internal architecture details, see [api-architecture.md](api-architecture.md).
+For the Terraform provider, multi-language SDKs, and SDK generation pipeline, see [api-architecture.md](api-architecture.md#sdk-generation).
 
 ---
 
@@ -580,9 +581,15 @@ All errors follow a consistent JSON structure:
 | `AUTH_FORBIDDEN` | 403 | Valid key but insufficient role, or source IP not in CIDR allowlist. |
 | `RESOURCE_EXHAUSTED` | 429 | Rate limit exceeded. |
 | `FABRIC_PEER_NOT_FOUND` | 400 | The specified peer does not exist. |
-| `FABRIC_DAEMON_NOT_RUNNING` | 503 | The daemon is not running or unreachable. |
 | `FABRIC_MESH_NOT_INITIALIZED` | 400 | The mesh has not been initialized yet. |
+| `FABRIC_DAEMON_NOT_RUNNING` | 503 | The daemon is not running or unreachable. |
+| `COMPUTE_VM_NOT_FOUND` | 404 | The specified VM does not exist. |
+| `COMPUTE_INSUFFICIENT_RESOURCES` | 409 | Not enough resources to fulfill the request. |
+| `IAM_KEY_EXPIRED` | 401 | The API key has exceeded its TTL. |
+| `IAM_UNAUTHORIZED` | 403 | IAM policy denies the requested action. |
 | `INTERNAL_ERROR` | 500 | Unexpected server error. |
+
+Each layer prefixes its codes with the layer name (e.g. `FABRIC_`, `COMPUTE_`, `IAM_`). The gRPC status codes map accordingly: `NOT_FOUND`, `UNAUTHENTICATED`, `PERMISSION_DENIED`, `RESOURCE_EXHAUSTED`, etc.
 
 ---
 

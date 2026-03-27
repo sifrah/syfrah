@@ -11,7 +11,7 @@ tags: [cli, tooling, operations]
 syfrah <namespace> <command> [flags]
 ```
 
-The CLI communicates with the local daemon via a Unix domain socket (`~/.syfrah/control.sock`) for runtime operations, or directly reads/writes state for offline operations.
+The CLI communicates with the local daemon via a Unix domain socket (`~/.syfrah/control.sock`) for runtime operations, or directly reads/writes state for offline operations. The socket uses length-prefixed JSON frames (max 64 KB, 5 s read timeout); see [api-architecture.md](api-architecture.md#1-local-server-cli--daemon) for details.
 
 > **Implementation status:** Only `syfrah fabric`, `syfrah state`, and `syfrah update` are implemented. All other namespaces (`forge`, `org`, `vm`, `vpc`, etc.) are planned. See the command tree below for details.
 
