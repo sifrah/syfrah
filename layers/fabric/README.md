@@ -293,7 +293,7 @@ Unreachable peers remain in the WireGuard configuration (they are not removed). 
 
 If the daemon crashes:
 1. The WireGuard interface (`syfrah0`) remains up (it's a kernel/userspace interface, not tied to the daemon process)
-2. All state is persisted in `~/.syfrah/fabric.redb` (ACID, crash-safe) with a JSON backup at `~/.syfrah/state.json`
+2. All state is persisted in `~/.syfrah/fabric.redb` (ACID, crash-safe). A backward-compatible JSON export is maintained at `~/.syfrah/state.json` (best-effort, debounced every 2 seconds after peer mutations, and force-flushed on daemon shutdown)
 3. `syfrah start` reloads state, recreates the interface, reapplies all known peers, and resumes the daemon loop
 4. The reconciliation loop re-adds any peers that were lost during the crash
 
@@ -364,16 +364,15 @@ When a new node joins, it is announced to all existing peers sequentially (one T
 
 The fabric is designed for meshes of **10 to ~100 nodes**. At this scale:
 - WireGuard handles the peer count comfortably
-- State fits in a single JSON file
+- redb handles the state comfortably with incremental updates
 - Sequential announcements complete in seconds
 - Keepalive overhead is negligible
 
 Beyond ~100 nodes, the following become bottlenecks:
 - Sequential peer announcements (O(N) per join)
-- Single JSON state file (full rewrite every 30 seconds)
 - Per-peer route system calls (one `ip route` per peer)
 
-Future work could address these limits with parallel announcements, database-backed state, and netlink-based route management.
+Future work could address these limits with parallel announcements and netlink-based route management.
 
 ## Observability
 

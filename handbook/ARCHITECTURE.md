@@ -87,6 +87,8 @@ These are deliberate choices, not missing features:
     └─────────────────────────────────────────────────────────────┘
 ```
 
+**State** is a **cross-cutting library**, not a vertical stack layer. It provides embedded persistence (redb) and is used by all layers that need to store data locally. It does not appear in the stack diagram because it sits alongside every layer rather than above or below them.
+
 ## Layer by layer
 
 ### Fabric — the network foundation
