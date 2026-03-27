@@ -53,7 +53,7 @@ def parse_proto(proto_path: str) -> dict:
     rpc_pattern = re.compile(
         r"((?://[^\n]*\n\s*)*)"  # leading comments
         r"rpc\s+(\w+)\s*\(\s*(\w+)\s*\)\s*returns\s*\(\s*(\w+)\s*\)\s*"
-        r"(?:\{[^}]*option\s*\(google\.api\.http\)\s*=\s*\{([^}]*)\}[^}]*\})?",
+        r"(?:\{[^}]*option\s*\(google\.api\.http\)\s*=\s*\{((?:[^}]|\}(?!\s*;))*)\}\s*;[^}]*\})?",
         re.MULTILINE,
     )
     for m in rpc_pattern.finditer(content):
@@ -415,7 +415,7 @@ def _humanize(name: str) -> str:
 
 
 # Stub layers: those whose only RPC is GetStatus
-STUB_LAYERS = {"compute", "forge", "overlay", "storage", "org"}
+STUB_LAYERS = {"forge", "overlay", "storage", "org"}
 
 
 def main():
