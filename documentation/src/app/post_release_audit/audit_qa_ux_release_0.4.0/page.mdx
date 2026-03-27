@@ -124,7 +124,7 @@ Top-level help text: `Syfrah -- turn dedicated servers into a programmable cloud
 
 #### Normal execution
 
-Produces spinner output: "Generating mesh secret..." then "Secret: <secret>", "Interface syfrah0 up (<ipv6>)". If no `--region`, prints a warning. Then backgrounds the daemon and reports PID.
+Produces spinner output: "Generating mesh secret..." then "Secret: &lt;secret&gt;", "Interface syfrah0 up (&lt;ipv6&gt;)". If no `--region`, prints a warning. Then backgrounds the daemon and reports PID.
 
 #### Error scenarios
 
@@ -157,7 +157,7 @@ Connects to the target, performs peering handshake, receives mesh credentials, s
 
 #### Error scenarios
 
-- **Invalid IP**: `invalid target address '<input>': <parse error>` -- Good.
+- **Invalid IP**: `invalid target address '&lt;input&gt;': <parse error>` -- Good.
 - **Connection refused**: Error from TCP connect -- will be a raw `tokio::io` error like `Connection refused (os error 111)`. Not user-friendly.
 
 #### Issues found
@@ -538,7 +538,7 @@ Excellent implementation. Rollback, confirmation for active peers, TOCTOU avoida
 
 The expected flow:
 1. Server 1: `syfrah fabric init --name prod --peering` (or `init` + `peering --pin`)
-2. Server 2: `syfrah fabric join <server1-ip> --pin <pin>`
+2. Server 2: `syfrah fabric join &lt;server1-ip&gt; --pin &lt;pin&gt;`
 3. Verify: `syfrah fabric status` and `syfrah fabric peers` on both.
 
 **Issue:** The README Quick Start flow uses `syfrah fabric peering --pin 4829` which enters interactive blocking mode. The operator on Server 1 will be stuck in the terminal until Server 2 connects. If the operator opens a second terminal, they lose context. The `--peering` flag on `init` is the correct approach but is undocumented.
@@ -597,8 +597,8 @@ The expected flow:
 
 The `ui.rs` module handles non-TTY well:
 - Spinners become hidden (no output during spin, only final status).
-- `step_ok` prints `OK: <msg>` instead of colored checkmark.
-- `step_fail` prints `FAIL: <msg>` to stderr.
+- `step_ok` prints `OK: &lt;msg&gt;` instead of colored checkmark.
+- `step_fail` prints `FAIL: &lt;msg&gt;` to stderr.
 - `confirm` returns `false` in non-TTY (safe default).
 
 **However**, commands that use raw `println!` bypass this entirely. `status`, `peers`, `events` will print the same output regardless of TTY mode, which is fine for tables but means they miss the styling benefits in TTY mode and the structured format in non-TTY mode.
@@ -670,7 +670,7 @@ The `ui.rs` module handles non-TTY well:
 
 4. The `events.rs` timestamp formatter reimplements date math without chrono. It works but is a maintenance risk (leap second edge cases, etc.).
 
-5. `is_syfrah_process()` reads `/proc/<pid>/cmdline` on Linux, uses `ps` on macOS, returns `true` on other platforms. The fallback `true` on non-Linux/macOS means PID recycling protection is absent on those platforms.
+5. `is_syfrah_process()` reads `/proc/&lt;pid&gt;/cmdline` on Linux, uses `ps` on macOS, returns `true` on other platforms. The fallback `true` on non-Linux/macOS means PID recycling protection is absent on those platforms.
 
 6. The `peering watch` function spawns the daemon in-process (`tokio::spawn`) during auto-init rather than using the normal double-fork path. This means the daemon dies when the peering command exits. This is a secondary consequence of the auto-init behavior (P0 issue PEER-1).
 

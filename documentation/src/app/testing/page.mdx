@@ -136,52 +136,52 @@ tests/e2e/
 | **Setup & lifecycle** | |
 | `create_network` | Create the shared Docker bridge network |
 | `remove_network` | Remove the shared Docker bridge network |
-| `start_node <name> <ip>` | Start a container on the test network |
-| `init_mesh <container> <ip>` | Run `syfrah fabric init` |
-| `start_peering <container>` | Run `syfrah fabric peering start --pin` |
-| `join_mesh <container> <target_ip> <own_ip>` | Run `syfrah fabric join` |
-| `wait_daemon <container>` | Wait for the control socket (up to 30s) |
-| `stop_daemon <container>` | Run `syfrah fabric stop` |
-| `leave_mesh <container>` | Run `syfrah fabric leave` |
-| `get_mesh_ipv6 <container>` | Extract the mesh IPv6 from status |
+| `start_node &lt;name&gt; &lt;ip&gt;` | Start a container on the test network |
+| `init_mesh &lt;container&gt; &lt;ip&gt;` | Run `syfrah fabric init` |
+| `start_peering &lt;container&gt;` | Run `syfrah fabric peering start --pin` |
+| `join_mesh &lt;container&gt; &lt;target_ip&gt; &lt;own_ip&gt;` | Run `syfrah fabric join` |
+| `wait_daemon &lt;container&gt;` | Wait for the control socket (up to 30s) |
+| `stop_daemon &lt;container&gt;` | Run `syfrah fabric stop` |
+| `leave_mesh &lt;container&gt;` | Run `syfrah fabric leave` |
+| `get_mesh_ipv6 &lt;container&gt;` | Extract the mesh IPv6 from status |
 | `cleanup` | Remove all containers created by this scenario |
 | `summary` | Print pass/fail count, return exit code |
 | **Assertions — daemon & interface** | |
-| `assert_daemon_running <container>` | Verify daemon is running |
-| `assert_daemon_stopped <container>` | Verify daemon is not running |
-| `assert_peer_count <container> <n>` | Verify peer count |
-| `assert_interface_exists <container>` | Verify syfrah0 exists |
-| `assert_interface_gone <container>` | Verify syfrah0 is removed |
+| `assert_daemon_running &lt;container&gt;` | Verify daemon is running |
+| `assert_daemon_stopped &lt;container&gt;` | Verify daemon is not running |
+| `assert_peer_count &lt;container&gt; &lt;n&gt;` | Verify peer count |
+| `assert_interface_exists &lt;container&gt;` | Verify syfrah0 exists |
+| `assert_interface_gone &lt;container&gt;` | Verify syfrah0 is removed |
 | **Assertions — connectivity** | |
-| `assert_can_ping <from> <ipv6>` | Verify IPv6 mesh connectivity |
-| `assert_cannot_ping <from> <ipv6>` | Verify IPv6 mesh is unreachable |
-| `block_traffic <container> <target_ip>` | Simulate network partition with iptables |
-| `unblock_traffic <container> <target_ip>` | Restore connectivity after partition |
+| `assert_can_ping &lt;from&gt; &lt;ipv6&gt;` | Verify IPv6 mesh connectivity |
+| `assert_cannot_ping &lt;from&gt; &lt;ipv6&gt;` | Verify IPv6 mesh is unreachable |
+| `block_traffic &lt;container&gt; &lt;target_ip&gt;` | Simulate network partition with iptables |
+| `unblock_traffic &lt;container&gt; &lt;target_ip&gt;` | Restore connectivity after partition |
 | **Assertions — commands & output** | |
-| `assert_command_fails <container> <cmd>` | Verify a command exits non-zero |
-| `assert_command_succeeds <container> <cmd>` | Verify a command exits zero |
-| `assert_output_contains <container> <cmd> <str>` | Verify command output contains string |
-| `assert_output_not_contains <container> <cmd> <str>` | Verify command output does not contain string |
-| `assert_output_matches <container> <cmd> <regex>` | Verify command output matches regex |
-| `assert_command_suggests <container> <cmd> <suggestion>` | Verify error suggests a corrective action |
-| `assert_all_commands_valid <container>` | Verify all CLI commands parse correctly |
+| `assert_command_fails &lt;container&gt; &lt;cmd&gt;` | Verify a command exits non-zero |
+| `assert_command_succeeds &lt;container&gt; &lt;cmd&gt;` | Verify a command exits zero |
+| `assert_output_contains &lt;container&gt; &lt;cmd&gt; &lt;str&gt;` | Verify command output contains string |
+| `assert_output_not_contains &lt;container&gt; &lt;cmd&gt; &lt;str&gt;` | Verify command output does not contain string |
+| `assert_output_matches &lt;container&gt; &lt;cmd&gt; &lt;regex&gt;` | Verify command output matches regex |
+| `assert_command_suggests &lt;container&gt; &lt;cmd&gt; &lt;suggestion&gt;` | Verify error suggests a corrective action |
+| `assert_all_commands_valid &lt;container&gt;` | Verify all CLI commands parse correctly |
 | **Assertions — state & consistency** | |
-| `get_state_field <container> <field>` | Extract a field from daemon state |
-| `assert_state_exists <container>` | Verify state file is present |
-| `assert_state_gone <container>` | Verify state file is removed |
-| `assert_clean_state <container>` | Verify state file has no corruption |
-| `assert_no_duplicate_peers <container>` | Verify no duplicate peers in mesh |
+| `get_state_field &lt;container&gt; &lt;field&gt;` | Extract a field from daemon state |
+| `assert_state_exists &lt;container&gt;` | Verify state file is present |
+| `assert_state_gone &lt;container&gt;` | Verify state file is removed |
+| `assert_clean_state &lt;container&gt;` | Verify state file has no corruption |
+| `assert_no_duplicate_peers &lt;container&gt;` | Verify no duplicate peers in mesh |
 | `assert_consistent_peer_count <containers...>` | Verify all nodes agree on peer count |
 | `assert_consistent_region <containers...>` | Verify all nodes agree on region |
-| `assert_regions_displayed <container>` | Verify region info appears in output |
-| `assert_no_epoch_dates <container>` | Verify no raw epoch timestamps in output |
-| `assert_join_retry_works <container> <target>` | Verify join retries on transient failure |
+| `assert_regions_displayed &lt;container&gt;` | Verify region info appears in output |
+| `assert_no_epoch_dates &lt;container&gt;` | Verify no raw epoch timestamps in output |
+| `assert_join_retry_works &lt;container&gt; &lt;target&gt;` | Verify join retries on transient failure |
 | `wait_for_convergence <containers...>` | Wait until all nodes have consistent state |
 | **Logging** | |
-| `pass <msg>` | Log a passing check |
-| `fail <msg>` | Log a failing check |
-| `info <msg>` | Log an informational message |
-| `debug <msg>` | Log a debug message |
+| `pass &lt;msg&gt;` | Log a passing check |
+| `fail &lt;msg&gt;` | Log a failing check |
+| `info &lt;msg&gt;` | Log an informational message |
+| `debug &lt;msg&gt;` | Log a debug message |
 
 **What belongs here:**
 - Multi-node mesh formation

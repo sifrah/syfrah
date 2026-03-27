@@ -29,6 +29,7 @@ EXCLUDE_FILES=(CHANGELOG.md CODE_OF_CONDUCT.md SECURITY.md LICENSE .env)
 escape_mdx() {
     sed \
         -e 's/<\([0-9]\)/\&lt;\1/g' \
+        -e 's/<\([a-z_][a-z_0-9:-]*\)>/\&lt;\1\&gt;/g' \
         -e 's/{\([a-z_/][a-z_/.-]*\)}/\&#123;\1\&#125;/g'
 }
 
