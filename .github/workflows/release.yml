@@ -165,11 +165,46 @@ jobs:
           SYFRAH_VERSION: ${{ needs.version.outputs.next }}
         run: cross build --release --target ${{ matrix.target }}
 
+      - name: Download Cloud Hypervisor binary (Linux only)
+        if: contains(matrix.target, 'linux')
+        run: |
+          set -euo pipefail
+          CH_VERSION=$(cat CLOUD_HYPERVISOR_VERSION | tr -d '[:space:]')
+          echo "Cloud Hypervisor version: ${CH_VERSION}"
+
+          # Determine CH binary name based on target architecture
+          if [[ "${{ matrix.target }}" == aarch64-* ]]; then
+            CH_BINARY="cloud-hypervisor-static-aarch64"
+          else
+            CH_BINARY="cloud-hypervisor-static"
+          fi
+
+          CH_URL="https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/${CH_VERSION}/${CH_BINARY}"
+          echo "Downloading ${CH_URL}"
+          curl -fsSL -o "target/${{ matrix.target }}/release/cloud-hypervisor" "${CH_URL}"
+          chmod +x "target/${{ matrix.target }}/release/cloud-hypervisor"
+
+          # Verify SHA256 if checksum file is available (best-effort)
+          CH_SHA_URL="${CH_URL}.sha256"
+          if curl -fsSL -o "/tmp/ch-sha256" "${CH_SHA_URL}" 2>/dev/null; then
+            EXPECTED=$(awk '{print $1}' /tmp/ch-sha256)
+            ACTUAL=$(sha256sum "target/${{ matrix.target }}/release/cloud-hypervisor" | awk '{print $1}')
+            if [ "$EXPECTED" = "$ACTUAL" ]; then
+              echo "SHA256 verified for Cloud Hypervisor binary"
+            else
+              echo "::warning::SHA256 mismatch for Cloud Hypervisor binary (expected: ${EXPECTED}, got: ${ACTUAL})"
+            fi
+          else
+            echo "No SHA256 checksum file available — skipping verification"
+          fi
+
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/syfrah
+          path: |
+            target/${{ matrix.target }}/release/syfrah
+            target/${{ matrix.target }}/release/cloud-hypervisor
 
   # ── Create release ────────────────────────────────────────
   release:
@@ -194,7 +229,15 @@ jobs:
             target=$(basename "$target_dir")
             archive="syfrah-v${VERSION}-${target}.tar.gz"
             chmod +x "${target_dir}syfrah"
-            tar czf "release/${archive}" -C "$target_dir" syfrah
+
+            # Include cloud-hypervisor in tarball for Linux targets
+            if [ -f "${target_dir}cloud-hypervisor" ]; then
+              chmod +x "${target_dir}cloud-hypervisor"
+              tar czf "release/${archive}" -C "$target_dir" syfrah cloud-hypervisor
+            else
+              # macOS targets: syfrah only (CH requires KVM/Linux)
+              tar czf "release/${archive}" -C "$target_dir" syfrah
+            fi
           done
           cp scripts/install.sh release/install.sh
           cd release
