@@ -441,7 +441,7 @@ The bottleneck is WireGuard encryption (ChaCha20-Poly1305), not VXLAN encapsulat
     ├──────────────────────────────────────────────────────┤
     │                                                      │
     │   Compute          ◄── compute.md      │
-    │   Firecracker VMs connect via TAP → bridge           │
+    │   libkrun VMs connect via TAP → bridge                │
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │

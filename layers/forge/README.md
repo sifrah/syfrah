@@ -16,7 +16,7 @@ The forge is the bridge between the control plane and the local compute stack. I
     │          http://[fd12:3456:...:node]:7100/               │
     ├─────────────────────────────────────────────────────────┤
     │                  Internal Compute Stack                   │
-    │       Firecracker  │  Networking  │  Storage             │
+    │       libkrun      │  Networking  │  Storage             │
     │       (microVMs)   │  (bridges,   │  (volumes,           │
     │                    │   VXLAN)     │   snapshots)         │
     ├─────────────────────────────────────────────────────────┤
@@ -86,7 +86,7 @@ Each node runs three layers, from bottom to top:
     │  ┌────────────┐ ┌───────────┐ ┌──────────────┐  │
     │  │ Compute    │ │ Network   │ │ Storage      │  │
     │  │            │ │           │ │              │  │
-    │  │ Firecracker│ │ bridges   │ │ local disks  │  │
+    │  │ libkrun    │ │ bridges   │ │ local disks  │  │
     │  │ microVMs   │ │ tap devs  │ │ volumes      │  │
     │  │ lifecycle  │ │ VXLAN     │ │ snapshots    │  │
     │  └────────────┘ └───────────┘ └──────────────┘  │
@@ -98,7 +98,7 @@ Each node runs three layers, from bottom to top:
 
 **Forge API** — The REST layer. Receives requests from the control plane (or from operators via curl). Translates API calls into operations on the internal compute stack.
 
-**Internal Compute Stack** — The actual machinery: Firecracker for VMs, Linux bridges and tap devices for networking, local disks for storage. This layer is never exposed directly — it's only accessible through the forge.
+**Internal Compute Stack** — The actual machinery: libkrun for VMs, Linux bridges and tap devices for networking, local disks for storage. This layer is never exposed directly — it's only accessible through the forge.
 
 **Fabric** — The transport. Provides encrypted, authenticated connectivity between nodes.
 
@@ -201,7 +201,7 @@ The forge is **stateless in terms of intent** — it doesn't persist "desired st
       "id": "vm-a1b2c3",                       Allocate resources
       "vcpu": 2,                                Create rootfs volume
       "memory_mb": 2048,                        Create tap interface
-      "rootfs_image": "ubuntu-24.04",           Configure Firecracker
+      "rootfs_image": "ubuntu-24.04",           Configure libkrun VM
       "network": {                              Start microVM
         "vpc_id": "vpc-xyz",
         "subnet_id": "subnet-1",            ◄── 201 Created
@@ -227,9 +227,9 @@ The forge is **stateless in terms of intent** — it doesn't persist "desired st
 
 The forge delegates to the internal compute stack. This stack is not exposed via API — it's a set of local subsystems managed by the agent:
 
-### Compute subsystem (Firecracker)
+### Compute subsystem (libkrun)
 
-- Manages Firecracker microVM processes
+- Manages libkrun microVM instances (embedded in the forge process)
 - Handles VM lifecycle: create, start, stop, delete
 - Manages kernel images and root filesystem images
 - Configures vCPU count, memory, and boot parameters
@@ -292,7 +292,7 @@ Future: the control plane will be the only caller of forge APIs. Access control 
 
 ### Blast radius
 
-The forge has root-level access to the local machine (it manages WireGuard, Firecracker, bridges, volumes). A compromised agent means a compromised node. This is inherent to the hypervisor agent model — same as AWS Nitro, GCP Borglet, or any host agent.
+The forge has root-level access to the local machine (it manages WireGuard, libkrun VMs, bridges, volumes). A compromised agent means a compromised node. This is inherent to the hypervisor agent model — same as AWS Nitro, GCP Borglet, or any host agent.
 
 Mitigations:
 - Agent bound to fabric only (no internet exposure)
@@ -337,4 +337,4 @@ This makes the forge immediately useful even before the control plane exists. An
 | Protocol | Custom binary | Protobuf/gRPC | REST/HTTP + JSON |
 | Encryption | Hardware-level | Internal network | WireGuard (ChaCha20) |
 | Reachability | Internal only | Internal only | Fabric only (syfrah0) |
-| Manages | EC2 instances | Borg tasks/containers | Firecracker microVMs |
+| Manages | EC2 instances | Borg tasks/containers | libkrun microVMs |

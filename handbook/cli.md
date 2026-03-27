@@ -56,7 +56,7 @@ syfrah
 │
 ├── forge                         Per-node debug and ops (planned)
 │   ├── status                    This node's health and resources
-│   ├── vms                       Firecracker processes on this node
+│   ├── vms                       libkrun microVM processes on this node
 │   ├── bridges                   Active bridges, VXLAN, TAP devices
 │   ├── volumes                   Mounted ZeroFS volumes, cache stats
 │   ├── nftables                  Active security group rules
@@ -384,7 +384,7 @@ vm-g7h8i9      db-primary 4     8192     running   14780   5d 12h
 vm-j0k1l2      worker-1   1     1024     stopped   -       -
 ```
 
-Shows actual Firecracker processes, not Raft desired state.
+Shows actual libkrun microVM processes, not Raft desired state.
 
 ### `syfrah forge bridges`
 

@@ -36,7 +36,7 @@ Instead of building a distributed block storage system, Syfrah uses the provider
     │              │   ZeroFS   │                               │
     │              │            │                               │
     │              │  NBD block │  ← exposes /dev/nbd* devices  │
-    │              │  devices   │     to VMs via Firecracker    │
+    │              │  devices   │     to VMs via libkrun        │
     │              │            │                               │
     │              ├────────────┤                               │
     │              │   Cache    │                               │
@@ -103,7 +103,7 @@ When a tenant creates a volume (via the forge API), ZeroFS creates a sparse file
       "size_gb": 100
     }                                    → /dev/nbd0 ready
 
-    POST /compute/vms                    Firecracker:
+    POST /compute/vms                    libkrun:
     {                                      attach /dev/nbd0 as /dev/vda
       "id": "vm-xyz",
       "volumes": ["vol-abc123"]
@@ -112,15 +112,15 @@ When a tenant creates a volume (via the forge API), ZeroFS creates a sparse file
 
 Inside the VM, the tenant sees a normal block device (`/dev/vda`) and formats it with ext4, XFS, or whatever they want. They don't know about ZeroFS, S3, or caching.
 
-### How it connects to Firecracker
+### How it connects to libkrun
 
-Firecracker uses `virtio-block` to expose block devices to VMs. It accepts any block device or file on the host. ZeroFS exposes NBD devices (`/dev/nbd*`). The two connect directly — no custom integration, standard Linux block device semantics:
+libkrun uses `virtio-block` to expose block devices to VMs. It accepts any block device or file on the host. ZeroFS exposes NBD devices (`/dev/nbd*`). The two connect directly — no custom integration, standard Linux block device semantics:
 
 ```
-    Firecracker                  ZeroFS                       S3
+    libkrun                      ZeroFS                       S3
     (virtio-block)               (NBD + cache + LSM)          (durable backend)
 
-    PUT /drives/data             /dev/nbd0                    s3://bucket/vol-abc
+    block device config          /dev/nbd0                    s3://bucket/vol-abc
     {                                │                            │
       path_on_host: "/dev/nbd0"      ├── memory cache             │
     }                                ├── SSD cache (/dev/nvme1)   │
@@ -130,7 +130,7 @@ Firecracker uses `virtio-block` to expose block devices to VMs. It accepts any b
     (normal block device)
 ```
 
-Firecracker's per-drive rate limiting (bandwidth + IOPS via token bucket) is applied at the `virtio-block` layer, **before** the NBD device. This caps VM I/O regardless of whether data comes from cache or S3. See [compute.md](compute.md) for details on rate limiting.
+Per-drive rate limiting (bandwidth + IOPS via token bucket) is applied at the `virtio-block` layer, **before** the NBD device. This caps VM I/O regardless of whether data comes from cache or S3. See [compute.md](compute.md) for details on rate limiting.
 
 ### How data flows
 
@@ -140,7 +140,7 @@ Firecracker's per-drive rate limiting (bandwidth + IOPS via token bucket) is app
     VM writes to /dev/vdb
          │
          ▼
-    Firecracker virtio-block → rate limit check
+    libkrun virtio-block → rate limit check
          │
          ▼
     ZeroFS NBD receives write
@@ -157,7 +157,7 @@ Firecracker's per-drive rate limiting (bandwidth + IOPS via token bucket) is app
     VM reads from /dev/vdb
          │
          ▼
-    Firecracker virtio-block → rate limit check
+    libkrun virtio-block → rate limit check
          │
          ▼
     ZeroFS NBD checks:
@@ -182,18 +182,18 @@ Restoring a snapshot means pointing a new volume at the recorded SST files.
 
 ### Moving volumes between nodes
 
-Because the durable data is in S3 (not on local disk), a volume can be detached from one node and attached to another. This compensates for Firecracker's lack of live migration — see [compute.md](compute.md) for the full migration flow.
+Because the durable data is in S3 (not on local disk), a volume can be detached from one node and attached to another. This compensates for libkrun's lack of live migration — see [compute.md](compute.md) for the full migration flow.
 
 ```
     Node A                                 Node B
     ──────                                 ──────
 
-    1. Stop VM (Firecracker process killed)
+    1. Stop VM (libkrun process stopped)
     2. ZeroFS flushes cache to S3
     3. Disconnect NBD on Node A
                                            4. ZeroFS connects NBD
                                               to same S3 data
-                                           5. Start VM (Firecracker
+                                           5. Start VM (libkrun
                                               boots in <125ms)
 
     Data copied: zero
@@ -203,7 +203,7 @@ Because the durable data is in S3 (not on local disk), a volume can be detached 
 
 The volume data is the same — only the cache is different. First reads on Node B will hit S3 (~10-100ms), then cache locally for subsequent access. Within minutes, the active working set is cached and performance returns to near-native.
 
-This design makes **compute and storage independent**: Firecracker can be killed and restarted on any node, and ZeroFS reconnects to the same data in S3. No shared filesystem, no distributed block device, no data replication between nodes.
+This design makes **compute and storage independent**: a libkrun VM can be stopped and restarted on any node, and ZeroFS reconnects to the same data in S3. No shared filesystem, no distributed block device, no data replication between nodes.
 
 ## Operator setup
 

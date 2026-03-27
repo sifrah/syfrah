@@ -2,9 +2,9 @@
 
 ## What is the compute layer?
 
-The compute layer runs tenant workloads. Every VM, every managed database, every load balancer ultimately runs as a **Firecracker microVM** on a node in the fabric.
+The compute layer runs tenant workloads. Every VM, every managed database, every load balancer ultimately runs as a **KVM-based microVM via [libkrun](https://github.com/containers/libkrun/)** on a node in the fabric.
 
-Firecracker is an open-source Virtual Machine Monitor (VMM) written in Rust, created by AWS. It powers AWS Lambda (trillions of requests/month) and AWS Fargate. It provides hardware-level isolation via KVM with minimal overhead.
+libkrun is an open-source library (maintained by the containers community, with Red Hat backing) that allows running workloads inside lightweight microVMs using KVM. Unlike standalone VMMs, libkrun embeds directly into the host process — no separate daemon, no API socket, no jailer. It provides hardware-level isolation via KVM with minimal overhead.
 
 ```
     ┌──────────────────────────────────────────────────────┐
@@ -16,7 +16,7 @@ Firecracker is an open-source Virtual Machine Monitor (VMM) written in Rust, cre
     │  │ 4 GB   │  │ 1 GB   │  │ 8 GB   │  │ 512 MB │     │
     │  └───┬────┘  └───┬────┘  └───┬────┘  └───┬────┘     │
     │      │           │           │           │           │
-    │  Each VM is a separate Firecracker process.           │
+    │  Each VM is a separate libkrun microVM instance.       │
     │  Hardware isolation via KVM.                          │
     │  ~5 MB overhead per VM.                               │
     │                                                       │
@@ -27,44 +27,49 @@ Firecracker is an open-source Virtual Machine Monitor (VMM) written in Rust, cre
     └──────────────────────────────────────────────────────┘
 ```
 
-## Why Firecracker
+## Why libkrun
 
-| | **Firecracker** | **QEMU** | **Cloud Hypervisor** |
-|---|---|---|---|
-| **Overhead per VM** | ~5 MB | ~130 MB | ~13 MB |
-| **Boot time** | <125 ms | Seconds | ~200 ms |
-| **Snapshot restore** | <30 ms | Seconds | Supported |
-| **Device model** | 5 devices (minimal) | Hundreds (full PC) | Moderate |
-| **Attack surface** | Minimal | Large | Moderate |
-| **Language** | Rust | C | Rust |
-| **GPU passthrough** | No | Yes | Yes |
-| **Live migration** | No | Yes | Yes |
-| **License** | Apache 2.0 | GPL 2.0 | Apache 2.0 |
+| | **libkrun** | **QEMU** | **Cloud Hypervisor** | **Firecracker** |
+|---|---|---|---|---|
+| **Architecture** | Library (embeds in host) | Standalone process | Standalone process | Standalone process + jailer |
+| **Overhead per VM** | ~5 MB | ~130 MB | ~13 MB | ~5 MB |
+| **Boot time** | <125 ms | Seconds | ~200 ms | <125 ms |
+| **Device model** | Minimal (virtio only) | Hundreds (full PC) | Moderate | 5 devices |
+| **Attack surface** | Minimal | Large | Moderate | Minimal |
+| **Language** | Rust + C | C | Rust | Rust |
+| **virtio-fs** | Yes | Yes | Yes | No |
+| **GPU passthrough** | No | Yes | Yes | No |
+| **Live migration** | No | Yes | Yes | No |
+| **License** | Apache 2.0 | GPL 2.0 | Apache 2.0 | Apache 2.0 |
 
-Firecracker's trade-off is clear: **maximum density and security at the cost of flexibility**. No GPU, no live migration, no Windows guests. For a cloud platform running Linux VMs, databases, and load balancers on dedicated servers, these trade-offs are acceptable.
+libkrun's trade-off is clear: **maximum density, security, and integration simplicity at the cost of flexibility**. No GPU, no live migration, no Windows guests. For a cloud platform running Linux VMs, databases, and load balancers on dedicated servers, these trade-offs are acceptable.
 
-The minimal device model (5 devices instead of hundreds) means fewer lines of code between the guest and the host — a smaller attack surface for multi-tenant workloads.
+Key advantages over standalone VMMs: libkrun embeds directly into the forge process — no separate daemon to manage, no API socket to configure, no jailer to set up. The forge calls libkrun as a library to create and manage VMs. This simplifies the compute stack and reduces the operational surface area.
 
 ## Architecture of a microVM
 
-Each Firecracker microVM is a single Linux process with three thread types:
+Each libkrun microVM runs as threads within the forge process:
 
 ```
-    Firecracker process (one per VM)
+    Forge process (hosts all VMs on this node)
     ┌──────────────────────────────────────────────┐
     │                                              │
-    │  API thread          ← REST API over Unix    │
-    │  (configuration,       domain socket         │
-    │   lifecycle control)                         │
+    │  libkrun VM instance (one per VM)            │
+    │  ┌────────────────────────────────────────┐  │
+    │  │                                        │  │
+    │  │  VMM thread        ← device emulation  │  │
+    │  │  (virtio-net,        and machine model │  │
+    │  │   virtio-block,                        │  │
+    │  │   virtio-vsock,                        │  │
+    │  │   virtio-fs)                           │  │
+    │  │                                        │  │
+    │  │  vCPU thread(s)    ← one per vCPU,     │  │
+    │  │  (KVM_RUN loop)      runs guest code   │  │
+    │  │                                        │  │
+    │  └────────────────────────────────────────┘  │
     │                                              │
-    │  VMM thread          ← device emulation      │
-    │  (virtio-net,          and machine model     │
-    │   virtio-block,                              │
-    │   virtio-vsock,                              │
-    │   serial console)                            │
-    │                                              │
-    │  vCPU thread(s)      ← one per vCPU,         │
-    │  (KVM_RUN loop)        runs guest code       │
+    │  Configuration is done via libkrun's C API   │
+    │  directly — no socket, no REST, no IPC.      │
     │                                              │
     └──────────────────────────────────────────────┘
 ```
@@ -88,22 +93,21 @@ When the forge creates a VM, this is what happens:
          │
     2. Create/attach NBD volume (storage, via ZeroFS)
          │
-    3. Start Firecracker process with jailer
+    3. Configure libkrun VM via library API:
+         ├── krun_set_vm_config()    → vCPU count, memory
+         ├── krun_set_root()         → root filesystem
+         ├── krun_set_mapped_volumes() → data volume (ZeroFS NBD)
+         ├── krun_set_port_map()     → network configuration
+         └── krun_start_enter()      → start the VM
          │
-    4. Configure via Unix socket API:
-         ├── PUT /machine-config     → vCPU count, memory
-         ├── PUT /boot-source        → kernel path, boot args
-         ├── PUT /drives/rootfs      → root filesystem image
-         ├── PUT /drives/data        → data volume (ZeroFS NBD)
-         ├── PUT /network-interfaces → TAP device
-         └── PUT /actions            → InstanceStart
+    4. VM boots in <125 ms
          │
-    5. VM boots in <125 ms
-         │
-    6. Guest init runs (cloud-init, agent, or application)
+    5. Guest init runs (cloud-init, agent, or application)
 
     Total time from API call to running VM: ~200-500 ms
 ```
+
+No jailer, no Unix socket, no separate process. The forge calls libkrun's C API directly to configure and start VMs. This eliminates the complexity of managing external VMM processes.
 
 ## Networking
 
@@ -137,14 +141,12 @@ The VM sees a standard network interface (`eth0`). The guest configures it with 
 
 ### Rate limiting
 
-Firecracker supports per-VM rate limiting on both network and block devices:
+Rate limiting is applied per-VM on both network and block devices:
 
-- **Network**: bandwidth (bytes/sec) and packet rate (ops/sec), configurable for ingress and egress
-- **Block I/O**: bandwidth (bytes/sec) and IOPS (ops/sec)
+- **Network**: bandwidth (bytes/sec) and packet rate (ops/sec), configurable for ingress and egress via tc/nftables on the host
+- **Block I/O**: bandwidth (bytes/sec) and IOPS (ops/sec) via cgroups v2
 
-Rate limits are applied via the Firecracker API and can be updated at runtime without restarting the VM.
-
-CPU limiting is handled by **cgroups** configured by the jailer.
+CPU limiting is handled by **cgroups v2** configured by the forge.
 
 ## Storage integration
 
@@ -160,17 +162,17 @@ A read-only (or copy-on-write) ext4 image containing the base OS. The platform p
 | `alpine-3.20` | Alpine Linux | ~50 MB |
 | `debian-12` | Debian 12 minimal | ~300 MB |
 
-Kernels are shared across all VMs. A single `vmlinux` binary on disk is referenced by every Firecracker instance — read-only, no duplication.
+Kernels are shared across all VMs. A single `vmlinux` binary on disk is referenced by every libkrun instance — read-only, no duplication.
 
 ### Data volumes (via ZeroFS)
 
 Persistent storage backed by S3. See [storage.md](storage.md) for the full storage design.
 
-Firecracker's `virtio-block` connects directly to ZeroFS's NBD devices — standard Linux block device semantics, no custom integration:
+libkrun's `virtio-block` connects directly to ZeroFS's NBD devices — standard Linux block device semantics, no custom integration:
 
 ```
-    Guest                 Firecracker              Host                  Durable
-    ─────                 ───────────              ────                  ───────
+    Guest                 libkrun                  Host                  Durable
+    ─────                 ───────                  ────                  ───────
 
     /dev/vda ──────► virtio-block ──────► rootfs.ext4            Local image file
     (root fs)             drive:rootfs    (read-only or CoW)
@@ -185,7 +187,7 @@ The write path through the full stack:
 
 ```
     1. VM writes to /dev/vdb
-    2. Firecracker virtio-block passes write to /dev/nbd0
+    2. libkrun virtio-block passes write to /dev/nbd0
     3. ZeroFS buffers in memory (microseconds)
     4. On fsync: ZeroFS WAL flush to S3 (~10-50ms)
     5. Background: ZeroFS compacts and flushes SST chunks to S3
@@ -195,7 +197,7 @@ The read path:
 
 ```
     1. VM reads from /dev/vdb
-    2. Firecracker virtio-block reads from /dev/nbd0
+    2. libkrun virtio-block reads from /dev/nbd0
     3. ZeroFS checks memory cache → hit? return (microseconds)
     4. ZeroFS checks SSD cache    → hit? return (~100μs)
     5. ZeroFS fetches from S3     → miss? fetch, cache, return (~10-100ms)
@@ -212,78 +214,61 @@ For most workloads, the cache absorbs >95% of I/O. The S3 latency only matters f
 | Large sequential reads (analytics) | Cold data from S3 | Limited by S3 throughput |
 | Boot + init | Rootfs is local, no S3 | <125ms boot, instant rootfs reads |
 
-Firecracker's per-drive rate limiting (bandwidth + IOPS) is applied **before** the NBD device, so it caps the VM's I/O regardless of whether the data comes from cache or S3.
+Per-drive rate limiting (bandwidth + IOPS via cgroups v2) is applied **before** the NBD device, so it caps the VM's I/O regardless of whether the data comes from cache or S3.
 
 ## Security
 
-Firecracker's security model is layered:
+libkrun's security model is layered:
 
 ### Layer 1 — Hardware isolation (KVM)
 
 Each VM runs in its own KVM virtual machine. The guest kernel has no direct access to host memory, devices, or other VMs. This is the same isolation used by all major cloud providers.
 
-### Layer 2 — The jailer
+### Layer 2 — Process-level isolation (cgroups + namespaces)
 
-The jailer is a companion binary that wraps each Firecracker process with OS-level isolation:
+The forge configures OS-level isolation for each VM:
 
-```
-    jailer
-    ├── Creates new namespaces (mount, PID, network, IPC, UTS)
-    ├── Sets up a chroot jail (minimal filesystem)
-    ├── Configures cgroups (CPU, memory, I/O limits)
-    ├── Drops privileges to an unprivileged user
-    └── Executes Firecracker inside the jail
-```
+- **cgroups v2**: CPU, memory, and I/O limits per VM
+- **namespaces**: mount, PID, network isolation where applicable
+- **seccomp**: syscall filtering to restrict what the host process can do
 
-Even if an attacker escapes the VM (breaks out of KVM), they land inside an isolated namespace with no privileges, no filesystem access, and a restrictive seccomp filter.
+Since libkrun embeds into the forge process, there is no separate jailer binary. Instead, the forge itself manages the isolation boundaries using standard Linux primitives.
 
 ### Layer 3 — Seccomp (syscall filtering)
 
-A strict allowlist of system calls is enforced per-thread. Any syscall not on the list kills the process immediately. This limits what a compromised Firecracker process can do, even after a KVM escape.
+A strict allowlist of system calls is enforced. Any syscall not on the list kills the process immediately. This limits what can happen even after a KVM escape.
 
 ### Layer 4 — Minimal attack surface
 
-Firecracker emulates only 5 devices. No PCI bus, no USB, no ACPI, no legacy hardware. Every device that doesn't exist is attack surface that doesn't exist.
+libkrun emulates only virtio devices. No PCI bus, no USB, no ACPI, no legacy hardware. Every device that doesn't exist is attack surface that doesn't exist.
 
 ## VM lifecycle
 
 | Operation | How | Time |
 |---|---|---|
-| **Create** | Forge calls Firecracker API via Unix socket | ~50 ms |
-| **Start** | `PUT /actions` → InstanceStart | <125 ms |
-| **Stop** | `PUT /actions` → SendCtrlAltDel (graceful) or kill process (force) | Instant |
+| **Create** | Forge calls libkrun API to configure VM | ~50 ms |
+| **Start** | `krun_start_enter()` | <125 ms |
+| **Stop** | Graceful shutdown signal or force stop | Instant |
 | **Reboot** | Stop + Start | <250 ms |
-| **Delete** | Kill process, cleanup TAP device, release NBD volume | Instant |
-| **Snapshot** | `PUT /snapshot/create` → saves memory + device state to files | Seconds (depends on memory size) |
-| **Restore** | Start new Firecracker, `PUT /snapshot/load` → lazy memory load | <30 ms |
-
-### Snapshots
-
-Firecracker can snapshot a running VM's entire state (memory + device state) to disk. This enables:
-
-- **Fast restore**: boot a VM from a snapshot in <30ms instead of cold-booting in 125ms
-- **Clone**: create multiple identical VMs from one snapshot (with care — see limitations)
-- **Backup**: save VM state for disaster recovery
-
-Memory is restored lazily — pages are loaded from the snapshot file on demand as the guest accesses them. This means the VM resumes almost instantly and pages fault in gradually.
+| **Delete** | Stop VM, cleanup TAP device, release NBD volume | Instant |
 
 ### VM migration between nodes
 
-Firecracker does not support live migration. Syfrah compensates with the storage design: since data volumes are backed by S3 (via ZeroFS), migration is a stop-move-start sequence with no data copy.
+libkrun does not support live migration. Syfrah compensates with the storage design: since data volumes are backed by S3 (via ZeroFS), migration is a stop-move-start sequence with no data copy.
 
 ```
     Node A                                  Node B
     ──────                                  ──────
 
     1. Stop VM
-       ├── Firecracker process killed
+       ├── libkrun VM stopped
        └── ZeroFS flushes cache to S3
                                             2. Attach volume
                                                └── ZeroFS connects NBD
                                                    to same S3 data
 
                                             3. Start VM
-                                               ├── Firecracker boots (<125ms)
+                                               ├── libkrun boots (<125ms)
                                                └── Cache warms up gradually
                                                    (first reads hit S3,
                                                     then cached locally)
@@ -293,14 +278,14 @@ Firecracker does not support live migration. Syfrah compensates with the storage
 ```
 
 This is possible because **compute state and storage state are separated**:
-- Firecracker manages compute (CPU, memory, devices) — ephemeral, recreated on boot
+- libkrun manages compute (CPU, memory, devices) — ephemeral, recreated on boot
 - ZeroFS manages storage (volumes) — durable in S3, accessible from any node
 
 The only cost of migration is **cache warmup** on the new node. Active working set data loads progressively from S3 into the local SSD cache over the first minutes of operation.
 
 ## Guest-host communication (vsock)
 
-Firecracker provides `virtio-vsock` for communication between the VM and the host without using the network:
+libkrun provides `virtio-vsock` for communication between the VM and the host without using the network:
 
 ```
     Host                              Guest
@@ -328,7 +313,7 @@ Vsock avoids the complexity of setting up a metadata HTTP endpoint on a link-loc
 | **No memory/CPU hotplug** | Cannot resize a running VM | Stop → reconfigure → start |
 | **No nested virtualization** | Cannot run VMs inside VMs | Not needed for target use cases |
 
-The most impactful limitation is **no live migration**. Syfrah mitigates this through the storage design: since volumes are backed by S3 (via ZeroFS), moving a VM between nodes only requires stopping the VM, detaching the volume, reattaching on the new node, and starting. The data doesn't need to be copied — just the cache needs to warm up.
+The most impactful limitation is **no live migration**. Syfrah mitigates this through the storage design: since volumes are backed by S3 (via ZeroFS), moving a VM between nodes only requires stopping the VM, detaching the volume, reattaching on the new node, and starting. The data does not need to be copied — just the cache needs to warm up.
 
 ## Relationship to other concepts
 
@@ -341,7 +326,7 @@ The most impactful limitation is **no live migration**. Syfrah mitigates this th
     ├──────────────────────────────────────────────────────┤
     │                                                      │
     │   Compute         ◄── this document                  │
-    │   Firecracker microVMs on each node                  │
+    │   libkrun microVMs on each node                      │
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │
@@ -351,7 +336,7 @@ The most impactful limitation is **no live migration**. Syfrah mitigates this th
     ├──────────────────────────────────────────────────────┤
     │                                                      │
     │   Forge           ◄── forge.md         │
-    │   Manages Firecracker lifecycle on each node         │
+    │   Manages libkrun VM lifecycle on each node           │
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │
