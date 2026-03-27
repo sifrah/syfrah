@@ -6,21 +6,32 @@ use serde::{Deserialize, Serialize};
 /// Invalid transitions are rejected at runtime with a `TransitionError`.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VmPhase {
+    /// Forge has requested creation; not yet started.
     Pending,
+    /// Process spawned, cgroup configured, runtime directory created.
     Provisioning,
+    /// Cloud Hypervisor process is running; waiting for API readiness.
     Starting,
+    /// VMM API is responding — the VM is operational.
     Running,
+    /// Shutdown in progress (kill chain active).
     Stopping,
+    /// Process terminated cleanly; runtime artifacts may still exist.
     Stopped,
+    /// Cleanup in progress (removing socket, pid, cgroup, runtime dir).
     Deleting,
+    /// Fully cleaned up — terminal state.
     Deleted,
+    /// An error occurred; VM may need manual intervention or deletion.
     Failed,
 }
 
 /// Error returned when an invalid state transition is attempted.
 #[derive(Debug, Clone)]
 pub struct TransitionError {
+    /// The phase the VM was in when the transition was attempted.
     pub from: VmPhase,
+    /// The phase the caller tried to transition to.
     pub to: VmPhase,
 }
 
