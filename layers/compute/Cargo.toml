@@ -12,3 +12,8 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+hyper = { version = "1", features = ["server", "http1"] }
+tempfile = "3"
+tokio = { workspace = true }
