@@ -29,6 +29,11 @@ enum Commands {
         #[command(subcommand)]
         command: FabricCommand,
     },
+    /// Manage virtual machines and compute resources
+    Compute {
+        #[command(subcommand)]
+        command: syfrah_compute::cli::ComputeCommand,
+    },
     /// Inspect and manage layer state databases
     State {
         #[command(subcommand)]
@@ -874,6 +879,7 @@ async fn run() -> Result<()> {
                 }
             }
         },
+        Commands::Compute { command } => syfrah_compute::cli::run(command).await,
         Commands::Completions { shell } => {
             let mut cmd = Cli::command();
             generate(shell, &mut cmd, "syfrah", &mut std::io::stdout());
