@@ -22,4 +22,11 @@ RUN apt-get update && apt-get install -y \
 
 COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/syfrah /usr/local/bin/syfrah
 
+# Install fake cloud-hypervisor for compute E2E scenarios.
+# The Python script simulates the CH API socket so that the compute layer
+# can be tested end-to-end without KVM.
+RUN apt-get update && apt-get install -y python3 && rm -rf /var/lib/apt/lists/*
+COPY tests/e2e/fake-cloud-hypervisor.py /usr/local/lib/syfrah/cloud-hypervisor
+RUN chmod +x /usr/local/lib/syfrah/cloud-hypervisor
+
 CMD ["sleep", "infinity"]
