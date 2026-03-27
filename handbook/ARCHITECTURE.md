@@ -20,13 +20,13 @@ This document describes the global architecture. Each layer has its own `README.
 
 These are deliberate choices, not missing features:
 
-- **No live migration.** libkrun does not support it. VM migration is stop → move volume (S3-backed, no data copy) → start. Downtime is ~5-30 seconds.
+- **No live migration in v1.** VM migration is stop → move volume (S3-backed, no data copy) → start. Downtime is ~5-30 seconds. Cloud Hypervisor supports live migration for future enhancement.
 - **No custom IAM policy language.** 4 built-in roles, per-org/project scoping. No JSON policies, no policy simulator, no condition keys.
 - **No L2 flood-and-learn networking.** FDB entries are statically populated by the control plane. ARP is proxied. Zero broadcast traffic in steady state.
 - **No distributed storage cluster.** No Ceph, no GlusterFS. Storage durability is delegated to the provider's S3. ZeroFS handles caching and block device abstraction.
 - **No hyperscaler-style AZ guarantees.** Zones and regions are operator-defined labels. The platform does not enforce physical isolation between AZs — the operator's choice of providers and locations determines actual fault domain boundaries.
-- **No Windows guests.** libkrun boots Linux kernels directly, with no BIOS/UEFI. Windows requires UEFI, which libkrun does not provide.
-- **No GPU passthrough in v1.** libkrun has no PCI passthrough support. GPU workloads would require Cloud Hypervisor or QEMU with VFIO — a future consideration, not a current goal.
+- **No Windows guests in v1.** Cloud Hypervisor boots Linux kernels directly. Windows guest support via UEFI is a future consideration.
+- **GPU passthrough is supported but optional.** Cloud Hypervisor supports VFIO GPU passthrough for CUDA/ML workloads. Nodes without GPUs run standard compute VMs.
 
 ## The stack
 
@@ -62,16 +62,16 @@ These are deliberate choices, not missing features:
     │          │                  │                               │
     │  Compute │     Overlay      │        Storage                │
     │          │                  │                               │
-    │  libkrun       VXLAN/VPC    │  ZeroFS + S3                  │
-    │  microVMs      Security     │  Block devices backed         │
-    │  <125ms boot   groups       │  by object storage            │
-    │  ~5MB overhead  Private DNS │  Local SSD cache              │
+    │  Cloud         VXLAN/VPC    │  ZeroFS + S3                  │
+    │  Hypervisor    Security     │  Block devices backed         │
+    │  microVMs      groups       │  by object storage            │
+    │  ~200ms boot   Private DNS  │  Local SSD cache              │
     │          │                  │                               │
     ├──────────┴──────────────────┴───────────────────────────────┤
     │                                                             │
     │   Forge                                                     │
     │   Per-node REST API on the fabric                           │
-    │   Manages libkrun VMs, bridges, VXLAN, ZeroFS, nftables    │
+    │   Manages Cloud Hypervisor VMs, bridges, VXLAN, ZeroFS, nftables │
     │                                                             │
     ├─────────────────────────────────────────────────────────────┤
     │                                                             │
@@ -105,7 +105,7 @@ The **fabric** is a WireGuard full-mesh connecting all nodes. It replaces the ph
 The **forge** runs on every node. It exposes a REST API bound exclusively to the fabric interface (`syfrah0`), invisible from the internet.
 
 The forge is the bridge between the control plane and the local hardware. It manages:
-- libkrun VM processes (VM lifecycle)
+- Cloud Hypervisor child processes (VM lifecycle, one process per VM)
 - Linux bridges and TAP devices (overlay networking)
 - VXLAN interfaces (VPC isolation)
 - ZeroFS volumes (block storage)
@@ -115,14 +115,16 @@ The forge is intentionally generic: it manages compute, storage, and networking 
 
 **Concept doc:** [`layers/forge/README.md`](../layers/forge/README.md)
 
-### Compute — libkrun microVMs
+### Compute — Cloud Hypervisor microVMs
 
-Every workload runs as a **KVM-based microVM via [libkrun](https://github.com/containers/libkrun/)**. libkrun is a library that embeds directly into the host process, providing hardware-level isolation via KVM with minimal overhead (~5 MB per VM, <125ms boot).
+Every workload runs as a **KVM-based microVM via [Cloud Hypervisor](https://github.com/cloud-hypervisor/cloud-hypervisor)**. Cloud Hypervisor is a Rust-based VMM that runs as a separate process per VM, providing hardware-level isolation via KVM with minimal overhead (~13 MB per VM, ~200ms boot).
 
-- libkrun embeds into the forge process — no separate daemon, no API socket, no jailer
+- Each VM is a separate `cloud-hypervisor` child process managed by the forge via REST API
+- VMs survive forge restarts — critical for zero-downtime platform updates
 - virtio devices: virtio-fs (filesystem passthrough), virtio-vsock (host-guest communication), virtio-net, virtio-block
+- GPU support: virtio-gpu (shared) + VFIO passthrough (dedicated, CUDA/ML)
 - Shared read-only kernel across all VMs
-- VM migration via stop → move volume → start (no live migration)
+- VM migration via stop → move volume → start (live migration available as future enhancement)
 
 **Concept doc:** [`layers/compute/README.md`](../layers/compute/README.md)
 
@@ -132,7 +134,7 @@ Block storage is backed by **S3-compatible object storage** (from the same provi
 
 - Data is chunked (256KB), compressed (LZ4), and encrypted (XChaCha20-Poly1305)
 - Local SSD + memory cache absorbs >95% of I/O
-- NBD (Network Block Device) endpoints connect directly to libkrun's virtio-block
+- NBD (Network Block Device) endpoints connect directly to Cloud Hypervisor's virtio-block
 - Volumes can move between nodes without copying data (S3 is the source of truth)
 - Snapshots are lightweight (no data copy, just SST file metadata)
 
@@ -256,11 +258,11 @@ Regions and availability zones are logical labels on nodes. They represent where
        ├── Creates TAP device, attaches to VPC bridge
        ├── Adds VXLAN FDB entries on remote nodes (via gossip)
        ├── Creates ZeroFS NBD volume (backed by S3)
-       ├── Starts libkrun microVM (embedded in the forge process)
+       ├── Spawns cloud-hypervisor process (separate process per VM)
        ├── Configures VM: kernel, rootfs, data volume, network
        └── Applies security group rules (nftables)
          │
-    4. VM boots (<125ms), gets IP via config drive
+    4. VM boots (~200ms), gets IP via config drive
          │
     5. DNS record auto-created: web-1.prod.syfrah.internal
          │
@@ -302,7 +304,7 @@ Regions and availability zones are logical labels on nodes. They represent where
 ```
     VM writes to /dev/vdb
          │
-    libkrun virtio-block
+    Cloud Hypervisor virtio-block
          │
     ZeroFS NBD device
          │
@@ -323,7 +325,7 @@ Regions and availability zones are logical labels on nodes. They represent where
 
     Dedicated servers                Fabric (WireGuard mesh)
     (OVH, Hetzner, Scaleway,        Forge (per-node control)
-     or any provider)                Compute (libkrun)
+     or any provider)                Compute (Cloud Hypervisor)
                                      Overlay (VXLAN, VPC, DNS)
     S3 bucket                        Storage (ZeroFS)
     (same provider or any            Control plane (Raft + gossip)
@@ -343,7 +345,7 @@ Regions and availability zones are logical labels on nodes. They represent where
 | Gossip | `foca` | Transport-agnostic SWIM, works over WireGuard |
 | State store | `redb` | Embedded KV, pure Rust, ACID, no C deps |
 | API server | `axum` | HTTP framework, tokio-native |
-| Compute | [libkrun](https://github.com/containers/libkrun/) | KVM-based microVM library, embeds into host process, virtio-fs/vsock, Apache 2.0 |
+| Compute | [Cloud Hypervisor](https://github.com/cloud-hypervisor/cloud-hypervisor) | Rust-based VMM, separate process per VM with REST API, VFIO GPU passthrough, virtio-fs/vsock, Apache 2.0 |
 | Storage engine | ZeroFS | S3-backed block devices, Rust, local cache |
 | Overlay encap | VXLAN | Standard, kernel-native, 16M VNIs |
 | Firewall | nftables | Per-VM security groups, stateful, conntrack |
@@ -365,7 +367,7 @@ The repo is organized by architectural layer. Each layer is a self-contained fol
     │   │                         Implemented. The first layer.
     │   │
     │   ├── forge/                Per-node debug/ops (planned)
-    │   ├── compute/              libkrun microVMs (planned)
+    │   ├── compute/              Cloud Hypervisor microVMs (planned)
     │   ├── storage/              ZeroFS + S3 block storage (planned)
     │   ├── overlay/              VXLAN, VPC, security groups (planned)
     │   ├── controlplane/         Raft + gossip + scheduler (planned)
@@ -401,7 +403,7 @@ The architecture assumes a hostile operational environment. Nodes are rented mac
 
 - **The Raft leader may change during an operation.** Leader election takes 1-5 seconds. In-flight writes are retried by the client. The new leader replays uncommitted entries. Operations are designed to be re-entrant.
 
-- **Forge actions must be idempotent.** Creating a bridge that already exists is a no-op. Starting a libkrun VM that is already running is a no-op. The reconciliation loop can run any number of times and produce the same result.
+- **Forge actions must be idempotent.** Creating a bridge that already exists is a no-op. Starting a Cloud Hypervisor VM that is already running is a no-op. The reconciliation loop can run any number of times and produce the same result.
 
 - **Derived state must be rebuildable from scratch.** FDB entries, nftables rules, DNS zone files, VXLAN bridges — all are derived from Raft state. If a node loses all derived state (reboot, crash), the next reconciliation loop rebuilds everything from Raft.
 

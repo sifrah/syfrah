@@ -36,7 +36,7 @@ Instead of building a distributed block storage system, Syfrah uses the provider
     │              │   ZeroFS   │                               │
     │              │            │                               │
     │              │  NBD block │  ← exposes /dev/nbd* devices  │
-    │              │  devices   │     to VMs via libkrun        │
+    │              │  devices   │     to VMs via Cloud Hypervisor│
     │              │            │                               │
     │              ├────────────┤                               │
     │              │   Cache    │                               │
@@ -103,7 +103,7 @@ When a tenant creates a volume (via the forge API), ZeroFS creates a sparse file
       "size_gb": 100
     }                                    → /dev/nbd0 ready
 
-    POST /compute/vms                    libkrun:
+    POST /compute/vms                    Cloud Hypervisor:
     {                                      attach /dev/nbd0 as /dev/vda
       "id": "vm-xyz",
       "volumes": ["vol-abc123"]
@@ -112,12 +112,12 @@ When a tenant creates a volume (via the forge API), ZeroFS creates a sparse file
 
 Inside the VM, the tenant sees a normal block device (`/dev/vda`) and formats it with ext4, XFS, or whatever they want. They don't know about ZeroFS, S3, or caching.
 
-### How it connects to libkrun
+### How it connects to Cloud Hypervisor
 
-libkrun uses `virtio-block` to expose block devices to VMs. It accepts any block device or file on the host. ZeroFS exposes NBD devices (`/dev/nbd*`). The two connect directly — no custom integration, standard Linux block device semantics:
+Cloud Hypervisor uses `virtio-block` to expose block devices to VMs. It accepts any block device or file on the host. ZeroFS exposes NBD devices (`/dev/nbd*`). The two connect directly — no custom integration, standard Linux block device semantics:
 
 ```
-    libkrun                      ZeroFS                       S3
+    Cloud Hypervisor             ZeroFS                       S3
     (virtio-block)               (NBD + cache + LSM)          (durable backend)
 
     block device config          /dev/nbd0                    s3://bucket/vol-abc
@@ -140,7 +140,7 @@ Per-drive rate limiting (bandwidth + IOPS via token bucket) is applied at the `v
     VM writes to /dev/vdb
          │
          ▼
-    libkrun virtio-block → rate limit check
+    Cloud Hypervisor virtio-block → rate limit check
          │
          ▼
     ZeroFS NBD receives write
@@ -157,7 +157,7 @@ Per-drive rate limiting (bandwidth + IOPS via token bucket) is applied at the `v
     VM reads from /dev/vdb
          │
          ▼
-    libkrun virtio-block → rate limit check
+    Cloud Hypervisor virtio-block → rate limit check
          │
          ▼
     ZeroFS NBD checks:
@@ -182,19 +182,19 @@ Restoring a snapshot means pointing a new volume at the recorded SST files.
 
 ### Moving volumes between nodes
 
-Because the durable data is in S3 (not on local disk), a volume can be detached from one node and attached to another. This compensates for libkrun's lack of live migration — see [compute.md](compute.md) for the full migration flow.
+Because the durable data is in S3 (not on local disk), a volume can be detached from one node and attached to another — see [compute.md](compute.md) for the full migration flow.
 
 ```
     Node A                                 Node B
     ──────                                 ──────
 
-    1. Stop VM (libkrun process stopped)
+    1. Stop VM (cloud-hypervisor process stopped)
     2. ZeroFS flushes cache to S3
     3. Disconnect NBD on Node A
                                            4. ZeroFS connects NBD
                                               to same S3 data
-                                           5. Start VM (libkrun
-                                              boots in <125ms)
+                                           5. Start VM (cloud-hypervisor
+                                              boots in ~200ms)
 
     Data copied: zero
     Downtime: ~5-30 seconds
@@ -203,7 +203,7 @@ Because the durable data is in S3 (not on local disk), a volume can be detached 
 
 The volume data is the same — only the cache is different. First reads on Node B will hit S3 (~10-100ms), then cache locally for subsequent access. Within minutes, the active working set is cached and performance returns to near-native.
 
-This design makes **compute and storage independent**: a libkrun VM can be stopped and restarted on any node, and ZeroFS reconnects to the same data in S3. No shared filesystem, no distributed block device, no data replication between nodes.
+This design makes **compute and storage independent**: a Cloud Hypervisor VM can be stopped and restarted on any node, and ZeroFS reconnects to the same data in S3. No shared filesystem, no distributed block device, no data replication between nodes.
 
 ## Operator setup
 

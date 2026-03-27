@@ -14,7 +14,7 @@ The repository is organized by architectural layer. Each layer is a self-contain
     layers/fabric/                        Fabric layer                  Implemented
     layers/state/                         State inspection              Implemented
     layers/forge/                         Forge layer                   Planned (README only)
-    layers/compute/                       Compute layer                 Planned (README only)
+    layers/compute/                       Compute layer (Cloud Hypervisor) Planned (README only)
     layers/storage/                       Storage layer                 Planned (README only)
     layers/overlay/                       Overlay layer                 Planned (README only)
     layers/controlplane/                  Control plane layer           Planned (README only)
@@ -278,7 +278,7 @@ syfrah/
 │   │           └── drop.rs          syfrah state drop
 │   │
 │   ├── forge/                       Per-node control (planned, README only)
-│   ├── compute/                     libkrun microVMs (planned, README only)
+│   ├── compute/                     Cloud Hypervisor microVMs (planned, README only)
 │   ├── storage/                     ZeroFS + S3 (planned, README only)
 │   ├── overlay/                     VXLAN, VPC, SG, DNS (planned, README only)
 │   ├── controlplane/                Raft + gossip (planned, README only)

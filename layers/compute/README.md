@@ -2,9 +2,9 @@
 
 ## What is the compute layer?
 
-The compute layer runs tenant workloads. Every VM, every managed database, every load balancer ultimately runs as a **KVM-based microVM via [libkrun](https://github.com/containers/libkrun/)** on a node in the fabric.
+The compute layer runs tenant workloads. Every VM, every managed database, every load balancer ultimately runs as a **KVM-based microVM via [Cloud Hypervisor](https://github.com/cloud-hypervisor/cloud-hypervisor)** on a node in the fabric.
 
-libkrun is an open-source library (maintained by the containers community, with Red Hat backing) that allows running workloads inside lightweight microVMs using KVM. Unlike standalone VMMs, libkrun embeds directly into the host process — no separate daemon, no API socket, no jailer. It provides hardware-level isolation via KVM with minimal overhead.
+Cloud Hypervisor is an open-source Rust-based VMM (maintained by Intel and the community) that runs as a **separate process per VM**. Each VM is a `cloud-hypervisor` child process managed by the forge via a REST API. This architecture means VMs survive forge restarts — critical for zero-downtime updates. Cloud Hypervisor provides hardware-level isolation via KVM with minimal overhead.
 
 ```
     ┌──────────────────────────────────────────────────────┐
@@ -16,9 +16,9 @@ libkrun is an open-source library (maintained by the containers community, with 
     │  │ 4 GB   │  │ 1 GB   │  │ 8 GB   │  │ 512 MB │     │
     │  └───┬────┘  └───┬────┘  └───┬────┘  └───┬────┘     │
     │      │           │           │           │           │
-    │  Each VM is a separate libkrun microVM instance.       │
+    │  Each VM is a separate cloud-hypervisor process.      │
     │  Hardware isolation via KVM.                          │
-    │  ~5 MB overhead per VM.                               │
+    │  ~13 MB overhead per VM.                              │
     │                                                       │
     │  ┌────────────────────────────────────────────────┐   │
     │  │  Linux kernel + KVM                            │   │
@@ -27,34 +27,46 @@ libkrun is an open-source library (maintained by the containers community, with 
     └──────────────────────────────────────────────────────┘
 ```
 
-## Why libkrun
+## Why Cloud Hypervisor
 
-| | **libkrun** | **QEMU** | **Cloud Hypervisor** | **Firecracker** |
+| | **Cloud Hypervisor** | **QEMU** | **Firecracker** | **libkrun** |
 |---|---|---|---|---|
-| **Architecture** | Library (embeds in host) | Standalone process | Standalone process | Standalone process + jailer |
-| **Overhead per VM** | ~5 MB | ~130 MB | ~13 MB | ~5 MB |
-| **Boot time** | <125 ms | Seconds | ~200 ms | <125 ms |
-| **Device model** | Minimal (virtio only) | Hundreds (full PC) | Moderate | 5 devices |
-| **Attack surface** | Minimal | Large | Moderate | Minimal |
-| **Language** | Rust + C | C | Rust | Rust |
-| **virtio-fs** | Yes | Yes | Yes | No |
-| **GPU passthrough** | No | Yes | Yes | No |
-| **Live migration** | No | Yes | Yes | No |
+| **Architecture** | Separate process per VM with REST API | Standalone process | Standalone process + jailer | Library (embeds in host) |
+| **Overhead per VM** | ~13 MB | ~130 MB | ~5 MB | ~5 MB |
+| **Boot time** | ~200 ms | Seconds | <125 ms | <125 ms |
+| **Device model** | Moderate (virtio-focused) | Hundreds (full PC) | 5 devices | Minimal (virtio only) |
+| **Attack surface** | Moderate | Large | Minimal | Minimal |
+| **Language** | Rust | C | Rust | Rust + C |
+| **virtio-fs** | Yes | Yes | No | Yes |
+| **GPU passthrough** | Yes (VFIO) | Yes | No | No |
+| **Live migration** | Yes | Yes | No | No |
+| **VMs survive host process restart** | Yes | Yes | No | No |
 | **License** | Apache 2.0 | GPL 2.0 | Apache 2.0 | Apache 2.0 |
 
-libkrun's trade-off is clear: **maximum density, security, and integration simplicity at the cost of flexibility**. No GPU, no live migration, no Windows guests. For a cloud platform running Linux VMs, databases, and load balancers on dedicated servers, these trade-offs are acceptable.
+Cloud Hypervisor's trade-off is clear: **separate process per VM with REST API management, GPU support via VFIO passthrough, and VM survival across forge restarts — at slightly higher memory overhead than Firecracker**. The REST API enables clean lifecycle management without embedding VMM code into the forge. VMs are independent processes that persist even when the forge restarts, enabling zero-downtime updates.
 
-Key advantages over standalone VMMs: libkrun embeds directly into the forge process — no separate daemon to manage, no API socket to configure, no jailer to set up. The forge calls libkrun as a library to create and manage VMs. This simplifies the compute stack and reduces the operational surface area.
+Key advantages over embedded VMMs: Cloud Hypervisor runs as a separate process per VM, managed by the forge via REST API. VMs survive forge restarts — critical for zero-downtime platform updates. No jailer needed (unlike Firecracker), with process isolation via cgroups v2 + namespaces.
+
+Key advantages over QEMU: written in Rust with a much smaller attack surface, purpose-built for cloud workloads, and significantly lower memory overhead per VM.
+
+### GPU support
+
+Cloud Hypervisor supports two GPU modes:
+
+- **virtio-gpu** — shared GPU for lightweight rendering workloads
+- **VFIO passthrough** — dedicated GPU with full hardware access, supporting NVIDIA CUDA, multi-GPU configurations, and GPUDirect P2P for ML training and inference workloads
+
+VFIO passthrough gives the guest VM direct access to the GPU hardware, achieving near-native performance for CUDA and ML workloads.
 
 ## Architecture of a microVM
 
-Each libkrun microVM runs as threads within the forge process:
+Each Cloud Hypervisor microVM runs as a separate `cloud-hypervisor` child process managed by the forge:
 
 ```
-    Forge process (hosts all VMs on this node)
+    Forge process (manages all VMs on this node via REST API)
     ┌──────────────────────────────────────────────┐
     │                                              │
-    │  libkrun VM instance (one per VM)            │
+    │  cloud-hypervisor process (one per VM)        │
     │  ┌────────────────────────────────────────┐  │
     │  │                                        │  │
     │  │  VMM thread        ← device emulation  │  │
@@ -66,10 +78,14 @@ Each libkrun microVM runs as threads within the forge process:
     │  │  vCPU thread(s)    ← one per vCPU,     │  │
     │  │  (KVM_RUN loop)      runs guest code   │  │
     │  │                                        │  │
+    │  │  REST API           ← per-VM HTTP API  │  │
+    │  │  (Unix socket)       for lifecycle mgmt│  │
+    │  │                                        │  │
     │  └────────────────────────────────────────┘  │
     │                                              │
-    │  Configuration is done via libkrun's C API   │
-    │  directly — no socket, no REST, no IPC.      │
+    │  Forge manages VMs via Cloud Hypervisor's    │
+    │  REST API — each VM is an independent        │
+    │  process that survives forge restarts.        │
     │                                              │
     └──────────────────────────────────────────────┘
 ```
@@ -93,21 +109,23 @@ When the forge creates a VM, this is what happens:
          │
     2. Create/attach NBD volume (storage, via ZeroFS)
          │
-    3. Configure libkrun VM via library API:
-         ├── krun_set_vm_config()    → vCPU count, memory
-         ├── krun_set_root()         → root filesystem
-         ├── krun_set_mapped_volumes() → data volume (ZeroFS NBD)
-         ├── krun_set_port_map()     → network configuration
-         └── krun_start_enter()      → start the VM
+    3. Spawn cloud-hypervisor process with VM config:
+         ├── --kernel           → vmlinux path
+         ├── --disk             → root filesystem + data volume (ZeroFS NBD)
+         ├── --net              → TAP device configuration
+         ├── --cpus             → vCPU count
+         ├── --memory           → memory size
+         ├── --api-socket       → Unix socket for REST API
+         └── (process starts, VM boots)
          │
-    4. VM boots in <125 ms
+    4. VM boots in ~200 ms
          │
     5. Guest init runs (cloud-init, agent, or application)
 
-    Total time from API call to running VM: ~200-500 ms
+    Total time from API call to running VM: ~300-600 ms
 ```
 
-No jailer, no Unix socket, no separate process. The forge calls libkrun's C API directly to configure and start VMs. This eliminates the complexity of managing external VMM processes.
+Each VM is a separate `cloud-hypervisor` process. The forge manages VM lifecycle via the per-VM REST API on a Unix socket. VMs survive forge restarts — the forge reconnects to existing cloud-hypervisor processes on startup.
 
 ## Networking
 
@@ -162,17 +180,17 @@ A read-only (or copy-on-write) ext4 image containing the base OS. The platform p
 | `alpine-3.20` | Alpine Linux | ~50 MB |
 | `debian-12` | Debian 12 minimal | ~300 MB |
 
-Kernels are shared across all VMs. A single `vmlinux` binary on disk is referenced by every libkrun instance — read-only, no duplication.
+Kernels are shared across all VMs. A single `vmlinux` binary on disk is referenced by every Cloud Hypervisor instance — read-only, no duplication.
 
 ### Data volumes (via ZeroFS)
 
 Persistent storage backed by S3. See [storage.md](storage.md) for the full storage design.
 
-libkrun's `virtio-block` connects directly to ZeroFS's NBD devices — standard Linux block device semantics, no custom integration:
+Cloud Hypervisor's `virtio-block` connects directly to ZeroFS's NBD devices — standard Linux block device semantics, no custom integration:
 
 ```
-    Guest                 libkrun                  Host                  Durable
-    ─────                 ───────                  ────                  ───────
+    Guest                 Cloud Hypervisor         Host                  Durable
+    ─────                 ────────────────         ────                  ───────
 
     /dev/vda ──────► virtio-block ──────► rootfs.ext4            Local image file
     (root fs)             drive:rootfs    (read-only or CoW)
@@ -187,7 +205,7 @@ The write path through the full stack:
 
 ```
     1. VM writes to /dev/vdb
-    2. libkrun virtio-block passes write to /dev/nbd0
+    2. Cloud Hypervisor virtio-block passes write to /dev/nbd0
     3. ZeroFS buffers in memory (microseconds)
     4. On fsync: ZeroFS WAL flush to S3 (~10-50ms)
     5. Background: ZeroFS compacts and flushes SST chunks to S3
@@ -197,7 +215,7 @@ The read path:
 
 ```
     1. VM reads from /dev/vdb
-    2. libkrun virtio-block reads from /dev/nbd0
+    2. Cloud Hypervisor virtio-block reads from /dev/nbd0
     3. ZeroFS checks memory cache → hit? return (microseconds)
     4. ZeroFS checks SSD cache    → hit? return (~100μs)
     5. ZeroFS fetches from S3     → miss? fetch, cache, return (~10-100ms)
@@ -212,13 +230,13 @@ For most workloads, the cache absorbs >95% of I/O. The S3 latency only matters f
 | Web server, app server | Mostly reads, fits in cache | Near-native SSD speed |
 | PostgreSQL (typical OLTP) | fsync on commit → WAL flush | ~53K TPS with warm cache |
 | Large sequential reads (analytics) | Cold data from S3 | Limited by S3 throughput |
-| Boot + init | Rootfs is local, no S3 | <125ms boot, instant rootfs reads |
+| Boot + init | Rootfs is local, no S3 | ~200ms boot, instant rootfs reads |
 
 Per-drive rate limiting (bandwidth + IOPS via cgroups v2) is applied **before** the NBD device, so it caps the VM's I/O regardless of whether the data comes from cache or S3.
 
 ## Security
 
-libkrun's security model is layered:
+Cloud Hypervisor's security model is layered:
 
 ### Layer 1 — Hardware isolation (KVM)
 
@@ -230,45 +248,57 @@ The forge configures OS-level isolation for each VM:
 
 - **cgroups v2**: CPU, memory, and I/O limits per VM
 - **namespaces**: mount, PID, network isolation where applicable
-- **seccomp**: syscall filtering to restrict what the host process can do
+- **seccomp**: syscall filtering to restrict what the cloud-hypervisor process can do
 
-Since libkrun embeds into the forge process, there is no separate jailer binary. Instead, the forge itself manages the isolation boundaries using standard Linux primitives.
+Each VM runs as a separate `cloud-hypervisor` process with its own cgroup and namespace configuration. Process isolation is enforced by the OS, not by a jailer binary.
 
 ### Layer 3 — Seccomp (syscall filtering)
 
-A strict allowlist of system calls is enforced. Any syscall not on the list kills the process immediately. This limits what can happen even after a KVM escape.
+A strict allowlist of system calls is enforced on each cloud-hypervisor process. Any syscall not on the list kills the process immediately. This limits what can happen even after a KVM escape.
 
 ### Layer 4 — Minimal attack surface
 
-libkrun emulates only virtio devices. No PCI bus, no USB, no ACPI, no legacy hardware. Every device that doesn't exist is attack surface that doesn't exist.
+Cloud Hypervisor emulates only virtio devices. No legacy PCI devices, no USB, no full ACPI emulation. Every device that doesn't exist is attack surface that doesn't exist.
 
 ## VM lifecycle
 
 | Operation | How | Time |
 |---|---|---|
-| **Create** | Forge calls libkrun API to configure VM | ~50 ms |
-| **Start** | `krun_start_enter()` | <125 ms |
-| **Stop** | Graceful shutdown signal or force stop | Instant |
-| **Reboot** | Stop + Start | <250 ms |
+| **Create** | Forge spawns cloud-hypervisor process via REST API | ~100 ms |
+| **Start** | Cloud Hypervisor REST API `PUT /vm.boot` | ~200 ms |
+| **Stop** | Graceful shutdown signal via REST API or force stop | Instant |
+| **Reboot** | Stop + Start via REST API | ~400 ms |
 | **Delete** | Stop VM, cleanup TAP device, release NBD volume | Instant |
+
+### Zero-downtime forge updates
+
+Because each VM is a separate `cloud-hypervisor` process, VMs survive forge restarts. When the forge is updated:
+
+1. Forge stops gracefully
+2. New forge binary starts
+3. Forge discovers existing cloud-hypervisor processes
+4. Forge reconnects to each VM's REST API (Unix socket)
+5. Full management restored — no VM downtime
+
+This is critical for platform updates: the forge can be restarted, upgraded, or recovered without affecting running VMs.
 
 ### VM migration between nodes
 
-libkrun does not support live migration. Syfrah compensates with the storage design: since data volumes are backed by S3 (via ZeroFS), migration is a stop-move-start sequence with no data copy.
+Cloud Hypervisor supports live migration, but Syfrah's initial implementation uses a simpler stop-move-start approach that leverages the storage design: since data volumes are backed by S3 (via ZeroFS), migration requires no data copy.
 
 ```
     Node A                                  Node B
     ──────                                  ──────
 
     1. Stop VM
-       ├── libkrun VM stopped
+       ├── cloud-hypervisor process stopped
        └── ZeroFS flushes cache to S3
                                             2. Attach volume
                                                └── ZeroFS connects NBD
                                                    to same S3 data
 
                                             3. Start VM
-                                               ├── libkrun boots (<125ms)
+                                               ├── cloud-hypervisor boots (~200ms)
                                                └── Cache warms up gradually
                                                    (first reads hit S3,
                                                     then cached locally)
@@ -278,21 +308,23 @@ libkrun does not support live migration. Syfrah compensates with the storage des
 ```
 
 This is possible because **compute state and storage state are separated**:
-- libkrun manages compute (CPU, memory, devices) — ephemeral, recreated on boot
+- Cloud Hypervisor manages compute (CPU, memory, devices) — ephemeral, recreated on boot
 - ZeroFS manages storage (volumes) — durable in S3, accessible from any node
 
 The only cost of migration is **cache warmup** on the new node. Active working set data loads progressively from S3 into the local SSD cache over the first minutes of operation.
 
+Live migration via Cloud Hypervisor's built-in support is a future enhancement that will reduce migration downtime to near-zero.
+
 ## Guest-host communication (vsock)
 
-libkrun provides `virtio-vsock` for communication between the VM and the host without using the network:
+Cloud Hypervisor provides `virtio-vsock` for communication between the VM and the host without using the network:
 
 ```
     Host                              Guest
-    ┌──────────────┐                  ┌──────────────┐
-    │ Unix socket  │ ◄── vsock ────► │ AF_VSOCK     │
-    │ /tmp/v.sock  │                  │ port 5000    │
-    └──────────────┘                  └──────────────┘
+    ┌──────────────────┐              ┌──────────────┐
+    │ Unix socket      │ ◄── vsock ──►│ AF_VSOCK     │
+    │ /tmp/v.sock      │              │ port 5000    │
+    └──────────────────┘              └──────────────┘
 ```
 
 Use cases:
@@ -306,14 +338,11 @@ Vsock avoids the complexity of setting up a metadata HTTP endpoint on a link-loc
 
 | Limitation | Impact on Syfrah | Mitigation |
 |---|---|---|
-| **No GPU** | Cannot offer GPU instances | Out of scope for initial product |
-| **No live migration** | Cannot move running VMs between nodes | Stop → move volume → start on new node (see storage.md) |
-| **No Windows guests** | Linux-only VMs | Target audience runs Linux workloads |
-| **Max 32 vCPUs** | Largest VM is 32 vCPU | Sufficient for dedicated server sizes |
-| **No memory/CPU hotplug** | Cannot resize a running VM | Stop → reconfigure → start |
+| **No Windows guests (v1)** | Linux-only VMs initially | Target audience runs Linux workloads; UEFI support planned |
+| **Higher per-VM overhead than Firecracker** | ~13 MB vs ~5 MB per VM | Acceptable trade-off for REST API, GPU support, and VM survival |
 | **No nested virtualization** | Cannot run VMs inside VMs | Not needed for target use cases |
 
-The most impactful limitation is **no live migration**. Syfrah mitigates this through the storage design: since volumes are backed by S3 (via ZeroFS), moving a VM between nodes only requires stopping the VM, detaching the volume, reattaching on the new node, and starting. The data does not need to be copied — just the cache needs to warm up.
+Cloud Hypervisor's feature set covers the primary needs: GPU passthrough (VFIO), virtio-fs, virtio-vsock, live migration support, and VMs that survive forge restarts. The limitations are minor compared to the operational benefits.
 
 ## Relationship to other concepts
 
@@ -326,7 +355,7 @@ The most impactful limitation is **no live migration**. Syfrah mitigates this th
     ├──────────────────────────────────────────────────────┤
     │                                                      │
     │   Compute         ◄── this document                  │
-    │   libkrun microVMs on each node                      │
+    │   Cloud Hypervisor microVMs on each node             │
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │
@@ -336,7 +365,7 @@ The most impactful limitation is **no live migration**. Syfrah mitigates this th
     ├──────────────────────────────────────────────────────┤
     │                                                      │
     │   Forge           ◄── forge.md         │
-    │   Manages libkrun VM lifecycle on each node           │
+    │   Manages Cloud Hypervisor VM lifecycle on each node │
     │                                                      │
     ├──────────────────────────────────────────────────────┤
     │                                                      │

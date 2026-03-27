@@ -147,7 +147,7 @@ The CLI binary in `bin/syfrah` composes these crates and contains no logic of it
 The layers below are architecturally designed with concept documentation but have no implementation yet. Each has a README in its `layers/` directory describing the planned design.
 
 - **Forge** — per-node REST API for managing local resources
-- **Compute** — KVM-based microVMs via libkrun
+- **Compute** — KVM-based microVMs via Cloud Hypervisor
 - **Storage** — S3-backed block devices (ZeroFS)
 - **Overlay** — VXLAN, VPCs, security groups, private DNS
 - **Control Plane** — Raft consensus + SWIM gossip, embedded on every node

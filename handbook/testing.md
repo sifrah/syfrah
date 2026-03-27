@@ -313,7 +313,7 @@ The `just e2e-local` command uses `dev/e2e.sh`, which volume-mounts a locally-co
 | **core** | Types, validation, crypto, addressing | Serialization roundtrips | -- |
 | **fabric** | Key generation, address derivation | WireGuard interface (root), peering protocol, state persistence | Multi-node mesh, connectivity, rejoin, secret rotation, stress tests |
 | **state** | -- | -- | `syfrah state list/get/drop` |
-| **compute** (planned) | VM spec validation | libkrun VM lifecycle (root) | VM create/start/stop/delete |
+| **compute** (planned) | VM spec validation | Cloud Hypervisor VM lifecycle (root) | VM create/start/stop/delete |
 | **storage** (planned) | Volume spec validation | ZeroFS NBD management (root) | Volume attach, detach, migrate |
 | **overlay** (planned) | IPAM allocation, MAC derivation | Bridge/VXLAN creation (root), nftables rules (root) | VPC isolation, cross-node connectivity |
 | **controlplane** (planned) | Scheduler scoring, state machine | Raft consensus (multi-instance) | Leader election, failover |
