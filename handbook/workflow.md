@@ -49,7 +49,7 @@ Tasks in the Ready column are picked by priority:
 | **P2** | `P2` | Should-have, schedule when ready |
 | **P3** | `P3` | Nice-to-have, backlog |
 
-When multiple tasks share the same priority, prefer the smallest (XS > S > M) to keep throughput high.
+When multiple tasks share the same priority, prefer the smallest first (XS over S over M) to keep throughput high.
 
 ## Contribution workflow
 
@@ -187,4 +187,4 @@ Body:
 | Branch cleanup | Delete after merge |
 | Commit messages | Imperative, <72 chars, reference issue |
 | Max task size | M (1-2 days). Larger = decompose. |
-| Pick order | P0 > P1 > P2 > P3, then smallest first |
+| Pick order | P0 > P1 > P2 > P3, then smallest first (XS over S over M) |
