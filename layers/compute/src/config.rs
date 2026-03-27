@@ -621,4 +621,351 @@ mod tests {
         let json = map(&resolved, Path::new("/tmp/test.sock"));
         assert_eq!(json["memory"]["size"], 536_870_912u64); // 512 * 1024 * 1024
     }
+
+    // -- validate: additional positive cases ----------------------------------
+
+    #[test]
+    fn validate_truly_minimal_spec_1vcpu_128mb() {
+        let spec = VmSpec {
+            id: VmId("vm-tiny".to_string()),
+            vcpus: 1,
+            memory_mb: 128,
+            image: "alpine".to_string(),
+            kernel: None,
+            network: None,
+            volumes: vec![],
+            gpu: GpuMode::None,
+        };
+        assert!(validate(&spec).is_ok());
+    }
+
+    #[test]
+    fn validate_max_vcpus_large_memory() {
+        let spec = VmSpec {
+            id: VmId("vm-max".to_string()),
+            vcpus: 256,
+            memory_mb: 1_048_576, // 1 TB
+            image: "ubuntu-24.04".to_string(),
+            kernel: None,
+            network: None,
+            volumes: vec![],
+            gpu: GpuMode::None,
+        };
+        assert!(validate(&spec).is_ok());
+    }
+
+    // -- validate: additional negative cases ----------------------------------
+
+    #[test]
+    fn validate_memory_127_rejected() {
+        let mut spec = minimal_spec();
+        spec.memory_mb = 127;
+        let errors = validate(&spec).unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ConfigError::InvalidMemory { value: 127 })));
+    }
+
+    #[test]
+    fn validate_bdf_valid_looking_but_wrong_hex() {
+        let mut spec = minimal_spec();
+        spec.gpu = GpuMode::Passthrough {
+            bdf: "0000:GG:00.0".to_string(),
+        };
+        let errors = validate(&spec).unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ConfigError::InvalidBdf { .. })));
+    }
+
+    #[test]
+    fn validate_bdf_not_a_bdf() {
+        let mut spec = minimal_spec();
+        spec.gpu = GpuMode::Passthrough {
+            bdf: "not-a-bdf".to_string(),
+        };
+        let errors = validate(&spec).unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ConfigError::InvalidBdf { .. })));
+    }
+
+    #[test]
+    fn validate_multiple_errors_vcpus_memory_image() {
+        let spec = VmSpec {
+            id: VmId("vm-multi-err".to_string()),
+            vcpus: 0,
+            memory_mb: 0,
+            image: String::new(),
+            kernel: None,
+            network: None,
+            volumes: vec![],
+            gpu: GpuMode::None,
+        };
+        let errors = validate(&spec).unwrap_err();
+        assert!(
+            errors.len() >= 3,
+            "expected >= 3 errors (vcpus, memory, image), got {}: {:?}",
+            errors.len(),
+            errors
+        );
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ConfigError::InvalidVcpuCount { .. })));
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ConfigError::InvalidMemory { .. })));
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ConfigError::UnknownImage { .. })));
+    }
+
+    // -- resolve: additional cases --------------------------------------------
+
+    #[test]
+    fn resolve_succeeds_with_nonexistent_paths() {
+        // resolve must NOT check filesystem existence — that is preflight's job
+        let spec = VmSpec {
+            id: VmId("vm-nopath".to_string()),
+            vcpus: 2,
+            memory_mb: 256,
+            image: "doesnotexist".to_string(),
+            kernel: Some("/nonexistent/kernel".to_string()),
+            network: None,
+            volumes: vec![VolumeAttachment {
+                path: "/nonexistent/volume".to_string(),
+                read_only: false,
+            }],
+            gpu: GpuMode::None,
+        };
+        let validated = validate(&spec).unwrap();
+        let resolved = resolve(
+            &validated,
+            Path::new("/fake/images"),
+            Path::new("/fake/vmlinux"),
+        );
+        assert!(resolved.is_ok());
+        let resolved = resolved.unwrap();
+        assert_eq!(
+            resolved.rootfs_path,
+            PathBuf::from("/fake/images/doesnotexist.raw")
+        );
+        assert_eq!(resolved.kernel_path, PathBuf::from("/nonexistent/kernel"));
+        assert_eq!(
+            resolved.volume_paths[0].path,
+            PathBuf::from("/nonexistent/volume")
+        );
+    }
+
+    #[test]
+    fn resolve_network_preserved() {
+        let validated = validate(&full_spec()).unwrap();
+        let resolved = resolve(
+            &validated,
+            Path::new("/opt/syfrah/images"),
+            Path::new("/opt/syfrah/vmlinux"),
+        )
+        .unwrap();
+        let net = resolved.network.as_ref().unwrap();
+        assert_eq!(net.tap_name, "tap-vm-full");
+        assert_eq!(net.mac.as_deref(), Some("52:54:00:12:34:56"));
+    }
+
+    #[test]
+    fn resolve_image_name_to_raw_path() {
+        let validated = validate(&minimal_spec()).unwrap();
+        let resolved = resolve(
+            &validated,
+            Path::new("/opt/syfrah/images"),
+            Path::new("/opt/syfrah/vmlinux"),
+        )
+        .unwrap();
+        assert_eq!(
+            resolved.rootfs_path,
+            PathBuf::from("/opt/syfrah/images/ubuntu-24.04.raw")
+        );
+    }
+
+    // -- map: additional structure checks -------------------------------------
+
+    #[test]
+    fn map_cpus_boot_vcpus_is_integer() {
+        let validated = validate(&minimal_spec()).unwrap();
+        let resolved = resolve(
+            &validated,
+            Path::new("/opt/syfrah/images"),
+            Path::new("/opt/syfrah/vmlinux"),
+        )
+        .unwrap();
+        let json = map(&resolved, Path::new("/tmp/test.sock"));
+        // Ensure boot_vcpus is a JSON number (u64), not a string
+        assert!(json["cpus"]["boot_vcpus"].is_u64());
+        assert_eq!(json["cpus"]["boot_vcpus"].as_u64().unwrap(), 2);
+    }
+
+    #[test]
+    fn map_rootfs_is_first_disk() {
+        let validated = validate(&full_spec()).unwrap();
+        let resolved = resolve(
+            &validated,
+            Path::new("/opt/syfrah/images"),
+            Path::new("/opt/syfrah/vmlinux"),
+        )
+        .unwrap();
+        let json = map(&resolved, Path::new("/tmp/test.sock"));
+        let disks = json["disks"].as_array().unwrap();
+        assert_eq!(disks[0]["path"], "/opt/syfrah/images/ubuntu-24.04.raw");
+        // Volumes come after rootfs
+        assert_eq!(disks[1]["path"], "/dev/nbd0");
+        assert_eq!(disks[2]["path"], "/dev/nbd1");
+    }
+
+    #[test]
+    fn map_no_network_means_no_net_key() {
+        let validated = validate(&minimal_spec()).unwrap();
+        let resolved = resolve(
+            &validated,
+            Path::new("/opt/syfrah/images"),
+            Path::new("/opt/syfrah/vmlinux"),
+        )
+        .unwrap();
+        let json = map(&resolved, Path::new("/tmp/test.sock"));
+        assert!(json.get("net").is_none());
+    }
+
+    #[test]
+    fn map_with_network_has_net_array() {
+        let mut spec = minimal_spec();
+        spec.network = Some(NetworkConfig {
+            tap_name: "tap0".to_string(),
+            mac: None,
+        });
+        let validated = validate(&spec).unwrap();
+        let resolved = resolve(
+            &validated,
+            Path::new("/opt/syfrah/images"),
+            Path::new("/opt/syfrah/vmlinux"),
+        )
+        .unwrap();
+        let json = map(&resolved, Path::new("/tmp/test.sock"));
+        let net = json["net"].as_array().unwrap();
+        assert_eq!(net.len(), 1);
+        assert_eq!(net[0]["tap"], "tap0");
+    }
+
+    #[test]
+    fn map_no_gpu_means_no_devices_key() {
+        let validated = validate(&minimal_spec()).unwrap();
+        let resolved = resolve(
+            &validated,
+            Path::new("/opt/syfrah/images"),
+            Path::new("/opt/syfrah/vmlinux"),
+        )
+        .unwrap();
+        let json = map(&resolved, Path::new("/tmp/test.sock"));
+        assert!(json.get("devices").is_none());
+    }
+
+    #[test]
+    fn map_gpu_passthrough_has_devices_array() {
+        let mut spec = minimal_spec();
+        spec.gpu = GpuMode::Passthrough {
+            bdf: "0000:41:00.0".to_string(),
+        };
+        let validated = validate(&spec).unwrap();
+        let resolved = resolve(
+            &validated,
+            Path::new("/opt/syfrah/images"),
+            Path::new("/opt/syfrah/vmlinux"),
+        )
+        .unwrap();
+        let json = map(&resolved, Path::new("/tmp/test.sock"));
+        let devices = json["devices"].as_array().unwrap();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0]["path"], "/sys/bus/pci/devices/0000:41:00.0/");
+    }
+
+    #[test]
+    fn map_rng_src_is_dev_urandom() {
+        let validated = validate(&minimal_spec()).unwrap();
+        let resolved = resolve(
+            &validated,
+            Path::new("/opt/syfrah/images"),
+            Path::new("/opt/syfrah/vmlinux"),
+        )
+        .unwrap();
+        let json = map(&resolved, Path::new("/tmp/test.sock"));
+        assert_eq!(json["rng"]["src"], "/dev/urandom");
+    }
+
+    #[test]
+    fn map_has_payload_kernel_field() {
+        let validated = validate(&minimal_spec()).unwrap();
+        let resolved = resolve(
+            &validated,
+            Path::new("/opt/syfrah/images"),
+            Path::new("/opt/syfrah/vmlinux"),
+        )
+        .unwrap();
+        let json = map(&resolved, Path::new("/tmp/test.sock"));
+        assert!(json["payload"]["kernel"].is_string());
+        assert_eq!(json["payload"]["kernel"], "/opt/syfrah/vmlinux");
+    }
+
+    // -- full pipeline end-to-end ---------------------------------------------
+
+    #[test]
+    fn full_pipeline_validate_resolve_map() {
+        let spec = VmSpec {
+            id: VmId("vm-e2e".to_string()),
+            vcpus: 4,
+            memory_mb: 4096,
+            image: "debian-12".to_string(),
+            kernel: None,
+            network: Some(NetworkConfig {
+                tap_name: "tap-e2e".to_string(),
+                mac: Some("52:54:00:aa:bb:cc".to_string()),
+            }),
+            volumes: vec![VolumeAttachment {
+                path: "/dev/nbd0".to_string(),
+                read_only: false,
+            }],
+            gpu: GpuMode::Passthrough {
+                bdf: "0000:03:00.0".to_string(),
+            },
+        };
+
+        // Step 1: validate
+        let validated = validate(&spec).expect("validation should pass");
+        assert_eq!(validated.vcpus, 4);
+        assert_eq!(validated.memory_mb, 4096);
+
+        // Step 2: resolve
+        let resolved = resolve(
+            &validated,
+            Path::new("/opt/syfrah/images"),
+            Path::new("/opt/syfrah/vmlinux"),
+        )
+        .expect("resolve should pass");
+        assert_eq!(resolved.kernel_path, PathBuf::from("/opt/syfrah/vmlinux"));
+        assert_eq!(
+            resolved.rootfs_path,
+            PathBuf::from("/opt/syfrah/images/debian-12.raw")
+        );
+        assert_eq!(
+            resolved.gpu_sysfs_path,
+            Some(PathBuf::from("/sys/bus/pci/devices/0000:03:00.0/"))
+        );
+
+        // Step 3: map
+        let json = map(&resolved, Path::new("/run/syfrah/vms/vm-e2e/api.sock"));
+        assert_eq!(json["payload"]["kernel"], "/opt/syfrah/vmlinux");
+        assert_eq!(json["cpus"]["boot_vcpus"], 4);
+        assert_eq!(json["memory"]["size"], 4096u64 * 1024 * 1024);
+        assert_eq!(json["disks"].as_array().unwrap().len(), 2); // rootfs + 1 volume
+        assert_eq!(json["net"].as_array().unwrap().len(), 1);
+        assert_eq!(json["net"].as_array().unwrap()[0]["tap"], "tap-e2e");
+        assert_eq!(json["devices"].as_array().unwrap().len(), 1);
+        assert_eq!(json["rng"]["src"], "/dev/urandom");
+    }
 }
