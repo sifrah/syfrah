@@ -32,7 +32,7 @@ Every piece of state in Syfrah has exactly one **source of truth**. Some state i
 | VM desired spec (vCPU, memory, image, network) | Tenant API → Raft | Raft log | What the user asked for. Immutable until user updates it. |
 | VM scheduling decision (which node) | Scheduler → Raft | Raft log | Authoritative placement. One node per VM. |
 | VM runtime status (running, stopped, error) | Forge on the hosting node | Gossip | Observed reality. May lag behind desired state. |
-| VM Firecracker process state | Forge (local) | Not persisted (reconstructed on start) | The forge recreates from desired spec on restart. |
+| VM libkrun process state | Forge (local) | Not persisted (reconstructed on start) | The forge recreates from desired spec on restart. |
 | Kernel images | Platform-provided (local filesystem) | Each node's disk | Shared read-only across VMs. Not in Raft. |
 | Rootfs images | Platform-provided (local or S3) | Each node's disk or S3 | Pulled on demand. Not in Raft. |
 
@@ -141,7 +141,7 @@ Each node runs a **reconciliation loop** in the forge. It continuously compares 
     ┌────────────────────────────────────┐
     │        Local reality (observed)     │
     │                                    │
-    │  Firecracker processes, bridges,   │
+    │  libkrun VM processes, bridges,     │
     │  TAP devices, nftables rules,      │
     │  ZeroFS volumes, DNS zone files    │
     └────────────────────────────────────┘
@@ -162,7 +162,7 @@ The forge reads the subset of Raft state relevant to this node:
 **Step 2 — Read actual state from local system**
 
 The forge inspects what actually exists:
-- Running Firecracker processes (ps / PID files)
+- Running libkrun VM processes (ps / PID files)
 - Linux bridges and VXLAN interfaces (`ip link`)
 - TAP devices (`ip link`)
 - nftables rules (`nft list ruleset`)
@@ -173,19 +173,19 @@ The forge inspects what actually exists:
 
 | Situation | Action |
 |---|---|
-| VM in Raft but no Firecracker process | Create TAP, attach to bridge, start Firecracker |
-| Firecracker running but VM not in Raft | Stop Firecracker, cleanup TAP |
+| VM in Raft but no libkrun process | Create TAP, attach to bridge, start libkrun VM |
+| libkrun VM running but VM not in Raft | Stop libkrun VM, cleanup TAP |
 | VPC in Raft but no bridge on this node | Create VXLAN interface + bridge |
 | Bridge exists but VPC removed from Raft | Delete bridge + VXLAN interface |
 | Security group rules changed in Raft | Recompute and atomically replace nftables rules |
 | FDB entries stale (VM moved to another node) | Remove old FDB, add new |
-| Volume attached in Raft but not mounted | Connect ZeroFS NBD, attach to Firecracker |
+| Volume attached in Raft but not mounted | Connect ZeroFS NBD, attach to libkrun VM |
 | DNS record in Raft but not in zone file | Regenerate zone file, reload CoreDNS |
 
 **Step 4 — Report actual state**
 
 After reconciliation, the forge gossips the actual state of each resource:
-- VM `web-1` is `Running` (or `Error` if Firecracker crashed)
+- VM `web-1` is `Running` (or `Error` if the libkrun VM crashed)
 - Node has 24 vCPU free, 48 GB RAM free
 - Health: `Up`
 
@@ -229,10 +229,10 @@ Every resource type follows a phase model. Phases are linear — a resource move
 |---|---|---|
 | **Pending** | Raft (on create) | VM definition exists. Waiting for scheduler. |
 | **Scheduled** | Raft (scheduler) | Scheduler picked a node. Waiting for forge to act. |
-| **Provisioning** | Forge (gossip) | Forge is creating TAP, bridge, volume, starting Firecracker. |
-| **Running** | Forge (gossip) | Firecracker process is alive. VM is operational. |
+| **Provisioning** | Forge (gossip) | Forge is creating TAP, bridge, volume, starting libkrun VM. |
+| **Running** | Forge (gossip) | libkrun VM process is alive. VM is operational. |
 | **Stopping** | Raft (on stop request) | User requested stop. Forge sending shutdown signal. |
-| **Stopped** | Forge (gossip) | Firecracker process exited cleanly. Resources still allocated. |
+| **Stopped** | Forge (gossip) | libkrun VM process exited cleanly. Resources still allocated. |
 | **Deleting** | Raft (on delete request) | User requested deletion. Forge cleaning up. |
 | **Deleted** | Raft (after cleanup confirmed) | All resources released. VM record can be garbage collected. |
 | **Failed** | Forge (gossip) | Something went wrong. Error message attached. |
@@ -251,8 +251,8 @@ Every resource type follows a phase model. Phases are linear — a resource move
 |---|---|---|
 | **Pending** | Raft (on create) | Volume definition exists. ZeroFS file not yet created. |
 | **Available** | Forge (gossip) | ZeroFS NBD file created on S3. Not attached to any VM. |
-| **Attaching** | Raft (on attach request) | Volume being connected to a VM's Firecracker process. |
-| **Attached** | Forge (gossip) | NBD device connected to Firecracker. VM can read/write. |
+| **Attaching** | Raft (on attach request) | Volume being connected to a VM's libkrun process. |
+| **Attached** | Forge (gossip) | NBD device connected to libkrun VM. VM can read/write. |
 | **Detaching** | Raft (on detach request) | Volume being disconnected. ZeroFS flushing cache. |
 | **Deleting** | Raft (on delete request) | Volume being removed from S3. |
 | **Deleted** | Raft (after cleanup) | S3 data removed. Record can be garbage collected. |
@@ -342,14 +342,14 @@ The phases are the **language** the reconciliation loop speaks. The loop's job i
 
     Forge on Node B sees:
       vm-web-1: phase = Scheduled (just assigned to this node)
-      No local Firecracker process exists.
+      No local libkrun VM process exists.
 
     Reconciliation:
       1. Phase is Scheduled → target is Running
-      2. No Firecracker process → need to provision
+      2. No libkrun VM process → need to provision
       3. Create TAP, bridge (if needed), volume
-      4. Start Firecracker → set phase to Provisioning (gossip)
-      5. Firecracker boots → set phase to Running (gossip)
+      4. Start libkrun VM → set phase to Provisioning (gossip)
+      5. libkrun VM boots → set phase to Running (gossip)
       6. Done. Next loop iteration: Running == Running, no action.
 ```
 

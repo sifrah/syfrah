@@ -278,7 +278,7 @@ syfrah/
 │   │           └── drop.rs          syfrah state drop
 │   │
 │   ├── forge/                       Per-node control (planned, README only)
-│   ├── compute/                     Firecracker microVMs (planned, README only)
+│   ├── compute/                     libkrun microVMs (planned, README only)
 │   ├── storage/                     ZeroFS + S3 (planned, README only)
 │   ├── overlay/                     VXLAN, VPC, SG, DNS (planned, README only)
 │   ├── controlplane/                Raft + gossip (planned, README only)
