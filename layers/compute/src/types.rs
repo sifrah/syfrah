@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 use crate::phase::VmPhase;
 
 /// Unique identifier for a VM.
+///
+/// A thin wrapper around `String`, used as a key in maps and event payloads.
+/// The inner value is typically a human-readable slug like `"vm-web-1"`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct VmId(pub String);
 
@@ -14,30 +17,52 @@ impl fmt::Display for VmId {
     }
 }
 
-/// Desired state of a VM.
+/// Desired state of a VM, provided by forge when requesting creation.
+///
+/// This is the "what" — the declarative specification. Compute translates it
+/// into Cloud Hypervisor configuration, resolves paths, and validates constraints.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct VmSpec {
+    /// Unique identifier for this VM.
     pub id: VmId,
+    /// Number of virtual CPUs (must be > 0).
     pub vcpus: u32,
+    /// Memory allocation in megabytes (must be >= 128, power of 2).
     pub memory_mb: u32,
+    /// Root filesystem image name (e.g., `"ubuntu-24.04"`). Resolved to a path
+    /// by the config pipeline.
     pub image: String,
+    /// Path to the kernel. `None` uses the shared default vmlinux.
     pub kernel: Option<String>,
+    /// Network configuration (TAP device), provided by overlay via forge.
     pub network: Option<NetworkConfig>,
+    /// Block device volumes to attach (e.g., ZeroFS NBD devices).
     pub volumes: Vec<VolumeAttachment>,
+    /// GPU passthrough mode.
     pub gpu: GpuMode,
 }
 
 /// TAP device configuration, provided by overlay via forge.
+///
+/// Compute does not create or manage TAP devices — it receives this
+/// configuration and passes it to Cloud Hypervisor's `--net` argument.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct NetworkConfig {
+    /// Name of the TAP device (e.g., `"tap-vm-web-1"`).
     pub tap_name: String,
+    /// Optional MAC address override. `None` lets Cloud Hypervisor assign one.
     pub mac: Option<String>,
 }
 
-/// Block device attachment.
+/// Block device attachment for a VM.
+///
+/// Volumes are provided by the storage layer (e.g., ZeroFS NBD devices)
+/// and attached as additional `--disk` entries in Cloud Hypervisor.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct VolumeAttachment {
+    /// Path to the block device (e.g., `"/dev/nbd0"`).
     pub path: String,
+    /// Whether the volume should be attached as read-only.
     pub read_only: bool,
 }
 
@@ -60,9 +85,13 @@ pub enum GpuMode {
 /// Internal details (PID, socket path, cgroup) are deliberately omitted.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct VmStatus {
+    /// Unique identifier of the VM.
     pub vm_id: VmId,
+    /// Current lifecycle phase.
     pub phase: VmPhase,
+    /// Number of virtual CPUs allocated.
     pub vcpus: u32,
+    /// Memory allocation in megabytes.
     pub memory_mb: u32,
     /// Unix timestamp of when the VM was created.
     pub created_at: Option<u64>,
@@ -76,46 +105,32 @@ pub struct VmStatus {
 /// always `info()` / `status()`, never the event stream alone.
 #[derive(Clone, Debug)]
 pub enum VmEvent {
-    Created {
-        vm_id: VmId,
-    },
-    Booted {
-        vm_id: VmId,
-    },
-    Stopped {
-        vm_id: VmId,
-    },
-    Crashed {
-        vm_id: VmId,
-        error: String,
-    },
-    Deleted {
-        vm_id: VmId,
-    },
-    ReconnectSucceeded {
-        vm_id: VmId,
-    },
-    ReconnectFailed {
-        vm_id: VmId,
-        error: String,
-    },
-    VmOrphanCleaned {
-        vm_id: VmId,
-        reason: String,
-    },
+    /// VM definition created and cloud-hypervisor process spawned.
+    Created { vm_id: VmId },
+    /// VM booted successfully — CH API is responding and `vm.boot` completed.
+    Booted { vm_id: VmId },
+    /// VM stopped cleanly via the kill chain (graceful or forced shutdown).
+    Stopped { vm_id: VmId },
+    /// VM crashed — process exited unexpectedly or API became unresponsive.
+    Crashed { vm_id: VmId, error: String },
+    /// VM deleted — all runtime artifacts cleaned up.
+    Deleted { vm_id: VmId },
+    /// VM successfully recovered after a daemon restart.
+    ReconnectSucceeded { vm_id: VmId },
+    /// VM failed to reconnect after a daemon restart.
+    ReconnectFailed { vm_id: VmId, error: String },
+    /// Orphaned runtime directory cleaned up during reconnect.
+    VmOrphanCleaned { vm_id: VmId, reason: String },
+    /// VM CPU/memory resized via hot-resize.
     Resized {
         vm_id: VmId,
         new_vcpus: u32,
         new_memory_mb: u32,
     },
-    DeviceAttached {
-        vm_id: VmId,
-        device: String,
-    },
-    DeviceDetached {
-        vm_id: VmId,
-        device: String,
-    },
+    /// Device hot-attached to the VM (disk, network, or VFIO).
+    DeviceAttached { vm_id: VmId, device: String },
+    /// Device hot-detached from the VM.
+    DeviceDetached { vm_id: VmId, device: String },
 }
 
 #[cfg(test)]
