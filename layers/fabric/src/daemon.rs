@@ -723,6 +723,15 @@ pub async fn run_daemon(
     // Load gRPC-compatible API config.
     let grpc_config = crate::grpc_api::load_grpc_config();
 
+    // Load gateway config (dedicated gateway node role).
+    let gateway_config = config::load_gateway_config();
+    if gateway_config.enabled {
+        info!(
+            "gateway mode enabled, external API will listen on {} (TLS)",
+            gateway_config.bind_address
+        );
+    }
+
     let announce_semaphore = Arc::new(Semaphore::new(tuning.max_concurrent_announces));
     let max_peers = tuning.max_peers;
     let keepalive_interval = tuning.keepalive_interval;
@@ -1824,12 +1833,45 @@ pub async fn run_daemon(
     let api_task = tokio::spawn(http_api::serve(api_config, api_shutdown_rx));
 
     // gRPC-compatible API server (external fabric API on configurable port).
+    // When gateway mode is enabled, the gateway TLS server replaces the plain
+    // gRPC server for external traffic.
     let (grpc_shutdown_tx, grpc_shutdown_rx) = tokio::sync::watch::channel(false);
-    let grpc_task = tokio::spawn(crate::grpc_api::serve(
-        grpc_config,
-        grpc_handler,
-        grpc_shutdown_rx,
-    ));
+    let grpc_task = if gateway_config.enabled {
+        // Gateway mode: start TLS-protected external API.
+        let (gw_shutdown_tx, gw_shutdown_rx) = tokio::sync::watch::channel(false);
+        // Re-purpose grpc_shutdown_tx to also shut down the gateway.
+        let gw_handler = grpc_handler.clone();
+        let gw_config = gateway_config.clone();
+        let gw_task = tokio::spawn(crate::grpc_api::serve_gateway_tls(
+            gw_config,
+            gw_handler,
+            gw_shutdown_rx,
+        ));
+        // Also start the plain gRPC server if it was explicitly enabled (for
+        // internal mesh-only access).
+        let plain_task = tokio::spawn(crate::grpc_api::serve(
+            grpc_config,
+            grpc_handler,
+            grpc_shutdown_rx,
+        ));
+        // We need both shutdown senders alive. Store the gateway one alongside.
+        // For simplicity we just leak the extra sender into a spawn that waits
+        // for both tasks.
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = gw_task => {}
+                _ = plain_task => {}
+            }
+            let _ = gw_shutdown_tx.send(true);
+        })
+    } else {
+        // No gateway: only start the plain gRPC server (disabled by default).
+        tokio::spawn(crate::grpc_api::serve(
+            grpc_config,
+            grpc_handler,
+            grpc_shutdown_rx,
+        ))
+    };
 
     // Wait for a shutdown signal (SIGINT or SIGTERM) or an unexpected task exit.
     tokio::select! {

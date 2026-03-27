@@ -6,6 +6,7 @@ use serde::Serialize;
 use syfrah_core::mesh::{PeerStatus, Region, Zone};
 
 use crate::cli::ui::truncate;
+use crate::config;
 use crate::events::ZoneHealthStatus;
 use crate::topology::TopologyView;
 use crate::{no_mesh_error, store, ui, wg};
@@ -57,6 +58,9 @@ pub async fn run(opts: TopologyOpts) -> Result<()> {
 }
 
 fn run_tree(mesh_name: &str, view: &TopologyView, opts: &TopologyOpts) -> Result<()> {
+    let gw = config::load_gateway_config();
+    let local_node_name = store::load().map(|s| s.node_name).unwrap_or_default();
+
     // Resolve region filter
     let mut regions: Vec<&Region> = view.regions();
     regions.sort_by_key(|r| r.as_str().to_owned());
@@ -171,9 +175,14 @@ fn run_tree(mesh_name: &str, view: &TopologyView, opts: &TopologyOpts) -> Result
                     truncate_ipv6(&peer.mesh_ipv6.to_string())
                 };
                 let status = format_status(peer.status);
+                let role_tag = if gw.enabled && peer.name == local_node_name {
+                    " [gateway]"
+                } else {
+                    ""
+                };
 
                 if opts.verbose {
-                    println!("    {:<20}  {:<39}  {}", name, ipv6, status);
+                    println!("    {:<20}  {:<39}  {}{}", name, ipv6, status, role_tag);
                     if let Some(wg_peer) = wg_stats.get(&peer.wg_public_key) {
                         let endpoint = wg_peer
                             .endpoint
@@ -198,7 +207,7 @@ fn run_tree(mesh_name: &str, view: &TopologyView, opts: &TopologyOpts) -> Result
                         );
                     }
                 } else {
-                    println!("    {:<20}  {:<16}  {}", name, ipv6, status);
+                    println!("    {:<20}  {:<16}  {}{}", name, ipv6, status, role_tag);
                 }
             }
         }
@@ -209,6 +218,9 @@ fn run_tree(mesh_name: &str, view: &TopologyView, opts: &TopologyOpts) -> Result
 }
 
 fn run_json(mesh_name: &str, view: &TopologyView, opts: &TopologyOpts) -> Result<()> {
+    let gw = config::load_gateway_config();
+    let local_node_name = store::load().map(|s| s.node_name).unwrap_or_default();
+
     let mut regions: Vec<&Region> = view.regions();
     regions.sort_by_key(|r| r.as_str().to_owned());
 
@@ -251,10 +263,18 @@ fn run_json(mesh_name: &str, view: &TopologyView, opts: &TopologyOpts) -> Result
                     let peers = view.peers_in_zone(zone);
                     let nodes: Vec<JsonNode> = peers
                         .iter()
-                        .map(|p| JsonNode {
-                            name: p.name.clone(),
-                            mesh_ipv6: p.mesh_ipv6.to_string(),
-                            status: format_status(p.status),
+                        .map(|p| {
+                            let role = if gw.enabled && p.name == local_node_name {
+                                Some("gateway".to_string())
+                            } else {
+                                None
+                            };
+                            JsonNode {
+                                name: p.name.clone(),
+                                mesh_ipv6: p.mesh_ipv6.to_string(),
+                                status: format_status(p.status),
+                                role,
+                            }
                         })
                         .collect();
                     let health = store::get_zone_health(zone.as_str())
@@ -397,6 +417,8 @@ struct JsonNode {
     name: String,
     mesh_ipv6: String,
     status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
 }
 
 #[cfg(test)]
