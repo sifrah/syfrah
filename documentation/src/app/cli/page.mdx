@@ -19,7 +19,7 @@ export const metadata = {
 `syfrah` is the single binary that operators use to manage the platform. The CLI is organized by **namespace**, where each namespace maps to an architectural layer and a directory in the codebase.
 
 ```
-syfrah <namespace> <command> [flags]
+syfrah &lt;namespace&gt; &lt;command&gt; [flags]
 ```
 
 The CLI communicates with the local daemon via a Unix domain socket (`~/.syfrah/control.sock`) for runtime operations, or directly reads/writes state for offline operations.

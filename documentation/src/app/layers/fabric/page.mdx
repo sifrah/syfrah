@@ -241,7 +241,7 @@ This is a known trade-off for simplicity in early development. The join ceremony
 
 ### PIN auto-accept
 
-The PIN mechanism allows unattended node enrollment. The operator starts peering with a PIN (`syfrah peering --pin 1234`), and new nodes can join without manual approval by providing the same PIN (`syfrah join <ip> --pin 1234`).
+The PIN mechanism allows unattended node enrollment. The operator starts peering with a PIN (`syfrah peering --pin 1234`), and new nodes can join without manual approval by providing the same PIN (`syfrah join &lt;ip&gt; --pin 1234`).
 
 The PIN is a 4-digit code (1000-9999) transmitted in the JoinRequest. It is designed for convenience during initial cluster bootstrap, not as a long-term security mechanism. Best practice: use PIN mode only during initial setup, then switch to manual approval.
 
