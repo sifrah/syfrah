@@ -12,6 +12,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+libc = "0.2"
 
 [dev-dependencies]
 hyper = { version = "1", features = ["server", "http1"] }
