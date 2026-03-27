@@ -150,7 +150,7 @@ The layers below are architecturally designed with concept documentation but hav
 - **Compute** — KVM-based microVMs via Cloud Hypervisor
 - **Storage** — S3-backed block devices (ZeroFS)
 - **Overlay** — VXLAN, VPCs, security groups, private DNS
-- **Control Plane** — Raft consensus + SWIM gossip, embedded on every node
+- **control plane** — Raft consensus + SWIM gossip, embedded on every node
 - **Org** — multi-tenant organization/project/environment model
 - **IAM** — role-based access control and API keys
 - **Products** — managed databases, load balancers, composed from forge primitives
