@@ -17,8 +17,8 @@ import navData from '@/navigation.json'
 interface NavLink {
   title: string
   href: string
-  status?: 'implemented' | 'stub' | 'planned'
-  pageType?: 'reference' | 'guide' | 'concept'
+  status?: string
+  pageType?: string
   children?: NavLink[]
 }
 
