@@ -55,6 +55,17 @@ cargo build --release
 
 Requires Rust stable (version pinned in [rust-toolchain.toml](rust-toolchain.toml)).
 
+### Beta channel
+
+To install the latest beta (built from `main`, pre-release, may contain breaking changes):
+
+```bash
+curl -fsSL https://github.com/sifrah/syfrah/releases/latest/download/install.sh | sh -s -- --beta
+syfrah --version   # verify the installed version
+```
+
+See [handbook/releasing.md](handbook/releasing.md) for the full release strategy.
+
 ## Quick Start
 
 ```bash
