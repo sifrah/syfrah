@@ -26,6 +26,7 @@ pub mod binary;
 pub mod cli;
 pub mod client;
 pub mod config;
+pub mod control;
 pub mod error;
 pub mod events;
 pub mod handler;
@@ -48,6 +49,7 @@ pub use error::{
     TransitionError,
 };
 pub use events::emit;
+pub use control::{ComputeLayerHandler, ComputeRequest, ComputeResponse};
 pub use manager::{ComputeConfig, ReconnectSummary, VmManager};
 pub use phase::VmPhase;
 pub use types::{GpuMode, NetworkConfig, VmEvent, VmId, VmSpec, VmStatus, VolumeAttachment};

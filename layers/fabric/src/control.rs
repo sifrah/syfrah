@@ -197,6 +197,7 @@ pub async fn send_fabric_request(
             Ok(fabric_resp)
         }
         LayerResponse::UnknownLayer(name) => Err(format!("unknown layer: {name}").into()),
+        other => Err(format!("unexpected response variant: {other:?}").into()),
     }
 }
 
@@ -235,6 +236,7 @@ mod tests {
                     other => panic!("unexpected request: {other:?}"),
                 }
             }
+            other => panic!("unexpected envelope: {other:?}"),
         }
     }
 

@@ -15,6 +15,8 @@ use crate::handler::LayerHandler;
 pub enum LayerRequest {
     /// Request destined for the Fabric layer.
     Fabric(Vec<u8>),
+    /// Request destined for the Compute layer.
+    Compute(Vec<u8>),
 }
 
 /// Top-level response envelope returned to the client.
@@ -22,6 +24,8 @@ pub enum LayerRequest {
 pub enum LayerResponse {
     /// Response originating from the Fabric layer.
     Fabric(Vec<u8>),
+    /// Response originating from the Compute layer.
+    Compute(Vec<u8>),
     /// The requested layer is not registered in the router.
     UnknownLayer(String),
 }
@@ -59,6 +63,13 @@ impl LayerRouter {
                     LayerResponse::Fabric(handler.handle(payload, caller_uid).await)
                 } else {
                     LayerResponse::UnknownLayer("fabric".into())
+                }
+            }
+            LayerRequest::Compute(payload) => {
+                if let Some(handler) = self.handlers.get("compute") {
+                    LayerResponse::Compute(handler.handle(payload, caller_uid).await)
+                } else {
+                    LayerResponse::UnknownLayer("compute".into())
                 }
             }
         }
@@ -119,6 +130,7 @@ mod tests {
         let back: LayerRequest = serde_json::from_slice(&json).unwrap();
         match back {
             LayerRequest::Fabric(data) => assert_eq!(data, b"payload"),
+            other => panic!("unexpected: {other:?}"),
         }
     }
 

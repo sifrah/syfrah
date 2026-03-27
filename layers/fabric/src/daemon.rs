@@ -985,6 +985,53 @@ pub async fn run_daemon(
     let fabric_layer_handler = FabricLayerHandler::new(ctrl_handler);
     let mut router = LayerRouter::new();
     router.register("fabric", Arc::new(fabric_layer_handler));
+
+    // -- Compute layer integration ------------------------------------------
+    //
+    // Initialise VmManager, reconnect existing VMs, start the monitor loop,
+    // and register the compute handler in the router.
+    {
+        let compute_config = syfrah_compute::ComputeConfig::default();
+        match syfrah_compute::VmManager::new(compute_config) {
+            Ok(vm_manager) => {
+                let vm_manager = Arc::new(vm_manager);
+
+                // Reconnect VMs that survived a daemon restart.
+                match vm_manager.reconnect().await {
+                    Ok(summary) => {
+                        if summary.recovered_count > 0 || !summary.failed.is_empty() {
+                            info!(
+                                recovered = summary.recovered_count,
+                                failed = summary.failed.len(),
+                                orphans = summary.orphans_cleaned.len(),
+                                "compute: VM reconnect complete"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        warn!("compute: reconnect failed: {e}");
+                    }
+                }
+
+                // Start the background health-check monitor.
+                vm_manager.start_monitor();
+
+                // Register the compute layer handler.
+                let compute_handler =
+                    syfrah_compute::ComputeLayerHandler::new(Arc::clone(&vm_manager));
+                router.register("compute", Arc::new(compute_handler));
+
+                info!("compute layer initialised");
+            }
+            Err(e) => {
+                // Compute init failure is non-fatal: the daemon still runs for
+                // fabric operations, but compute CLI commands will get
+                // "unknown layer" errors.
+                warn!("compute layer init failed (non-fatal): {e}");
+            }
+        }
+    }
+
     let router = Arc::new(router);
 
     let control_path = store::control_socket_path();

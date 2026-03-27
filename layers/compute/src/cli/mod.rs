@@ -2,12 +2,15 @@
 //!
 //! Provides subcommands for VM lifecycle management and compute layer
 //! status queries. Each handler communicates with the daemon via the
-//! control socket (stubbed for now — prints a placeholder message until
-//! the daemon integration is complete).
+//! control socket.
 
 pub mod vm;
 
+use std::path::PathBuf;
+
 use clap::Subcommand;
+
+use crate::control::{send_compute_request, ComputeRequest, ComputeResponse};
 
 /// Top-level compute CLI command.
 #[derive(Debug, Subcommand)]
@@ -33,19 +36,39 @@ pub async fn run(cmd: ComputeCommand) -> anyhow::Result<()> {
     }
 }
 
+fn control_socket_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/root"))
+        .join(".syfrah")
+        .join("control.sock")
+}
+
 async fn run_status(json: bool) -> anyhow::Result<()> {
-    if json {
-        let status = serde_json::json!({
-            "status": "not yet connected to daemon",
-            "total_vms": 0,
-            "running_vms": 0,
-        });
-        println!("{}", serde_json::to_string_pretty(&status)?);
-    } else {
-        println!("Compute Status");
-        println!("  Status:      not yet connected to daemon");
-        println!("  Total VMs:   0");
-        println!("  Running VMs: 0");
+    let req = ComputeRequest::Status;
+    let resp = send_compute_request(&control_socket_path(), &req)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}"))?;
+
+    match resp {
+        ComputeResponse::Status(v) => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else {
+                let status = v.get("status").and_then(|s| s.as_str()).unwrap_or("?");
+                let total = v.get("total_vms").and_then(|t| t.as_u64()).unwrap_or(0);
+                let running = v.get("running_vms").and_then(|r| r.as_u64()).unwrap_or(0);
+                println!("Compute Status");
+                println!("  Status:      {status}");
+                println!("  Total VMs:   {total}");
+                println!("  Running VMs: {running}");
+            }
+            Ok(())
+        }
+        ComputeResponse::Error(msg) => {
+            anyhow::bail!("{msg}");
+        }
+        _ => {
+            anyhow::bail!("unexpected response from daemon");
+        }
     }
-    Ok(())
 }
