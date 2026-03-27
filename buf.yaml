@@ -2,6 +2,12 @@ version: v2
 
 modules:
   - path: api/proto
+  - path: layers/fabric/proto
+  - path: layers/compute/proto
+  - path: layers/forge/proto
+  - path: layers/overlay/proto
+  - path: layers/storage/proto
+  - path: layers/org/proto
 
 lint:
   use:

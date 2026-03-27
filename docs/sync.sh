@@ -63,10 +63,8 @@ for dir in "$REPO_ROOT"/layers/*/; do
 done
 
 # --- API Reference ---
-for f in "$REPO_ROOT"/api/proto/syfrah/v1/*.md; do
-  name=$(basename "$f")
-  copy_file "$f" "api/$name"
-done
+# API docs are served by Redocly at /api/, not by Starlight.
+# No .md files to sync here.
 
 # --- Dev ---
 for f in "$REPO_ROOT"/dev/*.md; do
