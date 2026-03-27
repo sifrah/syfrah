@@ -15,19 +15,20 @@ A layer is an **architectural boundary** first, and a Rust crate second. The cra
 The repository is organized by architectural layer. Each layer is a self-contained folder with its own code, documentation, and CLI commands. The top-level binary just composes the layers together.
 
 ```
-    The repo                              The architecture
-    ────────                              ────────────────
+    The repo                              The architecture              Status
+    ────────                              ────────────────              ──────
 
-    layers/core/                          Foundation types (no I/O)
-    layers/fabric/                        Fabric layer
-    layers/forge/                         Forge layer
-    layers/compute/                       Compute layer
-    layers/storage/                       Storage layer
-    layers/overlay/                       Overlay layer
-    layers/controlplane/                  Control plane layer
-    layers/org/                           Organization model
-    layers/iam/                           IAM layer
-    layers/products/                      Products layer
+    layers/core/                          Foundation types (no I/O)     Implemented
+    layers/fabric/                        Fabric layer                  Implemented
+    layers/state/                         State inspection              Implemented
+    layers/forge/                         Forge layer                   Planned (README only)
+    layers/compute/                       Compute layer                 Planned (README only)
+    layers/storage/                       Storage layer                 Planned (README only)
+    layers/overlay/                       Overlay layer                 Planned (README only)
+    layers/controlplane/                  Control plane layer           Planned (README only)
+    layers/org/                           Organization model            Planned (README only)
+    layers/iam/                           IAM layer                     Planned (README only)
+    layers/products/                      Products layer                Planned (README only)
 
     One folder = one layer.
     Adding a layer = adding a folder.
@@ -44,21 +45,16 @@ The `syfrah-core` crate is the foundation that every other layer depends on. It 
 - No filesystem access
 - Only: types, validation, small pure functions
 
-**What lives in core:**
+**What lives in core today:**
 
 | Category | Examples |
 |---|---|
-| IDs | `OrgId`, `ProjectId`, `EnvId`, `VmId`, `VpcId`, `SubnetId`, `VolumeId`, `NodeId` |
-| Errors | `SyfrahError` base type, error conversion traits |
-| Timestamps | `Timestamp` wrapper, duration helpers |
-| Resource names | Name validation (DNS-compatible, length limits) |
-| Labels | `Labels` type (`BTreeMap<String, String>`), label validation |
-| Phases | `VmPhase`, `VolumePhase`, `VpcPhase`, `NodePhase` enums |
-| Crypto | `MeshSecret`, key derivation, encryption helpers |
+| Crypto | `MeshSecret`, key derivation |
 | Addressing | IPv6 ULA prefix derivation, node address derivation |
-| IPAM | IP pool bitmap, MAC derivation — pure math, no allocation |
-| Serde helpers | Common serialization patterns |
-| API envelopes | `ApiResponse<T>`, `ApiError`, pagination types |
+| Identity | Node identity types |
+| Mesh | Mesh configuration types |
+
+**Planned additions** (when more layers are implemented): IDs (`OrgId`, `VmId`, etc.), error types, resource name validation, labels, phase enums, IPAM math, API envelopes.
 
 **Why this matters:** without `core`, shared types end up duplicated across layers or create false dependencies. `core` is the single import that every layer can rely on without pulling in I/O or network code.
 
@@ -70,17 +66,13 @@ The `syfrah-core` crate is the foundation that every other layer depends on. It 
     ├── README.md                Foundation types and conventions
     └── src/
         ├── lib.rs
-        ├── ids.rs               All ID newtypes (Uuid-based)
-        ├── errors.rs            SyfrahError, Result type alias
-        ├── names.rs             Resource name validation
-        ├── labels.rs            Label type and validation
-        ├── phases.rs            Phase enums for all resource types
-        ├── secret.rs            MeshSecret, key derivation
         ├── addressing.rs        IPv6 ULA addressing
-        ├── ipam.rs              IP pool bitmap (pure math)
-        ├── crypto.rs            AES-256-GCM helpers
-        └── api.rs               ApiResponse<T>, ApiError, pagination
+        ├── identity.rs          Node identity
+        ├── mesh.rs              Mesh types
+        └── secret.rs            MeshSecret, key derivation
 ```
+
+> **Note:** The core crate currently contains addressing, identity, mesh types, and secret management. Additional modules described in the table above (ids, errors, names, labels, phases, ipam, crypto, api) are planned for when more layers are implemented.
 
 ## Layer structure
 
@@ -190,7 +182,20 @@ These talk to the control plane API (HTTP on the fabric). They manage cloud reso
 
 **How they work:** HTTP request to the local control plane API → forwarded to Raft leader → committed → reconciled by forges.
 
-### Visual separation in help
+### Current help output
+
+```
+$ syfrah --help
+
+Syfrah — turn dedicated servers into a programmable cloud
+
+Commands:
+  fabric    Manage the WireGuard fabric mesh
+  state     Inspect and manage layer state databases
+  update    Update syfrah to the latest release
+```
+
+### Planned help output (full vision)
 
 ```
 $ syfrah --help
@@ -217,47 +222,50 @@ Identity:
   apikey    Manage API keys
   login     Authenticate
   logout    Clear session
+
+Utilities:
+  state     Inspect and manage layer state databases
+  update    Update syfrah to the latest release
 ```
 
 ## The full repo
+
+> The tree below shows **implemented** layers with their actual file structure and **planned** layers with their current (README-only) state. The planned file structures shown in the Layer structure section above represent the target design.
 
 ```
 syfrah/
 │
 ├── layers/
 │   │
-│   ├── core/                        Foundation types
+│   ├── core/                        Foundation types (implemented)
 │   │   ├── Cargo.toml               crate: syfrah-core
 │   │   ├── README.md
 │   │   └── src/
 │   │       ├── lib.rs
-│   │       ├── ids.rs
-│   │       ├── errors.rs
-│   │       ├── names.rs
-│   │       ├── labels.rs
-│   │       ├── phases.rs
-│   │       ├── secret.rs
-│   │       ├── addressing.rs
-│   │       ├── ipam.rs
-│   │       ├── crypto.rs
-│   │       └── api.rs
+│   │       ├── addressing.rs        IPv6 ULA addressing
+│   │       ├── identity.rs          Node identity
+│   │       ├── mesh.rs              Mesh types
+│   │       └── secret.rs            MeshSecret, key derivation
 │   │
-│   ├── fabric/                      WireGuard mesh
+│   ├── fabric/                      WireGuard mesh (implemented)
 │   │   ├── Cargo.toml               crate: syfrah-fabric
 │   │   ├── README.md
 │   │   ├── src/
 │   │   │   ├── lib.rs
 │   │   │   ├── cli/
-│   │   │   │   ├── mod.rs           FabricCommand
+│   │   │   │   ├── mod.rs           CLI command modules
 │   │   │   │   ├── init.rs          syfrah fabric init
 │   │   │   │   ├── join.rs
 │   │   │   │   ├── start.rs
 │   │   │   │   ├── stop.rs
 │   │   │   │   ├── leave.rs
 │   │   │   │   ├── status.rs
+│   │   │   │   ├── events.rs
 │   │   │   │   ├── peers.rs
 │   │   │   │   ├── token.rs
 │   │   │   │   ├── rotate.rs
+│   │   │   │   ├── diagnose.rs
+│   │   │   │   ├── service.rs
 │   │   │   │   └── peering.rs
 │   │   │   ├── peering.rs
 │   │   │   ├── daemon.rs
@@ -266,244 +274,98 @@ syfrah/
 │   │   │   └── control.rs
 │   │   └── tests/
 │   │
-│   ├── forge/                       Per-node control + debug
-│   │   ├── Cargo.toml               crate: syfrah-forge
+│   ├── state/                       State inspection (implemented)
+│   │   ├── Cargo.toml               crate: syfrah-state
 │   │   ├── README.md
-│   │   ├── src/
-│   │   │   ├── lib.rs
-│   │   │   ├── cli/
-│   │   │   │   ├── mod.rs           ForgeCommand
-│   │   │   │   ├── status.rs
-│   │   │   │   ├── vms.rs
-│   │   │   │   ├── bridges.rs
-│   │   │   │   ├── volumes.rs
-│   │   │   │   ├── nftables.rs
-│   │   │   │   ├── logs.rs
-│   │   │   │   └── drain.rs
-│   │   │   ├── server.rs
-│   │   │   └── reconciler.rs
-│   │   └── tests/
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       └── cli/
+│   │           ├── mod.rs           StateCommand
+│   │           ├── list.rs          syfrah state list
+│   │           ├── get.rs           syfrah state get
+│   │           └── drop.rs          syfrah state drop
 │   │
-│   ├── compute/                     Firecracker microVMs
-│   │   ├── Cargo.toml               crate: syfrah-compute
-│   │   ├── README.md
-│   │   ├── src/
-│   │   │   ├── lib.rs
-│   │   │   ├── cli/
-│   │   │   │   ├── mod.rs           VmCommand
-│   │   │   │   ├── create.rs
-│   │   │   │   ├── list.rs
-│   │   │   │   ├── start.rs
-│   │   │   │   ├── stop.rs
-│   │   │   │   ├── reboot.rs
-│   │   │   │   ├── delete.rs
-│   │   │   │   └── ssh.rs
-│   │   │   ├── firecracker.rs
-│   │   │   ├── jailer.rs
-│   │   │   └── images.rs
-│   │   └── tests/
-│   │
-│   ├── storage/                     ZeroFS + S3
-│   │   ├── Cargo.toml               crate: syfrah-storage
-│   │   ├── README.md
-│   │   ├── src/
-│   │   │   ├── lib.rs
-│   │   │   ├── cli/
-│   │   │   │   ├── mod.rs           VolumeCommand
-│   │   │   │   ├── create.rs
-│   │   │   │   ├── list.rs
-│   │   │   │   ├── attach.rs
-│   │   │   │   ├── detach.rs
-│   │   │   │   ├── delete.rs
-│   │   │   │   └── snapshot.rs
-│   │   │   ├── zerofs.rs
-│   │   │   └── s3.rs
-│   │   └── tests/
-│   │
-│   ├── overlay/                     VXLAN, VPC, SG, DNS
-│   │   ├── Cargo.toml               crate: syfrah-overlay
-│   │   ├── README.md
-│   │   ├── src/
-│   │   │   ├── lib.rs
-│   │   │   ├── cli/
-│   │   │   │   ├── mod.rs           VpcCommand, SubnetCommand, SgCommand
-│   │   │   │   ├── vpc_create.rs
-│   │   │   │   ├── vpc_list.rs
-│   │   │   │   ├── vpc_delete.rs
-│   │   │   │   ├── vpc_peer.rs
-│   │   │   │   ├── subnet_create.rs
-│   │   │   │   ├── subnet_list.rs
-│   │   │   │   ├── sg_create.rs
-│   │   │   │   ├── sg_list.rs
-│   │   │   │   ├── sg_add_rule.rs
-│   │   │   │   └── sg_remove_rule.rs
-│   │   │   ├── vxlan.rs
-│   │   │   ├── bridge.rs
-│   │   │   ├── fdb.rs
-│   │   │   ├── firewall.rs
-│   │   │   ├── ipam.rs
-│   │   │   ├── routing.rs
-│   │   │   └── dns.rs
-│   │   └── tests/
-│   │
-│   ├── controlplane/                Raft + gossip + scheduler + API
-│   │   ├── Cargo.toml               crate: syfrah-controlplane
-│   │   ├── README.md
-│   │   ├── src/
-│   │   │   ├── lib.rs
-│   │   │   ├── raft/
-│   │   │   │   ├── mod.rs
-│   │   │   │   ├── store.rs
-│   │   │   │   ├── network.rs
-│   │   │   │   └── state_machine.rs
-│   │   │   ├── gossip/
-│   │   │   │   ├── mod.rs
-│   │   │   │   └── node_health.rs
-│   │   │   ├── scheduler.rs
-│   │   │   ├── reconciler.rs
-│   │   │   └── api/
-│   │   │       ├── mod.rs
-│   │   │       ├── server.rs
-│   │   │       └── handlers.rs
-│   │   └── tests/
-│   │
-│   ├── org/                         Org, projects, environments
-│   │   ├── Cargo.toml               crate: syfrah-org
-│   │   ├── README.md
-│   │   ├── src/
-│   │   │   ├── lib.rs
-│   │   │   ├── cli/
-│   │   │   │   ├── mod.rs           OrgCommand, ProjectCommand, EnvCommand
-│   │   │   │   ├── org_create.rs
-│   │   │   │   ├── org_list.rs
-│   │   │   │   ├── org_delete.rs
-│   │   │   │   ├── project_create.rs
-│   │   │   │   ├── project_list.rs
-│   │   │   │   ├── project_delete.rs
-│   │   │   │   ├── env_create.rs
-│   │   │   │   ├── env_list.rs
-│   │   │   │   ├── env_update.rs
-│   │   │   │   └── env_destroy.rs
-│   │   │   └── types.rs
-│   │   └── tests/
-│   │
-│   ├── iam/                         Users, roles, API keys
-│   │   ├── Cargo.toml               crate: syfrah-iam
-│   │   ├── README.md
-│   │   ├── src/
-│   │   │   ├── lib.rs
-│   │   │   ├── cli/
-│   │   │   │   ├── mod.rs           UserCommand, IamCommand, ApikeyCommand
-│   │   │   │   ├── user_create.rs
-│   │   │   │   ├── user_list.rs
-│   │   │   │   ├── user_disable.rs
-│   │   │   │   ├── iam_assign.rs
-│   │   │   │   ├── iam_list.rs
-│   │   │   │   ├── iam_revoke.rs
-│   │   │   │   ├── apikey_create.rs
-│   │   │   │   ├── apikey_list.rs
-│   │   │   │   ├── apikey_rotate.rs
-│   │   │   │   ├── apikey_delete.rs
-│   │   │   │   ├── login.rs
-│   │   │   │   └── logout.rs
-│   │   │   ├── roles.rs
-│   │   │   ├── tokens.rs
-│   │   │   └── auth.rs
-│   │   └── tests/
-│   │
-│   └── products/                    Product orchestration
-│       ├── Cargo.toml               crate: syfrah-products
-│       ├── README.md
-│       └── src/
-│           ├── lib.rs
-│           └── ...
+│   ├── forge/                       Per-node control (planned, README only)
+│   ├── compute/                     Firecracker microVMs (planned, README only)
+│   ├── storage/                     ZeroFS + S3 (planned, README only)
+│   ├── overlay/                     VXLAN, VPC, SG, DNS (planned, README only)
+│   ├── controlplane/                Raft + gossip (planned, README only)
+│   ├── org/                         Org model (planned, README only)
+│   ├── iam/                         Users, roles, API keys (planned, README only)
+│   └── products/                    Product orchestration (planned, README only)
 │
 ├── bin/
 │   └── syfrah/
 │       ├── Cargo.toml               Binary — composes all layers
 │       └── src/
-│           └── main.rs              Imports all CLIs, zero logic
+│           ├── main.rs              Imports CLIs from fabric + state, dispatches
+│           └── update.rs            Self-update logic
+│
+├── tests/
+│   ├── README.md                    Test overview
+│   ├── helpers/mod.rs               Placeholder for Rust E2E helpers
+│   └── e2e/
+│       ├── Dockerfile               Docker image for E2E
+│       ├── run.sh                   E2E orchestrator
+│       ├── lib.sh                   Shared shell functions
+│       └── scenarios/               40+ shell-script E2E scenarios
 │
 ├── handbook/
-│   ├── state-and-reconciliation.md  Cross-cutting: reconciliation, phases
-│   └── zones-and-regions.md         Cross-cutting: topology metadata
+│   ├── ARCHITECTURE.md              Global architecture overview
+│   ├── cli.md                       CLI command tree
+│   ├── testing.md                   Testing strategy
+│   ├── repository.md                This file
+│   ├── state-and-reconciliation.md  State ownership, reconciliation (planned)
+│   ├── zones-and-regions.md         Topology metadata
+│   └── ...
 │
-├── ARCHITECTURE.md                  Global overview
 ├── CLAUDE.md                        Build instructions
 └── IDEA.md                          Project vision
 ```
 
 ## Binary composition
 
-The binary crate (`bin/syfrah/`) imports CLI commands from every layer and builds the clap tree. It has **zero business logic**.
+The binary crate (`bin/syfrah/`) imports CLI commands from implemented layers and builds the clap tree. It has **zero business logic**.
+
+Currently it imports from `syfrah-fabric` and `syfrah-state`. As new layers are implemented, their CLI commands will be added here.
 
 ```rust
-// bin/syfrah/src/main.rs
+// bin/syfrah/src/main.rs (simplified — see actual file for full implementation)
 
-use clap::{Parser, Subcommand};
+use syfrah_fabric::cli;
+use syfrah_state::cli::StateCommand;
 
-use syfrah_fabric::cli::FabricCommand;
-use syfrah_forge::cli::ForgeCommand;
-use syfrah_compute::cli::VmCommand;
-use syfrah_storage::cli::VolumeCommand;
-use syfrah_overlay::cli::{VpcCommand, SubnetCommand, SgCommand};
-use syfrah_org::cli::{OrgCommand, ProjectCommand, EnvCommand};
-use syfrah_iam::cli::{UserCommand, IamCommand, ApikeyCommand, LoginArgs};
-
-#[derive(Parser)]
-#[command(name = "syfrah", version)]
-struct Cli {
-    #[command(subcommand)]
-    command: Commands,
-}
-
-#[derive(Subcommand)]
 enum Commands {
-    // ── Infrastructure (operator, node-scoped) ──
     /// Manage the WireGuard fabric mesh
-    Fabric { #[command(subcommand)] command: FabricCommand },
-    /// Per-node debug and operations
-    Forge { #[command(subcommand)] command: ForgeCommand },
-
-    // ── Resources (tenant, cluster-scoped) ──
-    /// Manage organizations
-    Org { #[command(subcommand)] command: OrgCommand },
-    /// Manage projects
-    Project { #[command(subcommand)] command: ProjectCommand },
-    /// Manage environments
-    Env { #[command(subcommand)] command: EnvCommand },
-    /// Manage virtual machines
-    Vm { #[command(subcommand)] command: VmCommand },
-    /// Manage VPCs
-    Vpc { #[command(subcommand)] command: VpcCommand },
-    /// Manage subnets
-    Subnet { #[command(subcommand)] command: SubnetCommand },
-    /// Manage security groups
-    Sg { #[command(subcommand)] command: SgCommand },
-    /// Manage volumes
-    Volume { #[command(subcommand)] command: VolumeCommand },
-
-    // ── Identity ──
-    /// Manage users
-    User { #[command(subcommand)] command: UserCommand },
-    /// Manage role assignments
-    Iam { #[command(subcommand)] command: IamCommand },
-    /// Manage API keys
-    Apikey { #[command(subcommand)] command: ApikeyCommand },
-    /// Log in
-    Login(LoginArgs),
-    /// Log out
-    Logout,
+    Fabric { command: FabricCommand },
+    /// Inspect and manage layer state databases
+    State { command: StateCommand },
+    /// Update syfrah to the latest release
+    Update { check: bool },
 }
 ```
+
+As more layers are implemented, the binary will grow to include all namespaces (forge, org, vm, vpc, etc.) as shown in the planned CLI tree.
 
 ## Dependency graph
 
 Lower layers never depend on higher layers. `core` is the foundation.
 
+### Current (implemented)
+
 ```
     syfrah-core             ← depends on nothing (foundation)
     syfrah-fabric           ← depends on core
+    syfrah-state            ← depends on nothing (standalone state inspection)
+    bin/syfrah              ← depends on fabric, state
+```
+
+### Planned (full vision)
+
+```
+    syfrah-core             ← depends on nothing (foundation)
+    syfrah-fabric           ← depends on core
+    syfrah-state            ← depends on nothing
     syfrah-org              ← depends on core
     syfrah-iam              ← depends on core, org
     syfrah-compute          ← depends on core, fabric
