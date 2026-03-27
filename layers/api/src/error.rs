@@ -15,6 +15,7 @@ pub const STATE_STORE_UNAVAILABLE: &str = "STATE_STORE_UNAVAILABLE";
 pub const STATE_CONFLICT: &str = "STATE_CONFLICT";
 pub const AUTH_UNAUTHORIZED: &str = "AUTH_UNAUTHORIZED";
 pub const AUTH_FORBIDDEN: &str = "AUTH_FORBIDDEN";
+pub const RESOURCE_EXHAUSTED: &str = "RESOURCE_EXHAUSTED";
 pub const INTERNAL_ERROR: &str = "INTERNAL_ERROR";
 
 // ---------------------------------------------------------------------------
@@ -175,6 +176,7 @@ mod tests {
             STATE_CONFLICT,
             AUTH_UNAUTHORIZED,
             AUTH_FORBIDDEN,
+            RESOURCE_EXHAUSTED,
             INTERNAL_ERROR,
         ];
         for code in codes {
