@@ -369,6 +369,15 @@ fn is_idempotent_ok(status: u16, operation: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::{MockChServer, MockResponse};
+    use tempfile::TempDir;
+
+    /// Helper: create a temp dir and return (dir, socket_path).
+    fn temp_socket() -> (TempDir, PathBuf) {
+        let dir = TempDir::new().expect("failed to create temp dir");
+        let sock = dir.path().join("api.sock");
+        (dir, sock)
+    }
 
     // ── Idempotence truth table ──────────────────────────────────────
 
@@ -409,7 +418,6 @@ mod tests {
 
     #[test]
     fn create_is_not_idempotent() {
-        // 409 on create is an error, not a no-op.
         assert!(!is_idempotent_ok(409, "create"));
     }
 
@@ -445,5 +453,363 @@ mod tests {
         let client = ChClient::new(PathBuf::from("/tmp/nonexistent-ch-test.sock"));
         let result = client.ping().await;
         assert!(matches!(result, Err(ClientError::SocketNotFound { .. })));
+    }
+
+    // ── ping tests ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn ping_returns_true_on_200() {
+        let (_dir, sock) = temp_socket();
+        let mut mock = MockChServer::new(&sock);
+        mock.route(
+            "GET",
+            "/vmm.ping",
+            MockResponse::ok_json(r#"{"pong":true}"#),
+        );
+        mock.start().await;
+
+        let client = ChClient::new(sock);
+        let result = client.ping().await.expect("ping should succeed");
+        assert!(result);
+        mock.shutdown();
+    }
+
+    #[tokio::test]
+    async fn ping_socket_not_found() {
+        let dir = TempDir::new().unwrap();
+        let sock = dir.path().join("nonexistent.sock");
+        let client = ChClient::new(sock);
+        let err = client.ping().await.unwrap_err();
+        assert!(matches!(err, ClientError::SocketNotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn ping_timeout() {
+        let (_dir, sock) = temp_socket();
+        let mut mock = MockChServer::new(&sock);
+        mock.route(
+            "GET",
+            "/vmm.ping",
+            MockResponse::delayed(Duration::from_secs(5)),
+        );
+        mock.start().await;
+
+        let client = ChClient::with_timeout(sock, Duration::from_secs(1));
+        let err = client.ping().await.unwrap_err();
+        assert!(matches!(err, ClientError::Timeout { .. }));
+        mock.shutdown();
+    }
+
+    // ── info tests ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn info_returns_parsed_json() {
+        let (_dir, sock) = temp_socket();
+        let mut mock = MockChServer::new(&sock);
+        let vm_json = r#"{"state":"Running","vcpus":4,"memory":1073741824}"#;
+        mock.route("GET", "/vm.info", MockResponse::ok_json(vm_json));
+        mock.start().await;
+
+        let client = ChClient::new(sock);
+        let info = client.info().await.expect("info should succeed");
+        assert_eq!(info["state"], "Running");
+        assert_eq!(info["vcpus"], 4);
+        mock.shutdown();
+    }
+
+    #[tokio::test]
+    async fn info_garbage_body_returns_invalid_response() {
+        let (_dir, sock) = temp_socket();
+        let mut mock = MockChServer::new(&sock);
+        mock.route(
+            "GET",
+            "/vm.info",
+            MockResponse::ok_json("this is not json {{{{"),
+        );
+        mock.start().await;
+
+        let client = ChClient::new(sock);
+        let err = client.info().await.unwrap_err();
+        assert!(matches!(err, ClientError::InvalidResponse { .. }));
+        mock.shutdown();
+    }
+
+    // ── create tests ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn create_returns_ok_on_204() {
+        let (_dir, sock) = temp_socket();
+        let mut mock = MockChServer::new(&sock);
+        mock.route("PUT", "/vm.create", MockResponse::no_content());
+        mock.start().await;
+
+        let client = ChClient::new(sock);
+        let config = serde_json::json!({"kernel": "/vmlinux"});
+        client.create(config).await.expect("create should succeed");
+        mock.shutdown();
+    }
+
+    #[tokio::test]
+    async fn create_409_is_error_not_idempotent() {
+        let (_dir, sock) = temp_socket();
+        let mut mock = MockChServer::new(&sock);
+        mock.route("PUT", "/vm.create", MockResponse::error(409));
+        mock.start().await;
+
+        let client = ChClient::new(sock);
+        let config = serde_json::json!({"kernel": "/vmlinux"});
+        let err = client.create(config).await.unwrap_err();
+        assert!(matches!(
+            err,
+            ClientError::UnexpectedStatus { status: 409, .. }
+        ));
+        mock.shutdown();
+    }
+
+    // ── boot tests ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn boot_returns_ok_on_204() {
+        let (_dir, sock) = temp_socket();
+        let mut mock = MockChServer::new(&sock);
+        mock.route("PUT", "/vm.boot", MockResponse::no_content());
+        mock.start().await;
+
+        let client = ChClient::new(sock);
+        client.boot().await.expect("boot should succeed");
+        mock.shutdown();
+    }
+
+    #[tokio::test]
+    async fn boot_404_vm_not_created_is_error() {
+        let (_dir, sock) = temp_socket();
+        let mut mock = MockChServer::new(&sock);
+        mock.route("PUT", "/vm.boot", MockResponse::error(404));
+        mock.start().await;
+
+        let client = ChClient::new(sock);
+        let err = client.boot().await.unwrap_err();
+        assert!(matches!(
+            err,
+            ClientError::UnexpectedStatus { status: 404, .. }
+        ));
+        mock.shutdown();
+    }
+
+    #[tokio::test]
+    async fn boot_409_already_booted_is_idempotent_ok() {
+        let (_dir, sock) = temp_socket();
+        let mut mock = MockChServer::new(&sock);
+        mock.route("PUT", "/vm.boot", MockResponse::error(409));
+        mock.start().await;
+
+        let client = ChClient::new(sock);
+        client
+            .boot()
+            .await
+            .expect("boot 409 should be treated as success");
+        mock.shutdown();
+    }
+
+    // ── shutdown tests ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn shutdown_graceful_returns_ok_on_204() {
+        let (_dir, sock) = temp_socket();
+        let mut mock = MockChServer::new(&sock);
+        mock.route("PUT", "/vm.shutdown", MockResponse::no_content());
+        mock.start().await;
+
+        let client = ChClient::new(sock);
+        client
+            .shutdown_graceful()
+            .await
+            .expect("shutdown should succeed");
+        mock.shutdown();
+    }
+
+    #[tokio::test]
+    async fn shutdown_graceful_404_already_stopped_is_idempotent_ok() {
+        let (_dir, sock) = temp_socket();
+        let mut mock = MockChServer::new(&sock);
+        mock.route("PUT", "/vm.shutdown", MockResponse::error(404));
+        mock.start().await;
+
+        let client = ChClient::new(sock);
+        client
+            .shutdown_graceful()
+            .await
+            .expect("shutdown 404 should be treated as success");
+        mock.shutdown();
+    }
+
+    // ── delete tests ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn delete_returns_ok_on_204() {
+        let (_dir, sock) = temp_socket();
+        let mut mock = MockChServer::new(&sock);
+        mock.route("PUT", "/vm.delete", MockResponse::no_content());
+        mock.start().await;
+
+        let client = ChClient::new(sock);
+        client.delete().await.expect("delete should succeed");
+        mock.shutdown();
+    }
+
+    #[tokio::test]
+    async fn delete_404_already_deleted_is_idempotent_ok() {
+        let (_dir, sock) = temp_socket();
+        let mut mock = MockChServer::new(&sock);
+        mock.route("PUT", "/vm.delete", MockResponse::error(404));
+        mock.start().await;
+
+        let client = ChClient::new(sock);
+        client
+            .delete()
+            .await
+            .expect("delete 404 should be treated as success");
+        mock.shutdown();
+    }
+
+    // ── resize tests ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn resize_returns_ok_on_204() {
+        let (_dir, sock) = temp_socket();
+        let mut mock = MockChServer::new(&sock);
+        mock.route("PUT", "/vm.resize", MockResponse::no_content());
+        mock.start().await;
+
+        let client = ChClient::new(sock);
+        client
+            .resize(Some(4), Some(1_073_741_824))
+            .await
+            .expect("resize should succeed");
+        mock.shutdown();
+    }
+
+    #[tokio::test]
+    async fn resize_sends_correct_json_body() {
+        let (_dir, sock) = temp_socket();
+        let mut mock = MockChServer::new(&sock);
+        mock.route("PUT", "/vm.resize", MockResponse::no_content());
+        mock.start().await;
+
+        let client = ChClient::new(sock);
+        client
+            .resize(Some(8), Some(2_147_483_648))
+            .await
+            .expect("resize should succeed");
+
+        let captured = mock
+            .captured_body("PUT", "/vm.resize")
+            .await
+            .expect("request body should be captured");
+        let json: serde_json::Value =
+            serde_json::from_str(&captured).expect("captured body should be valid JSON");
+        assert_eq!(json["desired_vcpus"], 8);
+        assert_eq!(json["desired_ram"], 2_147_483_648_u64);
+        mock.shutdown();
+    }
+
+    // ── counters tests ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn counters_returns_parsed_json() {
+        let (_dir, sock) = temp_socket();
+        let mut mock = MockChServer::new(&sock);
+        let counters_json = r#"{"vcpu":{"cycles":1000}}"#;
+        mock.route("GET", "/vm.counters", MockResponse::ok_json(counters_json));
+        mock.start().await;
+
+        let client = ChClient::new(sock);
+        let counters = client.counters().await.expect("counters should succeed");
+        assert_eq!(counters["vcpu"]["cycles"], 1000);
+        mock.shutdown();
+    }
+
+    // ── error handling tests ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn connection_refused_no_server_listening() {
+        let (_dir, sock) = temp_socket();
+        // Create the socket file so SocketNotFound is not triggered, but
+        // nobody is listening. We bind+close to leave a stale socket.
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        drop(listener);
+        // The socket file still exists but nobody is listening.
+        let client = ChClient::new(sock);
+        let err = client.ping().await.unwrap_err();
+        assert!(
+            matches!(err, ClientError::ConnectionRefused)
+                || matches!(err, ClientError::InvalidResponse { .. })
+        );
+    }
+
+    #[tokio::test]
+    async fn server_returns_500_unexpected_status() {
+        let (_dir, sock) = temp_socket();
+        let mut mock = MockChServer::new(&sock);
+        mock.route(
+            "GET",
+            "/vm.info",
+            MockResponse::error_with_body(500, r#"{"error":"internal"}"#),
+        );
+        mock.start().await;
+
+        let client = ChClient::new(sock);
+        let err = client.info().await.unwrap_err();
+        assert!(matches!(
+            err,
+            ClientError::UnexpectedStatus { status: 500, .. }
+        ));
+        mock.shutdown();
+    }
+
+    #[tokio::test]
+    async fn timeout_on_slow_server() {
+        let (_dir, sock) = temp_socket();
+        let mut mock = MockChServer::new(&sock);
+        mock.route(
+            "GET",
+            "/vm.info",
+            MockResponse::delayed(Duration::from_secs(5)),
+        );
+        mock.start().await;
+
+        let client = ChClient::with_timeout(sock, Duration::from_secs(1));
+        let err = client.info().await.unwrap_err();
+        assert!(matches!(err, ClientError::Timeout { .. }));
+        mock.shutdown();
+    }
+
+    // ── concurrent requests ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn concurrent_clients_both_succeed() {
+        let (_dir, sock) = temp_socket();
+        let mut mock = MockChServer::new(&sock);
+        mock.route(
+            "GET",
+            "/vmm.ping",
+            MockResponse::ok_json(r#"{"pong":true}"#),
+        );
+        mock.start().await;
+
+        let sock_path = sock.clone();
+        let (r1, r2) = tokio::join!(
+            async {
+                let c = ChClient::new(sock_path.clone());
+                c.ping().await
+            },
+            async {
+                let c = ChClient::new(sock.clone());
+                c.ping().await
+            },
+        );
+        assert!(r1.unwrap());
+        assert!(r2.unwrap());
+        mock.shutdown();
     }
 }
