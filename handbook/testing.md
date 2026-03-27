@@ -320,12 +320,64 @@ Both setups run the same scenarios from `tests/e2e/scenarios/` via the same `run
 | **core** | Types, validation, crypto, addressing | Serialization roundtrips | -- |
 | **fabric** | Key generation, address derivation | WireGuard interface (root), peering protocol, state persistence | Multi-node mesh, connectivity, rejoin, secret rotation, stress tests |
 | **state** | -- | -- | `syfrah state list/get/drop` |
-| **compute** (planned) | VM spec validation | Cloud Hypervisor VM lifecycle (root) | VM create/start/stop/delete |
+| **compute** | VM spec validation, process manager | Cloud Hypervisor VM lifecycle (root) | Docker: 70-78 (fake CH), KVM: `e2e_kvm.rs` (`#[ignore]`d) |
 | **storage** (planned) | Volume spec validation | ZeroFS NBD management (root) | Volume attach, detach, migrate |
 | **overlay** (planned) | IPAM allocation, MAC derivation | Bridge/VXLAN creation (root), nftables rules (root) | VPC isolation, cross-node connectivity |
 | **controlplane** (planned) | Scheduler scoring, state machine | Raft consensus (multi-instance) | Leader election, failover |
 | **org** (planned) | Name validation, hierarchy logic | -- | Full org/project/env lifecycle |
 | **iam** (planned) | Role permissions, key hashing | -- | Auth flow, API key scoping |
+
+## Compute E2E tests
+
+Compute has two E2E test suites:
+
+### Docker E2E (CI — no KVM required)
+
+Shell-script scenarios in `tests/e2e/scenarios/70_compute_*.sh` that use a fake Cloud Hypervisor (`tests/e2e/fake-cloud-hypervisor.py`) to test the full syfrah binary end-to-end inside Docker containers. These run in CI alongside the fabric and UX E2E tests.
+
+```bash
+./tests/e2e/run.sh compute          # run compute scenarios (70-78)
+./tests/e2e/run.sh 70_compute       # run a single scenario
+```
+
+Compute helpers in `lib.sh`: `create_vm()`, `list_vms()`, `get_vm()`, `start_vm()`, `stop_vm()`, `delete_vm()`, `assert_vm_phase()`, `assert_vm_count()`, `wait_for_vm_phase()`.
+
+### KVM E2E (local only — requires real hardware)
+
+Rust integration tests in `layers/compute/tests/e2e_kvm.rs` that exercise real Cloud Hypervisor VMs on a KVM-capable host. All tests are `#[ignore]`d so they never run in CI.
+
+**Setup:**
+
+```bash
+# 1. Download test assets (kernel + rootfs)
+./scripts/setup-compute-e2e.sh
+
+# 2. Set environment variables
+export SYFRAH_E2E_KERNEL=/tmp/syfrah-e2e-assets/hypervisor-fw
+export SYFRAH_E2E_ROOTFS=/tmp/syfrah-e2e-assets/rootfs.raw
+
+# 3. Run the ignored tests (requires root + KVM)
+sudo -E cargo test -p syfrah-compute -- --ignored
+```
+
+**Test scenarios (14 tests):**
+
+| Test | What it covers |
+|---|---|
+| `test_create_boot_shutdown_delete` | Full VM lifecycle happy path |
+| `test_boot_reboot` | Reboot and return to Running |
+| `test_boot_pause_resume` | Pause/resume transitions |
+| `test_daemon_restart_recovery` | Reconnect after daemon death |
+| `test_daemon_restart_with_dead_vm` | Reconnect with dead CH process |
+| `test_cpu_resize` | Hot-add vCPUs |
+| `test_memory_resize` | Hot-add memory |
+| `test_disk_attach` | Hot-attach disk image |
+| `test_disk_detach` | Hot-detach disk image |
+| `test_gpu_passthrough` | GPU passthrough (conditional) |
+| `test_binary_version_mismatch` | CH version mismatch detection |
+| `test_missing_kernel` | Error path: missing kernel |
+| `test_missing_image` | Error path: missing rootfs |
+| `test_multiple_vms_concurrent` | 5 VMs created concurrently |
 
 ## Conventions
 

@@ -2,6 +2,7 @@ pub mod binary;
 pub mod client;
 pub mod config;
 pub mod error;
+pub mod handler;
 pub mod manager;
 pub mod phase;
 pub mod preflight;
