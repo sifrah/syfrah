@@ -16,7 +16,7 @@ The forge is the bridge between the control plane and the local compute stack. I
     │          http://[fd12:3456:...:node]:7100/               │
     ├─────────────────────────────────────────────────────────┤
     │                  Internal Compute Stack                   │
-    │       libkrun      │  Networking  │  Storage             │
+    │  Cloud Hypervisor│  Networking  │  Storage             │
     │       (microVMs)   │  (bridges,   │  (volumes,           │
     │                    │   VXLAN)     │   snapshots)         │
     ├─────────────────────────────────────────────────────────┤
@@ -86,9 +86,9 @@ Each node runs three layers, from bottom to top:
     │  ┌────────────┐ ┌───────────┐ ┌──────────────┐  │
     │  │ Compute    │ │ Network   │ │ Storage      │  │
     │  │            │ │           │ │              │  │
-    │  │ libkrun    │ │ bridges   │ │ local disks  │  │
-    │  │ microVMs   │ │ tap devs  │ │ volumes      │  │
-    │  │ lifecycle  │ │ VXLAN     │ │ snapshots    │  │
+    │  │ Cloud      │ │ bridges   │ │ local disks  │  │
+    │  │ Hypervisor │ │ tap devs  │ │ volumes      │  │
+    │  │ microVMs   │ │ VXLAN     │ │ snapshots    │  │
     │  └────────────┘ └───────────┘ └──────────────┘  │
     ├────────────────────────────────────────────────┤
     │                   Fabric                         │
@@ -98,7 +98,7 @@ Each node runs three layers, from bottom to top:
 
 **Forge API** — The REST layer. Receives requests from the control plane (or from operators via curl). Translates API calls into operations on the internal compute stack.
 
-**Internal Compute Stack** — The actual machinery: libkrun for VMs, Linux bridges and tap devices for networking, local disks for storage. This layer is never exposed directly — it's only accessible through the forge.
+**Internal Compute Stack** — The actual machinery: Cloud Hypervisor for VMs (one process per VM, managed via REST API), Linux bridges and tap devices for networking, local disks for storage. This layer is never exposed directly — it's only accessible through the forge.
 
 **Fabric** — The transport. Provides encrypted, authenticated connectivity between nodes.
 
@@ -201,7 +201,7 @@ The forge is **stateless in terms of intent** — it doesn't persist "desired st
       "id": "vm-a1b2c3",                       Allocate resources
       "vcpu": 2,                                Create rootfs volume
       "memory_mb": 2048,                        Create tap interface
-      "rootfs_image": "ubuntu-24.04",           Configure libkrun VM
+      "rootfs_image": "ubuntu-24.04",           Spawn cloud-hypervisor
       "network": {                              Start microVM
         "vpc_id": "vpc-xyz",
         "subnet_id": "subnet-1",            ◄── 201 Created
@@ -227,12 +227,14 @@ The forge is **stateless in terms of intent** — it doesn't persist "desired st
 
 The forge delegates to the internal compute stack. This stack is not exposed via API — it's a set of local subsystems managed by the agent:
 
-### Compute subsystem (libkrun)
+### Compute subsystem (Cloud Hypervisor)
 
-- Manages libkrun microVM instances (embedded in the forge process)
+- Manages Cloud Hypervisor child processes (one per VM, managed via REST API)
 - Handles VM lifecycle: create, start, stop, delete
+- VMs survive forge restarts (separate processes, reconnected on startup)
 - Manages kernel images and root filesystem images
 - Configures vCPU count, memory, and boot parameters
+- Supports GPU passthrough via VFIO for CUDA/ML workloads
 
 ### Network subsystem
 
@@ -292,7 +294,7 @@ Future: the control plane will be the only caller of forge APIs. Access control 
 
 ### Blast radius
 
-The forge has root-level access to the local machine (it manages WireGuard, libkrun VMs, bridges, volumes). A compromised agent means a compromised node. This is inherent to the hypervisor agent model — same as AWS Nitro, GCP Borglet, or any host agent.
+The forge has root-level access to the local machine (it manages WireGuard, Cloud Hypervisor VMs, bridges, volumes). A compromised agent means a compromised node. This is inherent to the hypervisor agent model — same as AWS Nitro, GCP Borglet, or any host agent.
 
 Mitigations:
 - Agent bound to fabric only (no internet exposure)
@@ -337,4 +339,4 @@ This makes the forge immediately useful even before the control plane exists. An
 | Protocol | Custom binary | Protobuf/gRPC | REST/HTTP + JSON |
 | Encryption | Hardware-level | Internal network | WireGuard (ChaCha20) |
 | Reachability | Internal only | Internal only | Fabric only (syfrah0) |
-| Manages | EC2 instances | Borg tasks/containers | libkrun microVMs |
+| Manages | EC2 instances | Borg tasks/containers | Cloud Hypervisor microVMs |
