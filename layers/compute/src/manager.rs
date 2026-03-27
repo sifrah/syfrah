@@ -372,6 +372,32 @@ impl VmManager {
         );
     }
 
+    // -- Version report -------------------------------------------------------
+
+    /// Build a version report comparing the disk binary against running VMs.
+    ///
+    /// After reconnect, some VMs may be running an older CH version (they were
+    /// spawned before the binary on disk was updated). This report surfaces
+    /// those mismatches so forge can log warnings and operators can decide
+    /// when to rolling-restart.
+    pub async fn version_report(&self) -> crate::binary::VersionReport {
+        // Collect (vm_id, ch_binary_version) from all tracked VMs.
+        let snapshot: Vec<(String, Arc<Mutex<VmRuntimeState>>)> = {
+            let map = self.vms.read().await;
+            map.iter()
+                .map(|(k, v)| (k.clone(), Arc::clone(v)))
+                .collect()
+        };
+
+        let mut vm_versions = Vec::with_capacity(snapshot.len());
+        for (id, vm_arc) in snapshot {
+            let guard = vm_arc.lock().await;
+            vm_versions.push((id, guard.ch_binary_version.clone()));
+        }
+
+        crate::binary::build_version_report(&self.ch_binary, &vm_versions)
+    }
+
     // -- Internal helpers -----------------------------------------------------
 
     /// Look up a VM by ID, returning its `Arc<Mutex<VmRuntimeState>>`.
