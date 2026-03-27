@@ -19,13 +19,13 @@ The long-term vision is to grow Syfrah into a full control plane that orchestrat
 | Layer | Crate | Status |
 |---|---|---|
 | **Core** | `syfrah-core` | Stable — types, crypto, IPv6 addressing |
-| **State** | `syfrah-state` | Stable — embedded persistence (redb) |
+| **State** (library) | `syfrah-state` | Stable — embedded persistence (redb), cross-cutting library used by all layers |
 | **Fabric** | `syfrah-fabric` | Stable — WireGuard mesh, peering, daemon, CLI |
 | Forge | — | Design phase |
 | Compute | — | Design phase |
 | Storage | — | Design phase |
 | Overlay | — | Design phase |
-| Control Plane | — | Design phase |
+| control plane | — | Design phase |
 | Org | — | Design phase |
 | IAM | — | Design phase |
 | Products | — | Design phase |
@@ -112,9 +112,9 @@ This creates an encrypted WireGuard mesh between the two servers. Each additiona
               └─────────────┘  └─────────────────┘
 ```
 
-**Core** provides pure types with no I/O: node identities, WireGuard keypairs, mesh secrets, and deterministic IPv6 address derivation (ULA /48 per mesh, /128 per node, derived from SHA-256 of the mesh secret and public key).
+**Core** provides pure types with no I/O: node identities, WireGuard keypairs, mesh secrets, and deterministic IPv6 address derivation (ULA /48 prefix per mesh derived from the mesh secret, /128 address per node derived from SHA-256 of the WireGuard public key).
 
-**State** wraps redb for crash-safe embedded persistence. Mesh state is stored in `~/.syfrah/fabric.redb` with a JSON backup at `~/.syfrah/state.json`.
+**State** wraps redb for crash-safe embedded persistence. Mesh state is stored in `~/.syfrah/fabric.redb`. A backward-compatible JSON export is maintained at `~/.syfrah/state.json` (debounced, best-effort).
 
 **Fabric** is the main layer. It manages:
 - A WireGuard interface (`syfrah0`) with a full-mesh topology

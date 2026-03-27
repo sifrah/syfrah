@@ -3,6 +3,8 @@ tags: [networking, wireguard, security, mesh]
 ---
 # Fabric
 
+The fabric layer manages the WireGuard mesh network. In Syfrah, "fabric" refers to the layer/module, "mesh" refers to the network it creates.
+
 ## What is the fabric?
 
 The **fabric** is Syfrah's infrastructure network. It connects all hypervisors (nodes) into a single encrypted mesh, regardless of where they are hosted — OVH, Hetzner, Scaleway, or any other provider.
@@ -74,6 +76,8 @@ Each node gets a deterministic IPv6 address derived from the mesh prefix and the
 ### TCP peering protocol
 
 Nodes discover each other through a manual peering process. A new node sends a join request to an existing node; the operator approves (manually or via a PIN), and the joining node receives the mesh secret, the peer list, and the mesh prefix. The new node is then announced to all existing members via encrypted peer announcements.
+
+Peer announcements are sent over TCP connections to each target node's peering port (default 51821), optionally upgraded to TLS when the mesh secret-derived TLS configuration is available. The announcement payload is a `PeerAnnounce` message containing the new peer's record encrypted with AES-256-GCM. Announcements use gossip-based dissemination: each node forwards to `max(3, ceil(log2(n)))` randomly chosen peers rather than broadcasting to all peers, achieving convergence in O(log n) rounds. A replay guard (timestamp + ciphertext deduplication) prevents infinite forwarding loops. For topology-aware meshes, announcements are sent in three waves: same-zone peers first, then same-region, then cross-region, with configurable concurrency and delays per wave.
 
 ### Mesh secret
 
@@ -233,6 +237,8 @@ The PIN mechanism allows unattended node enrollment. The operator starts peering
 
 The PIN is a 4-digit code (1000-9999) transmitted in the JoinRequest. It is designed for convenience during initial cluster bootstrap, not as a long-term security mechanism. Best practice: use PIN mode only during initial setup, then switch to manual approval.
 
+> **Security note:** A 4-digit PIN provides approximately 13 bits of entropy (~9000 possible values). This is intentionally low — the PIN is a convenience mechanism, not a strong authentication factor. It is protected by two mitigations: (1) the peering listener enforces rate limiting on PIN attempts to prevent brute-force attacks, and (2) each PIN is single-use (the peering session is consumed once a node joins successfully). For high-security environments, prefer manual approval (`syfrah peering` without `--pin`).
+
 ### Secret rotation
 
 If the mesh secret is compromised, the operator can rotate it:
@@ -243,7 +249,7 @@ syfrah rotate        # generate new secret, clear peer list
 syfrah start         # restart with new secret
 ```
 
-Rotation generates a new secret, recomputes the mesh prefix and node IPv6 address, and **clears all peers**. Every other node must rejoin with the new secret. This is a disruptive operation by design — it ensures a clean break from the compromised state.
+Rotation generates a new secret, recomputes the mesh prefix and node IPv6 address, and **broadcasts the new secret to all active peers**. Each peer applies the new secret automatically (re-derives encryption keys, prefix, and IPv6 address). The response includes `peers_notified` and `peers_failed` counts. Peers that were unreachable during the broadcast must be re-joined manually.
 
 ### Threat model summary
 
@@ -381,7 +387,7 @@ Future work could address these limits with parallel announcements, database-bac
 
 ### Metrics
 
-The daemon tracks four counters, persisted every 30 seconds to `~/.syfrah/state.json`:
+The daemon tracks four counters, persisted to `~/.syfrah/fabric.redb` (with a best-effort JSON export to `~/.syfrah/state.json`):
 
 | Metric | Description |
 |---|---|
@@ -396,6 +402,14 @@ The daemon tracks four counters, persisted every 30 seconds to `~/.syfrah/state.
 - **Last handshake** — time since last successful cryptographic handshake
 - **RX/TX bytes** — traffic counters per peer
 - **Endpoint** — current resolved endpoint address
+
+### Event log
+
+The daemon maintains a persistent event log stored in the redb database (`~/.syfrah/fabric.redb`) in an `events` table. Events are written with auto-incrementing keys and include a timestamp, event type, and optional peer name, endpoint, and details.
+
+The event log uses a **ring buffer retention policy**: when the number of stored events exceeds a configurable maximum (default 100, set via `[events] max_events` in `config.toml`), the oldest entries are pruned automatically. Event recording is best-effort — failures are logged as warnings but never crash the daemon.
+
+Tracked event types include: daemon lifecycle, join requests (received, accepted, rejected, timed out), peer state changes (active, unreachable, recovered, removed, updated), reconciliation and health check runs, announcement status, configuration reloads, zone health transitions, and secret rotations.
 
 ### Logging
 
@@ -464,3 +478,18 @@ Region and zone are displayed in CLI output:
 ### Design notes
 
 The fabric remains a flat full-mesh WireGuard network connecting all nodes regardless of region or zone. Region and zone are purely logical labels stored in the node state and propagated to peers. They do not affect routing or tunnel topology at the fabric layer — it is the overlay and control plane that consume this metadata for topology-aware decisions.
+
+For the full zones and regions design (including placement rules, failure domains, and topology-aware overlay routing), see [handbook/zones-and-regions.md](../../handbook/zones-and-regions.md).
+
+---
+
+## Glossary
+
+| Term | Definition |
+|------|------------|
+| **fabric** | The layer/module (`layers/fabric/`). Use "fabric" when referring to the crate, CLI subcommand, or layer. |
+| **mesh** | The WireGuard network that the fabric creates. Use "mesh" when referring to the network itself (e.g., "join the mesh", "mesh secret"). |
+| **node** | Any server running syfrah. A machine becomes a node when syfrah is installed and running, even before it connects to other nodes. |
+| **peer** | A node that has joined a mesh. Once a node completes the join ceremony, it becomes a peer of every other node in the mesh. |
+| **peering** | The subsystem that handles join requests and peer announcements (e.g., "start the peering listener", "stop peering"). |
+| **joining** | The act of a node joining the mesh (e.g., "the node is joining", "the join ceremony"). |
