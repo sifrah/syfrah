@@ -13,6 +13,7 @@ name = "syfrah"
 path = "src/main.rs"
 
 [dependencies]
+syfrah-compute = { path = "../../layers/compute" }
 syfrah-core = { path = "../../layers/core" }
 syfrah-fabric = { path = "../../layers/fabric" }
 syfrah-state = { path = "../../layers/state" }
