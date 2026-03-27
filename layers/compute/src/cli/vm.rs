@@ -448,15 +448,7 @@ mod tests {
     fn parse_create_vcpus_alias() {
         // The E2E tests use --vcpus (plural) as alias
         let cmd = parse(&[
-            "create",
-            "--name",
-            "alias-vm",
-            "--vcpus",
-            "4",
-            "--memory",
-            "1024",
-            "--image",
-            "alpine",
+            "create", "--name", "alias-vm", "--vcpus", "4", "--memory", "1024", "--image", "alpine",
         ]);
         match cmd {
             VmCommand::Create { vcpu, .. } => assert_eq!(vcpu, 4),

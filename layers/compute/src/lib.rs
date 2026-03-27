@@ -44,12 +44,12 @@ pub mod types;
 // -- Public re-exports for forge consumption ----------------------------------
 
 pub use binary::VersionReport;
+pub use control::{ComputeLayerHandler, ComputeRequest, ComputeResponse};
 pub use error::{
     ClientError, ComputeError, ConcurrencyError, ConfigError, PreflightError, ProcessError,
     TransitionError,
 };
 pub use events::emit;
-pub use control::{ComputeLayerHandler, ComputeRequest, ComputeResponse};
 pub use manager::{ComputeConfig, ReconnectSummary, VmManager};
 pub use phase::VmPhase;
 pub use types::{GpuMode, NetworkConfig, VmEvent, VmId, VmSpec, VmStatus, VolumeAttachment};
