@@ -250,6 +250,8 @@ Both binaries share the same command grammar wherever semantics overlap; differe
 
 ### API Keys
 
+> **Prefix convention:** `syf_sk_` = mesh secret (local to the node, never leaves it — used for WireGuard key derivation). `syf_key_` = API key (for external gateway access by laptop CLI, Terraform, SDKs). These are distinct credentials with different trust boundaries; do not confuse them.
+
 **Format:** `syf_key_{project_short_id}_{random_256bit_base58}`
 
 **Properties:**

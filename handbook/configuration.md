@@ -23,7 +23,9 @@ Controls the daemon's background loop timers.
 | `health_check_interval` | integer (seconds) | `60` | How often the daemon checks peer health via WireGuard handshake timestamps. |
 | `reconcile_interval` | integer (seconds) | `30` | How often the daemon reconciles WireGuard interface state with the peer list. |
 | `persist_interval` | integer (seconds) | `30` | How often the daemon writes in-memory state to `~/.syfrah/state.json`. |
-| `unreachable_timeout` | integer (seconds) | `300` | After this many seconds without a WireGuard handshake, a peer is marked unreachable. |
+| `unreachable_timeout` | integer (seconds) | `300` | After this many seconds without a WireGuard handshake, a peer is marked unreachable. Must be greater than `health_check_interval` (see note below). |
+
+> **Note:** `health_check_interval` must be less than `unreachable_timeout`. The health check runs periodically and compares each peer's last WireGuard handshake against the unreachable timeout. If `health_check_interval` were equal to or greater than `unreachable_timeout`, the daemon could miss the detection window entirely or detect unreachable peers with excessive delay. The defaults (60s check interval, 300s timeout) provide up to five health check opportunities before a peer is marked unreachable, giving a worst-case detection time of approximately 6 minutes (300s timeout + up to 60s until the next check).
 
 ### `[wireguard]`
 
@@ -43,6 +45,19 @@ Controls the TCP peering protocol used for join requests and peer announcements.
 | `exchange_timeout` | integer (seconds) | `30` | Timeout for individual peering protocol message exchanges. |
 | `max_concurrent_connections` | integer | `100` | Maximum number of simultaneous TCP peering connections the daemon accepts. |
 | `max_pending_joins` | integer | `100` | Maximum number of pending join requests the daemon holds before rejecting new ones. |
+
+> **Note:** The peering port (`peering_port`) is not set in `config.toml`. It is specified at mesh creation or join time via the `--peering-port` CLI flag (default: WireGuard port + 1) and persisted in the node's state database.
+
+### `[gateway]`
+
+Controls the dedicated gateway node role. When enabled, the node exposes the external REST/gRPC API with TLS. See [external-api.md](external-api.md) for full gateway documentation.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | boolean | `false` | Whether this node acts as a gateway. |
+| `bind_address` | string (ip:port) | `0.0.0.0:8443` | Socket address to bind the external API to. |
+| `tls_cert_path` | string (file path) | *(none)* | Path to a PEM-encoded TLS certificate. If omitted, a self-signed certificate is generated at startup. |
+| `tls_key_path` | string (file path) | *(none)* | Path to a PEM-encoded TLS private key. Required when `tls_cert_path` is set. |
 
 ### `[events]`
 
@@ -98,6 +113,12 @@ max_pending_joins = 100
 
 [events]
 max_events = 100
+
+[gateway]
+enabled = false
+bind_address = "0.0.0.0:8443"
+# tls_cert_path = "/etc/syfrah/tls/cert.pem"
+# tls_key_path  = "/etc/syfrah/tls/key.pem"
 
 [limits]
 max_peers = 1000

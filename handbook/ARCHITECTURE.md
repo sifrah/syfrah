@@ -239,6 +239,7 @@ Regions and availability zones are logical labels on nodes. They represent where
 - An AZ = an isolated group within a region (eu-west-1, eu-west-ovh)
 
 **Concept doc:** [`handbook/zones-and-regions.md`](zones-and-regions.md)
+**Fabric implementation:** [`layers/fabric/README.md` — Zones and Regions](../layers/fabric/README.md#zones-and-regions)
 
 ## How it all connects
 
@@ -420,15 +421,16 @@ The architecture assumes a hostile operational environment. Nodes are rented mac
 | Layer | Status | Notes |
 |---|---|---|
 | **Core** (`layers/core/`) | Implemented | Types, crypto, addressing, identity |
+| **State** (`layers/state/`) | Implemented | Cross-cutting library: embedded persistence (redb), state inspection CLI |
+| **API** (`layers/api/`) | Implemented | Cross-cutting library: error types, structured responses |
 | **Fabric** (`layers/fabric/`) | Implemented | WireGuard mesh, TCP peering, daemon, full CLI |
-| **State** (`layers/state/`) | Implemented | State inspection CLI (`syfrah state list/get/drop`) |
 | **Forge** (`layers/forge/`) | Planned | README only, no code |
 | **Compute** (`layers/compute/`) | Planned | README only, no code |
 | **Storage** (`layers/storage/`) | Planned | README only, no code |
 | **Overlay** (`layers/overlay/`) | Planned | README only, no code |
-| **Control Plane** (`layers/controlplane/`) | Planned | README only, no code |
-| **Organization** (`layers/org/`) | Planned | README only, no code |
+| **control plane** (`layers/controlplane/`) | Planned | README only, no code |
 | **IAM** (`layers/iam/`) | Planned | README only, no code |
+| **Organization** (`layers/org/`) | Planned | README only, no code |
 | **Products** (`layers/products/`) | Planned | README only, no code |
 
 Sections above describing Raft, gossip, forge reconciliation, compute, storage, overlay, org model, IAM, and cloud products reflect the **architectural plan**, not current functionality.
