@@ -54,6 +54,41 @@ get_last_updated() {
     fi
 }
 
+# Detect implementation status of a layer
+# Returns: "implemented", "stub", or "planned"
+detect_layer_status() {
+    local layer_name="$1"
+    local layer_dir="$REPO_ROOT/layers/$layer_name"
+    local lib_rs="$layer_dir/src/lib.rs"
+    local api_rs="$layer_dir/src/api.rs"
+
+    if [ -f "$lib_rs" ]; then
+        local line_count
+        line_count=$(wc -l < "$lib_rs")
+        if [ "$line_count" -gt 100 ]; then
+            echo "implemented"
+            return
+        fi
+    fi
+
+    if [ -f "$api_rs" ]; then
+        echo "stub"
+        return
+    fi
+
+    echo "planned"
+}
+
+# Return the badge string for a layer status
+status_badge() {
+    case "$1" in
+        implemented) echo "🟢 Implemented" ;;
+        stub)        echo "🔵 Stub" ;;
+        planned)     echo "⚪ Planned" ;;
+        *)           echo "⚪ Planned" ;;
+    esac
+}
+
 # Humanize a directory/file name: underscores/hyphens to spaces, title case
 humanize() {
     echo "$1" | sed 's/[_-]/ /g' | sed 's/\b\(.\)/\u\1/g' \
@@ -61,12 +96,14 @@ humanize() {
 }
 
 # Generate an MDX page from a markdown file
+# Args: src outdir title desc rel_src [badge]
 generate_page() {
     local src="$1"
     local outdir="$2"
     local title="$3"
     local desc="$4"
     local rel_src="$5"
+    local badge="${6:-}"
 
     mkdir -p "$outdir"
 
@@ -75,6 +112,12 @@ generate_page() {
 
     local last_updated
     last_updated=$(get_last_updated "$rel_src")
+
+    local badge_line=""
+    if [ -n "$badge" ]; then
+        badge_line="<p className=\"inline-block rounded-full bg-zinc-100 px-3 py-1 text-sm font-medium dark:bg-zinc-800\">${badge}</p>
+"
+    fi
 
     cat > "$outdir/page.mdx" << MDXEOF
 {/* AUTO-GENERATED from ${rel_src} — do not edit */}
@@ -86,7 +129,7 @@ export const metadata = {
 
 # ${title}
 
-<p className="text-sm text-gray-500">Last updated: ${last_updated}</p>
+${badge_line}<p className="text-sm text-gray-500">Last updated: ${last_updated}</p>
 
 ${content}
 MDXEOF
@@ -232,14 +275,33 @@ for scan_dir in "${SCAN_DIRS[@]}"; do
         fi
         title=$(extract_title "$md_file" "$fallback")
 
+        # Detect layer status badge if this is a layer page
+        page_badge=""
+        layer_status=""
+        if [ "$scan_dir" = "layers" ]; then
+            layer_name=""
+            if [ "$dir_inside" = "." ] && [ "$filename" = "README.md" ]; then
+                # This shouldn't happen (layers/README.md at root)
+                layer_name=""
+            elif [ "$dir_inside" != "." ]; then
+                layer_name="$(echo "$dir_inside" | cut -d/ -f1)"
+            else
+                layer_name=""
+            fi
+            if [ -n "$layer_name" ]; then
+                layer_status=$(detect_layer_status "$layer_name")
+                page_badge=$(status_badge "$layer_status")
+            fi
+        fi
+
         echo "  $local_path"
-        generate_page "$md_file" "$outdir" "$title" "$title" "$rel_path"
+        generate_page "$md_file" "$outdir" "$title" "$title" "$rel_path" "$page_badge"
 
         # Track for navigation
         # Determine the parent nav node for this file
         if [ "$filename" = "README.md" ]; then
             # This file IS the page for its directory
-            dir_readmes["$dir_inside"]="$title|$url_path"
+            dir_readmes["$dir_inside"]="$title|$url_path|$layer_status"
         else
             # Regular file: its parent is dir_inside
             name_no_ext="${filename%.md}"
@@ -285,8 +347,14 @@ for scan_dir in "${SCAN_DIRS[@]}"; do
                 info="${dir_readmes[.]:-}"
                 if [ -n "$info" ]; then
                     t="${info%%|*}"
-                    h="${info##*|}"
-                    entry="{\"title\":\"$t\",\"href\":\"$h\"}"
+                    rest="${info#*|}"
+                    h="${rest%%|*}"
+                    s="${rest##*|}"
+                    if [ -n "$s" ] && [ "$scan_dir" = "layers" ]; then
+                        entry="{\"title\":\"$t\",\"href\":\"$h\",\"status\":\"$s\"}"
+                    else
+                        entry="{\"title\":\"$t\",\"href\":\"$h\"}"
+                    fi
                     if [ -z "$top_level_links" ]; then
                         top_level_links="$entry"
                     else
@@ -318,9 +386,12 @@ for scan_dir in "${SCAN_DIRS[@]}"; do
 
                 # Build this top-level dir's nav entry with children
                 dir_info="${dir_readmes[$top_dir]:-}"
+                nav_status=""
                 if [ -n "$dir_info" ]; then
                     t="${dir_info%%|*}"
-                    h="${dir_info##*|}"
+                    rest="${dir_info#*|}"
+                    h="${rest%%|*}"
+                    nav_status="${rest##*|}"
                 else
                     t="$(humanize "$top_dir")"
                     h="/$scan_dir/$top_dir"
@@ -335,7 +406,8 @@ for scan_dir in "${SCAN_DIRS[@]}"; do
                     if [[ "$key" == "$top_dir/"* ]]; then
                         sub_info="${dir_readmes[$key]}"
                         st="${sub_info%%|*}"
-                        sh="${sub_info##*|}"
+                        sub_rest="${sub_info#*|}"
+                        sh="${sub_rest%%|*}"
                         sub_entry="{\"title\":\"$st\",\"href\":\"$sh\"}"
                         if [ -z "$children" ]; then
                             children="$sub_entry"
@@ -354,10 +426,16 @@ for scan_dir in "${SCAN_DIRS[@]}"; do
                     fi
                 fi
 
+                # Build status JSON fragment for layers
+                status_fragment=""
+                if [ -n "$nav_status" ] && [ "$scan_dir" = "layers" ]; then
+                    status_fragment=",\"status\":\"$nav_status\""
+                fi
+
                 if [ -n "$children" ]; then
-                    entry="{\"title\":\"$t\",\"href\":\"$h\",\"children\":[$children]}"
+                    entry="{\"title\":\"$t\",\"href\":\"$h\"${status_fragment},\"children\":[$children]}"
                 else
-                    entry="{\"title\":\"$t\",\"href\":\"$h\"}"
+                    entry="{\"title\":\"$t\",\"href\":\"$h\"${status_fragment}}"
                 fi
 
                 if [ -z "$top_level_links" ]; then
