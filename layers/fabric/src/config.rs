@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -7,6 +8,131 @@ fn syfrah_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".syfrah")
+}
+
+/// Default bind address for the gateway (public-facing API).
+const DEFAULT_GATEWAY_BIND: &str = "0.0.0.0:8443";
+
+/// Configuration for the dedicated gateway node role.
+///
+/// When enabled, the node exposes the gRPC/REST API on a public IP with TLS.
+/// When disabled (the default), no external API is exposed.
+///
+/// ```toml
+/// [gateway]
+/// enabled = true
+/// bind_address = "0.0.0.0:8443"
+/// tls_cert_path = "/etc/syfrah/tls/cert.pem"
+/// tls_key_path  = "/etc/syfrah/tls/key.pem"
+/// ```
+#[derive(Debug, Clone)]
+pub struct GatewayConfig {
+    /// Whether this node acts as a gateway.
+    pub enabled: bool,
+    /// Socket address to bind the external API to.
+    pub bind_address: SocketAddr,
+    /// Path to a PEM-encoded TLS certificate. If not set, a self-signed
+    /// certificate is generated at startup.
+    pub tls_cert_path: Option<PathBuf>,
+    /// Path to a PEM-encoded TLS private key. Required when `tls_cert_path`
+    /// is set; ignored when self-signed.
+    pub tls_key_path: Option<PathBuf>,
+}
+
+impl Default for GatewayConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind_address: DEFAULT_GATEWAY_BIND
+                .parse()
+                .expect("valid default gateway bind addr"),
+            tls_cert_path: None,
+            tls_key_path: None,
+        }
+    }
+}
+
+/// Load [`GatewayConfig`] from `~/.syfrah/config.toml`.
+///
+/// Returns the default (disabled) config if the file does not exist or has no
+/// `[gateway]` section.
+pub fn load_gateway_config() -> GatewayConfig {
+    let path = syfrah_dir().join("config.toml");
+
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return GatewayConfig::default(),
+    };
+
+    let file: ConfigFileGateway = match toml::from_str(&content) {
+        Ok(f) => f,
+        Err(_) => return GatewayConfig::default(),
+    };
+
+    let defaults = GatewayConfig::default();
+    let bind_address = file
+        .gateway
+        .bind_address
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(defaults.bind_address);
+
+    GatewayConfig {
+        enabled: file.gateway.enabled.unwrap_or(false),
+        bind_address,
+        tls_cert_path: file.gateway.tls_cert_path.map(PathBuf::from),
+        tls_key_path: file.gateway.tls_key_path.map(PathBuf::from),
+    }
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct GatewaySection {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    bind_address: Option<String>,
+    #[serde(default)]
+    tls_cert_path: Option<String>,
+    #[serde(default)]
+    tls_key_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ConfigFileGateway {
+    #[serde(default)]
+    gateway: GatewaySection,
+}
+
+/// Resolve TLS certificate and key for the gateway.
+///
+/// If operator-provided paths are given, reads and returns them.
+/// Otherwise, generates a self-signed certificate using `rcgen`.
+pub fn resolve_gateway_tls(
+    cert_path: Option<&Path>,
+    key_path: Option<&Path>,
+) -> Result<(Vec<u8>, Vec<u8>), String> {
+    match (cert_path, key_path) {
+        (Some(cp), Some(kp)) => {
+            let cert = std::fs::read(cp)
+                .map_err(|e| format!("failed to read TLS cert {}: {e}", cp.display()))?;
+            let key = std::fs::read(kp)
+                .map_err(|e| format!("failed to read TLS key {}: {e}", kp.display()))?;
+            Ok((cert, key))
+        }
+        (Some(_), None) => {
+            Err("gateway.tls_cert_path is set but gateway.tls_key_path is missing".to_string())
+        }
+        (None, Some(_)) => {
+            Err("gateway.tls_key_path is set but gateway.tls_cert_path is missing".to_string())
+        }
+        (None, None) => {
+            // Generate a self-signed certificate.
+            let cert = rcgen::generate_simple_self_signed(vec!["syfrah-gateway".to_string()])
+                .map_err(|e| format!("failed to generate self-signed cert: {e}"))?;
+            let cert_pem = cert.cert.pem().into_bytes();
+            let key_pem = cert.key_pair.serialize_pem().into_bytes();
+            Ok((cert_pem, key_pem))
+        }
+    }
 }
 
 /// Per-topology-tier persistent keepalive intervals (seconds).
@@ -1528,5 +1654,80 @@ cross_region_delay_ms = 8000
         assert_eq!(changes.len(), 2);
         assert!(changes.iter().any(|c| c.name == "log_max_size_mb"));
         assert!(changes.iter().any(|c| c.name == "audit_max_size_mb"));
+    }
+
+    // ---------------------------------------------------------------
+    // Gateway config tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn gateway_config_defaults() {
+        let gw = GatewayConfig::default();
+        assert!(!gw.enabled);
+        assert_eq!(gw.bind_address, "0.0.0.0:8443".parse().unwrap());
+        assert!(gw.tls_cert_path.is_none());
+        assert!(gw.tls_key_path.is_none());
+    }
+
+    #[test]
+    fn gateway_config_parse_enabled() {
+        let toml = r#"
+[gateway]
+enabled = true
+bind_address = "10.0.0.1:9443"
+"#;
+        let file: ConfigFileGateway = toml::from_str(toml).unwrap();
+        assert_eq!(file.gateway.enabled, Some(true));
+        assert_eq!(file.gateway.bind_address.as_deref(), Some("10.0.0.1:9443"));
+    }
+
+    #[test]
+    fn gateway_config_parse_with_tls_paths() {
+        let toml = r#"
+[gateway]
+enabled = true
+tls_cert_path = "/etc/syfrah/tls/cert.pem"
+tls_key_path = "/etc/syfrah/tls/key.pem"
+"#;
+        let file: ConfigFileGateway = toml::from_str(toml).unwrap();
+        assert_eq!(
+            file.gateway.tls_cert_path.as_deref(),
+            Some("/etc/syfrah/tls/cert.pem")
+        );
+        assert_eq!(
+            file.gateway.tls_key_path.as_deref(),
+            Some("/etc/syfrah/tls/key.pem")
+        );
+    }
+
+    #[test]
+    fn gateway_config_parse_disabled_by_default() {
+        let toml = "[gateway]\n";
+        let file: ConfigFileGateway = toml::from_str(toml).unwrap();
+        assert_eq!(file.gateway.enabled, None);
+    }
+
+    #[test]
+    fn resolve_gateway_tls_self_signed() {
+        let (cert, key) = resolve_gateway_tls(None, None).unwrap();
+        assert!(!cert.is_empty());
+        assert!(!key.is_empty());
+        // Verify the PEM headers are present.
+        let cert_str = String::from_utf8_lossy(&cert);
+        let key_str = String::from_utf8_lossy(&key);
+        assert!(cert_str.contains("BEGIN CERTIFICATE"));
+        assert!(key_str.contains("BEGIN PRIVATE KEY"));
+    }
+
+    #[test]
+    fn resolve_gateway_tls_cert_without_key_errors() {
+        let err = resolve_gateway_tls(Some(Path::new("/nonexistent/cert.pem")), None).unwrap_err();
+        assert!(err.contains("tls_key_path is missing"));
+    }
+
+    #[test]
+    fn resolve_gateway_tls_key_without_cert_errors() {
+        let err = resolve_gateway_tls(None, Some(Path::new("/nonexistent/key.pem"))).unwrap_err();
+        assert!(err.contains("tls_cert_path is missing"));
     }
 }

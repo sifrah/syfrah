@@ -413,6 +413,132 @@ pub async fn serve(
         .unwrap_or_else(|e| tracing::error!("gRPC API server error: {e}"));
 }
 
+/// Start the gRPC-compatible API server with TLS (gateway mode).
+///
+/// Binds to the given address and terminates TLS using the provided
+/// certificate and key PEM bytes.  Returns immediately if the gateway is
+/// disabled.
+pub async fn serve_gateway_tls(
+    gateway: crate::config::GatewayConfig,
+    handler: SharedHandler,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    if !gateway.enabled {
+        tracing::debug!("gateway disabled, skipping TLS API server");
+        std::future::pending::<()>().await;
+        return;
+    }
+
+    // Resolve TLS material (operator-provided or self-signed).
+    let (cert_pem, key_pem) = match crate::config::resolve_gateway_tls(
+        gateway.tls_cert_path.as_deref(),
+        gateway.tls_key_path.as_deref(),
+    ) {
+        Ok(pair) => pair,
+        Err(e) => {
+            tracing::error!("gateway TLS setup failed: {e}");
+            return;
+        }
+    };
+
+    let certs = match rustls_pemfile::certs(&mut &cert_pem[..]).collect::<Result<Vec<_>, _>>() {
+        Ok(c) if !c.is_empty() => c,
+        Ok(_) => {
+            tracing::error!("gateway TLS cert file contains no certificates");
+            return;
+        }
+        Err(e) => {
+            tracing::error!("failed to parse gateway TLS cert: {e}");
+            return;
+        }
+    };
+
+    let key = match rustls_pemfile::private_key(&mut &key_pem[..]) {
+        Ok(Some(k)) => k,
+        Ok(None) => {
+            tracing::error!("gateway TLS key file contains no private key");
+            return;
+        }
+        Err(e) => {
+            tracing::error!("failed to parse gateway TLS key: {e}");
+            return;
+        }
+    };
+
+    let tls_config = match rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+    {
+        Ok(c) => std::sync::Arc::new(c),
+        Err(e) => {
+            tracing::error!("gateway TLS config error: {e}");
+            return;
+        }
+    };
+    let tls_acceptor = tokio_rustls::TlsAcceptor::from(tls_config);
+
+    let listener = match TcpListener::bind(gateway.bind_address).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::error!(
+                "gateway API failed to bind to {}: {e}",
+                gateway.bind_address
+            );
+            return;
+        }
+    };
+
+    tracing::info!("gateway API listening on {} (TLS)", gateway.bind_address);
+
+    let app = router(handler);
+    let mut rx = shutdown;
+
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (stream, _addr) = match accepted {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!("gateway accept error: {e}");
+                        continue;
+                    }
+                };
+                let acceptor = tls_acceptor.clone();
+                let app = app.clone();
+                tokio::spawn(async move {
+                    let tls_stream = match acceptor.accept(stream).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::debug!("gateway TLS handshake failed: {e}");
+                            return;
+                        }
+                    };
+                    let io = hyper_util::rt::TokioIo::new(tls_stream);
+                    let service = hyper_util::service::TowerToHyperService::new(app);
+                    if let Err(e) = hyper_util::server::conn::auto::Builder::new(
+                        hyper_util::rt::TokioExecutor::new(),
+                    )
+                    .serve_connection(io, service)
+                    .await
+                    {
+                        tracing::debug!("gateway connection error: {e}");
+                    }
+                });
+            }
+            _ = async {
+                while !*rx.borrow_and_update() {
+                    if rx.changed().await.is_err() {
+                        break;
+                    }
+                }
+            } => {
+                tracing::info!("gateway API shutting down");
+                break;
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Config loading
 // ---------------------------------------------------------------------------

@@ -76,6 +76,24 @@ pub async fn run(opts: StatusOpts) -> Result<()> {
     } else {
         ui::health_bad(&format!("Interface {} is down", wg::interface_name()));
     }
+
+    // Gateway role status
+    let gw = config::load_gateway_config();
+    if gw.enabled {
+        if daemon_running.is_some() {
+            ui::health_ok(&format!(
+                "Gateway: active (port {})",
+                gw.bind_address.port()
+            ));
+        } else {
+            ui::health_bad(&format!(
+                "Gateway: configured (port {}) but daemon stopped",
+                gw.bind_address.port()
+            ));
+        }
+    } else {
+        println!("  Gateway: disabled");
+    }
     println!();
 
     // ── Peers section ───────────────────────────────────────────────
@@ -276,6 +294,8 @@ fn run_json(state: &store::NodeState, opts: &StatusOpts) -> Result<()> {
 
     let tuning = config::load_tuning().unwrap_or_default();
 
+    let gw = config::load_gateway_config();
+
     let output = StatusJson {
         mesh_name: &state.mesh_name,
         node_name: &state.node_name,
@@ -293,6 +313,14 @@ fn run_json(state: &store::NodeState, opts: &StatusOpts) -> Result<()> {
         secret: secret_display,
         traffic_rx: rx,
         traffic_tx: tx,
+        gateway: JsonGateway {
+            enabled: gw.enabled,
+            port: if gw.enabled {
+                Some(gw.bind_address.port())
+            } else {
+                None
+            },
+        },
         metrics: JsonMetrics {
             daemon_started_at: state.metrics.daemon_started_at,
             peers_discovered: state.metrics.peers_discovered,
@@ -332,8 +360,16 @@ struct StatusJson<'a> {
     secret: String,
     traffic_rx: u64,
     traffic_tx: u64,
+    gateway: JsonGateway,
     metrics: JsonMetrics,
     config: JsonConfig,
+}
+
+#[derive(Serialize)]
+struct JsonGateway {
+    enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    port: Option<u16>,
 }
 
 #[derive(Serialize)]
