@@ -1,6 +1,6 @@
 # State and Reconciliation
 
-> **Implementation status:** This document describes the **planned** state ownership and reconciliation design. Currently, only the **fabric layer's** state management is implemented (local `state.json` / redb, mesh secret, node membership, WireGuard config). The Raft consensus, gossip protocol, forge reconciliation loop, and all resource phase models described below are architectural plans, not running code.
+> **Implementation status:** The **fabric layer's** state management is fully implemented: mesh state is persisted in redb (`~/.syfrah/fabric.redb`) with a backward-compatible JSON export (`~/.syfrah/state.json`), covering mesh secret, node membership, peer records, metrics, and WireGuard config. The fabric reconciliation loop runs every 30 seconds (configurable via `[daemon] reconcile_interval` in `config.toml`). The Raft consensus, gossip protocol, forge reconciliation loop, and all resource phase models described below are architectural plans, not running code.
 
 ## Why this document
 
@@ -149,7 +149,7 @@ Each node runs a **reconciliation loop** in the forge. It continuously compares 
 
 ### How it works
 
-Every N seconds (e.g., 10s), the forge on each node:
+At a configurable interval (default 30 seconds, set via `[daemon] reconcile_interval` in [`configuration.md`](configuration.md)), the forge on each node:
 
 **Step 1 — Read desired state from Raft**
 
