@@ -189,6 +189,22 @@ else
   exit 1
 fi
 
+# --- Install Cloud Hypervisor (if bundled) ----------------------------------
+
+CH_BIN="cloud-hypervisor"
+CH_INSTALL_DIR="/usr/local/lib/syfrah"
+
+if [ -f "${TMPDIR}/${CH_BIN}" ]; then
+  start_spinner "Installing Cloud Hypervisor to ${CH_INSTALL_DIR}/${CH_BIN}..."
+  mkdir -p "$CH_INSTALL_DIR"
+  if install -m 755 "${TMPDIR}/${CH_BIN}" "${CH_INSTALL_DIR}/${CH_BIN}"; then
+    stop_spinner "Installed Cloud Hypervisor to ${CH_INSTALL_DIR}/${CH_BIN}"
+  else
+    stop_spinner "Failed to install Cloud Hypervisor (are you root?)" fail
+    exit 1
+  fi
+fi
+
 # --- Verify -----------------------------------------------------------------
 
 EXPECTED_VERSION="${VERSION#v}"
