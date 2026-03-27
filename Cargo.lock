@@ -2099,11 +2099,11 @@ dependencies = [
 name = "syfrah-compute"
 version = "0.2.0"
 dependencies = [
- "async-trait",
  "serde",
  "serde_json",
- "syfrah-api",
+ "thiserror 2.0.18",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

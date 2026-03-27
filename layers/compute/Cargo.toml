@@ -1,18 +1,11 @@
 [package]
 name = "syfrah-compute"
-description = "Compute layer — VM and container orchestration for Syfrah"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
-repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
 
 [dependencies]
-syfrah-api = { path = "../api" }
-async-trait = "0.1"
-serde.workspace = true
-serde_json.workspace = true
-
-[dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
