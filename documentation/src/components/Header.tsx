@@ -11,6 +11,7 @@ import {
 } from '@/components/MobileNavigation'
 import { MobileSearch, Search } from '@/components/Search'
 import { ThemeToggle } from '@/components/ThemeToggle'
+import { VersionSelector } from '@/components/VersionSelector'
 import { CloseButton } from '@headlessui/react'
 
 function GitHubIcon(props: React.ComponentPropsWithoutRef<'svg'>) {
@@ -90,6 +91,7 @@ export const Header = forwardRef<
         </CloseButton>
       </div>
       <div className="flex items-center gap-5">
+        <VersionSelector />
         <div className="hidden md:block md:h-5 md:w-px md:bg-zinc-900/10 md:dark:bg-white/15" />
         <div className="flex gap-4">
           <MobileSearch />
