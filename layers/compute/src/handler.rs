@@ -576,7 +576,7 @@ mod tests {
         let (_, body) = send_request(app, "GET", "/v1/compute/vms/nonexistent", None).await;
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert!(v.get("error").is_some());
-        assert!(v["error"].as_str().unwrap().len() > 0);
+        assert!(!v["error"].as_str().unwrap().is_empty());
     }
 
     // -- error_to_status unit tests -------------------------------------------

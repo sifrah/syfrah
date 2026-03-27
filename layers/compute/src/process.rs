@@ -12,6 +12,7 @@ use tracing::{debug, error, info, warn};
 use crate::client::ChClient;
 use crate::config::{map, resolve, validate};
 use crate::error::{ComputeError, ProcessError};
+use crate::events;
 use crate::phase::VmPhase;
 use crate::preflight::run_preflight;
 use crate::runtime::{ReconnectSource, VmRuntimeState};
@@ -149,6 +150,8 @@ impl RuntimeDir {
     /// Remove the entire runtime directory recursively.
     pub fn cleanup(&self) -> Result<(), ProcessError> {
         if self.base.exists() {
+            // Internal event: SocketRemoved (runtime dir includes the API socket)
+            debug!(path = %self.base.display(), "SocketRemoved: cleaning up runtime dir");
             fs::remove_dir_all(&self.base).map_err(|e| ProcessError::SpawnFailed {
                 reason: format!("failed to remove runtime dir {}: {e}", self.base.display()),
             })?;
@@ -332,7 +335,8 @@ pub async fn spawn_vm(
 
     // Step 5: Create RuntimeDir
     let runtime_dir = RuntimeDir::create(base_dir, &vm_id_str)?;
-    debug!(vm_id = %vm_id_str, path = %runtime_dir.path().display(), "created runtime dir");
+    // Internal event: SocketCreated (runtime dir with socket path is ready)
+    debug!(vm_id = %vm_id_str, path = %runtime_dir.path().display(), "SocketCreated: created runtime dir");
 
     // From here on, any failure must clean up.
     let result = spawn_vm_inner(&vm_id_str, ch_binary, &runtime_dir, &vm_config, spec).await;
@@ -380,7 +384,8 @@ async fn spawn_vm_inner(
         })?;
 
     let pid = child.id();
-    info!(vm_id = %vm_id_str, pid = pid, "spawned cloud-hypervisor process");
+    // Internal event: Spawned
+    info!(vm_id = %vm_id_str, pid = pid, "Spawned: cloud-hypervisor process started");
 
     // Get CH version (best-effort, non-blocking)
     let ch_version = get_ch_version(ch_binary).unwrap_or_else(|| "unknown".to_string());
@@ -409,11 +414,14 @@ async fn spawn_vm_inner(
     loop {
         match client.ping().await {
             Ok(true) => {
-                debug!(vm_id = %vm_id_str, "API is ready");
+                // Internal event: ApiReady
+                debug!(vm_id = %vm_id_str, "ApiReady: CH REST API responding to ping");
                 break;
             }
             Ok(false) | Err(_) => {
                 if ping_start.elapsed() >= ping_timeout {
+                    // Internal event: PingTimeout
+                    debug!(vm_id = %vm_id_str, timeout_secs = ping_timeout.as_secs(), "PingTimeout: API did not become ready");
                     // Kill the process before returning error
                     unsafe {
                         libc::kill(pid as i32, libc::SIGKILL);
@@ -428,6 +436,8 @@ async fn spawn_vm_inner(
                 }
                 // Check if process is still alive
                 if !is_pid_alive(pid) {
+                    // Internal event: ProcessExited
+                    debug!(vm_id = %vm_id_str, pid = pid, "ProcessExited: CH process died before API ready");
                     return Err(ProcessError::SpawnFailed {
                         reason: "cloud-hypervisor process exited before API became ready"
                             .to_string(),
@@ -779,10 +789,13 @@ pub async fn monitor_loop(
                 warn!(vm_id = %vm_id_str, pid = pid, "monitor: PID dead, transitioning to Failed");
                 guard.current_phase = VmPhase::Failed;
                 guard.last_error = Some(format!("process {pid} no longer alive"));
-                let _ = event_tx.send(VmEvent::Crashed {
-                    vm_id: guard.vm_id.clone(),
-                    error: format!("process {pid} exited unexpectedly"),
-                });
+                events::emit(
+                    &event_tx,
+                    VmEvent::Crashed {
+                        vm_id: guard.vm_id.clone(),
+                        error: format!("process {pid} exited unexpectedly"),
+                    },
+                );
                 continue;
             }
 
@@ -817,10 +830,13 @@ pub async fn monitor_loop(
                 );
                 guard.current_phase = VmPhase::Failed;
                 guard.last_error = Some("API socket unresponsive".to_string());
-                let _ = event_tx.send(VmEvent::Crashed {
-                    vm_id: vm_id_clone,
-                    error: "API socket unresponsive while PID alive".to_string(),
-                });
+                events::emit(
+                    &event_tx,
+                    VmEvent::Crashed {
+                        vm_id: vm_id_clone,
+                        error: "API socket unresponsive while PID alive".to_string(),
+                    },
+                );
             }
         }
     }
@@ -873,10 +889,13 @@ pub async fn reconnect(base_dir: &Path, event_tx: broadcast::Sender<VmEvent>) ->
 
         match cleanup_orphan(&dir, "no meta.json found") {
             Ok(vm_id) => {
-                let _ = event_tx.send(VmEvent::VmOrphanCleaned {
-                    vm_id: VmId(vm_id.clone()),
-                    reason: "no meta.json found".to_string(),
-                });
+                events::emit(
+                    &event_tx,
+                    VmEvent::VmOrphanCleaned {
+                        vm_id: VmId(vm_id.clone()),
+                        reason: "no meta.json found".to_string(),
+                    },
+                );
                 report.orphans_cleaned.push(vm_id);
             }
             Err(e) => {
@@ -907,10 +926,13 @@ pub async fn reconnect(base_dir: &Path, event_tx: broadcast::Sender<VmEvent>) ->
 
                 match cleanup_orphan(&dir, "corrupt meta.json") {
                     Ok(vm_id) => {
-                        let _ = event_tx.send(VmEvent::VmOrphanCleaned {
-                            vm_id: VmId(vm_id.clone()),
-                            reason: "corrupt meta.json".to_string(),
-                        });
+                        events::emit(
+                            &event_tx,
+                            VmEvent::VmOrphanCleaned {
+                                vm_id: VmId(vm_id.clone()),
+                                reason: "corrupt meta.json".to_string(),
+                            },
+                        );
                         report.orphans_cleaned.push(vm_id);
                     }
                     Err(_) => {
@@ -930,10 +952,13 @@ pub async fn reconnect(base_dir: &Path, event_tx: broadcast::Sender<VmEvent>) ->
                 pid = meta.pid,
                 "reconnect: PID dead"
             );
-            let _ = event_tx.send(VmEvent::ReconnectFailed {
-                vm_id: VmId(vm_id_str.clone()),
-                error: format!("process {} no longer alive", meta.pid),
-            });
+            events::emit(
+                &event_tx,
+                VmEvent::ReconnectFailed {
+                    vm_id: VmId(vm_id_str.clone()),
+                    error: format!("process {} no longer alive", meta.pid),
+                },
+            );
             report
                 .failed
                 .push((vm_id_str, format!("PID {} dead", meta.pid)));
@@ -952,10 +977,13 @@ pub async fn reconnect(base_dir: &Path, event_tx: broadcast::Sender<VmEvent>) ->
                 vm_id = %vm_id_str,
                 "reconnect: PID alive but socket unresponsive"
             );
-            let _ = event_tx.send(VmEvent::ReconnectFailed {
-                vm_id: VmId(vm_id_str.clone()),
-                error: "PID alive but API socket unresponsive".to_string(),
-            });
+            events::emit(
+                &event_tx,
+                VmEvent::ReconnectFailed {
+                    vm_id: VmId(vm_id_str.clone()),
+                    error: "PID alive but API socket unresponsive".to_string(),
+                },
+            );
             report.failed.push((
                 vm_id_str,
                 "PID alive but API socket unresponsive".to_string(),
@@ -985,9 +1013,12 @@ pub async fn reconnect(base_dir: &Path, event_tx: broadcast::Sender<VmEvent>) ->
             reconnect_source: ReconnectSource::Recovered,
         };
 
-        let _ = event_tx.send(VmEvent::ReconnectSucceeded {
-            vm_id: VmId(vm_id_str),
-        });
+        events::emit(
+            &event_tx,
+            VmEvent::ReconnectSucceeded {
+                vm_id: VmId(vm_id_str),
+            },
+        );
 
         report.recovered.push(state);
     }
