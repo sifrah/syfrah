@@ -1628,4 +1628,279 @@ mod tests {
 
         handle.abort();
     }
+
+    // -- RuntimeDir error paths -----------------------------------------------
+
+    #[test]
+    fn runtime_dir_read_meta_missing_file_returns_error() {
+        let tmp = TempDir::new().unwrap();
+        let dir = RuntimeDir::create(tmp.path(), "vm-no-meta").unwrap();
+        // No meta.json written
+        let result = dir.read_meta();
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("failed to read"));
+    }
+
+    #[test]
+    fn runtime_dir_read_pid_missing_returns_error() {
+        let tmp = TempDir::new().unwrap();
+        let dir = RuntimeDir::create(tmp.path(), "vm-no-pid").unwrap();
+        // No pid file written
+        let result = dir.read_pid();
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("failed to read"));
+    }
+
+    #[test]
+    fn runtime_dir_read_pid_invalid_content_returns_error() {
+        let tmp = TempDir::new().unwrap();
+        let dir = RuntimeDir::create(tmp.path(), "vm-bad-pid").unwrap();
+        fs::write(dir.pid_path(), "not_a_number").unwrap();
+        let result = dir.read_pid();
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("invalid pid"));
+    }
+
+    #[test]
+    fn runtime_dir_write_and_read_large_pid() {
+        let tmp = TempDir::new().unwrap();
+        let dir = RuntimeDir::create(tmp.path(), "vm-large-pid").unwrap();
+        // Max PID on Linux is typically 4194304 (2^22)
+        let large_pid: u32 = 4_194_304;
+        dir.write_pid(large_pid).unwrap();
+        assert_eq!(dir.read_pid().unwrap(), large_pid);
+    }
+
+    #[test]
+    fn runtime_dir_overwrite_meta() {
+        let tmp = TempDir::new().unwrap();
+        let dir = RuntimeDir::create(tmp.path(), "vm-overwrite").unwrap();
+
+        let meta1 = VmMeta {
+            vm_id: "vm-overwrite".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            socket_path: "/tmp/api.sock".to_string(),
+            pid: 100,
+            ch_binary: "/bin/true".to_string(),
+            ch_version: "v1".to_string(),
+            spec_hash: "hash:aaa".to_string(),
+        };
+        dir.write_meta(&meta1).unwrap();
+
+        let meta2 = VmMeta {
+            pid: 200,
+            ch_version: "v2".to_string(),
+            spec_hash: "hash:bbb".to_string(),
+            ..meta1.clone()
+        };
+        dir.write_meta(&meta2).unwrap();
+
+        let read_back = dir.read_meta().unwrap();
+        assert_eq!(read_back.pid, 200);
+        assert_eq!(read_back.ch_version, "v2");
+        assert_eq!(read_back.spec_hash, "hash:bbb");
+    }
+
+    // -- delete_vm additional state transitions -------------------------------
+
+    #[tokio::test]
+    async fn delete_pending_vm_transitions_to_deleted() {
+        use crate::types::VmId;
+
+        let tmp = TempDir::new().unwrap();
+        let dir = RuntimeDir::create(tmp.path(), "vm-pending-del").unwrap();
+        let client = ChClient::new(dir.socket_path());
+
+        let mut state = VmRuntimeState {
+            vm_id: VmId("vm-pending-del".to_string()),
+            pid: 4_000_000,
+            socket_path: dir.socket_path(),
+            cgroup_path: None,
+            ch_binary_path: PathBuf::from("/bin/true"),
+            ch_binary_version: "v1".to_string(),
+            launched_at: 0,
+            last_ping_at: None,
+            last_error: None,
+            current_phase: VmPhase::Pending,
+            reconnect_source: ReconnectSource::FreshSpawn,
+        };
+
+        let result = delete_vm(&mut state, &client, &dir).await;
+        assert!(result.is_ok());
+        assert_eq!(state.current_phase, VmPhase::Deleted);
+    }
+
+    // -- kill_vm cleanup verification -----------------------------------------
+
+    #[tokio::test]
+    async fn kill_vm_dead_pid_cleans_runtime_dir_files() {
+        use crate::types::VmId;
+
+        let tmp = TempDir::new().unwrap();
+        let dir = RuntimeDir::create(tmp.path(), "vm-kill-clean").unwrap();
+        // Write some files that should be cleaned
+        dir.write_pid(4_000_000).unwrap();
+        let meta = VmMeta {
+            vm_id: "vm-kill-clean".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            socket_path: dir.socket_path().to_string_lossy().into_owned(),
+            pid: 4_000_000,
+            ch_binary: "/bin/true".to_string(),
+            ch_version: "v1".to_string(),
+            spec_hash: "hash:0".to_string(),
+        };
+        dir.write_meta(&meta).unwrap();
+        assert!(dir.meta_path().exists());
+        assert!(dir.pid_path().exists());
+
+        let client = ChClient::new(dir.socket_path());
+        let mut state = VmRuntimeState {
+            vm_id: VmId("vm-kill-clean".to_string()),
+            pid: 4_000_000,
+            socket_path: dir.socket_path(),
+            cgroup_path: None,
+            ch_binary_path: PathBuf::from("/bin/true"),
+            ch_binary_version: "v1".to_string(),
+            launched_at: 0,
+            last_ping_at: None,
+            last_error: None,
+            current_phase: VmPhase::Running,
+            reconnect_source: ReconnectSource::FreshSpawn,
+        };
+
+        let result = kill_vm(&mut state, &client, &dir).await;
+        assert!(result.is_ok());
+        assert_eq!(state.current_phase, VmPhase::Stopped);
+        // Entire runtime dir should be gone
+        assert!(!dir.exists());
+        assert!(!dir.meta_path().exists());
+        assert!(!dir.pid_path().exists());
+    }
+
+    // -- reconnect mixed scenario ---------------------------------------------
+
+    #[tokio::test]
+    async fn reconnect_multiple_dirs_mixed_dead_and_orphan() {
+        let tmp = TempDir::new().unwrap();
+
+        // Dir 1: valid meta.json with dead PID -> failed
+        let dir1 = RuntimeDir::create(tmp.path(), "vm-dead-1").unwrap();
+        let meta1 = VmMeta {
+            vm_id: "vm-dead-1".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            socket_path: tmp
+                .path()
+                .join("vm-dead-1/api.sock")
+                .to_string_lossy()
+                .into_owned(),
+            pid: 4_000_001,
+            ch_binary: "/bin/true".to_string(),
+            ch_version: "v1".to_string(),
+            spec_hash: "hash:0".to_string(),
+        };
+        dir1.write_meta(&meta1).unwrap();
+
+        // Dir 2: valid meta.json with another dead PID -> failed
+        let dir2 = RuntimeDir::create(tmp.path(), "vm-dead-2").unwrap();
+        let meta2 = VmMeta {
+            vm_id: "vm-dead-2".to_string(),
+            pid: 4_000_002,
+            socket_path: tmp
+                .path()
+                .join("vm-dead-2/api.sock")
+                .to_string_lossy()
+                .into_owned(),
+            ..meta1.clone()
+        };
+        dir2.write_meta(&meta2).unwrap();
+
+        // Dir 3: orphan (no meta.json) -> cleaned
+        fs::create_dir_all(tmp.path().join("vm-orphan-mix")).unwrap();
+
+        let (tx, _rx) = broadcast::channel(16);
+        let report = reconnect(tmp.path(), tx).await;
+
+        assert_eq!(report.recovered.len(), 0);
+        assert_eq!(report.failed.len(), 2);
+        assert_eq!(report.orphans_cleaned.len(), 1);
+        assert!(report
+            .orphans_cleaned
+            .contains(&"vm-orphan-mix".to_string()));
+        // Orphan dir should be removed
+        assert!(!tmp.path().join("vm-orphan-mix").exists());
+        // Dead pid dirs remain (forge decides)
+        assert!(tmp.path().join("vm-dead-1").exists());
+        assert!(tmp.path().join("vm-dead-2").exists());
+    }
+
+    // -- monitor with no VMs --------------------------------------------------
+
+    #[tokio::test]
+    async fn monitor_no_vms_no_crash() {
+        let vms: Arc<RwLock<HashMap<String, Arc<Mutex<VmRuntimeState>>>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+
+        let (tx, _rx) = broadcast::channel(16);
+
+        let vms_clone = Arc::clone(&vms);
+        let handle = tokio::spawn(async move {
+            monitor_loop(vms_clone, tx, Duration::from_millis(10)).await;
+        });
+
+        // Let the monitor run a few iterations with zero VMs
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Should still be running (not panicked)
+        assert!(!handle.is_finished());
+        handle.abort();
+    }
+
+    // -- monitor skips stopped VMs -------------------------------------------
+
+    #[tokio::test]
+    async fn monitor_skips_stopped_vms() {
+        let vms: Arc<RwLock<HashMap<String, Arc<Mutex<VmRuntimeState>>>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+
+        let state = VmRuntimeState {
+            vm_id: VmId("vm-stopped".to_string()),
+            pid: 4_000_000,
+            socket_path: PathBuf::from("/tmp/nonexistent.sock"),
+            cgroup_path: None,
+            ch_binary_path: PathBuf::from("/bin/true"),
+            ch_binary_version: "v1".to_string(),
+            launched_at: 0,
+            last_ping_at: None,
+            last_error: None,
+            current_phase: VmPhase::Stopped,
+            reconnect_source: ReconnectSource::FreshSpawn,
+        };
+
+        let vm_arc = Arc::new(Mutex::new(state));
+        {
+            let mut map = vms.write().await;
+            map.insert("vm-stopped".to_string(), Arc::clone(&vm_arc));
+        }
+
+        let (tx, mut rx) = broadcast::channel(16);
+        let vms_clone = Arc::clone(&vms);
+        let handle = tokio::spawn(async move {
+            monitor_loop(vms_clone, tx, Duration::from_millis(10)).await;
+        });
+
+        // Let the monitor iterate a few times
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        // Should NOT emit any events for stopped VMs
+        assert!(rx.try_recv().is_err());
+        // Phase should remain Stopped
+        let guard = vm_arc.lock().await;
+        assert_eq!(guard.current_phase, VmPhase::Stopped);
+        drop(guard);
+
+        handle.abort();
+    }
 }
