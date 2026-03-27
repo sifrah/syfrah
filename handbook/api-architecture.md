@@ -162,7 +162,7 @@ buf.gen.yaml          # code generation config
 
 ### Proto services
 
-```protobuf
+```
 package syfrah.fabric.v1;
 
 service FabricService {
