@@ -65,6 +65,7 @@ jobs:
             {"name": "ux-output",          "filter": "9[1-7]_ux"},
             {"name": "ux-flows",           "filter": "9[89]_ux|10[0-4]_ux"},
             {"name": "ux-errors",          "filter": "10[5-9]_ux|110_ux"},
+            {"name": "compute",            "filter": "7[0-8]_compute"},
             {"name": "install",            "filter": "test_install"}
           ]'
           echo "groups=$(echo "$groups" | jq -c .)" >> "$GITHUB_OUTPUT"
