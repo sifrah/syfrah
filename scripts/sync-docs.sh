@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Sync layer READMEs and cross-cutting docs into Next.js MDX pages.
-# Scans layers/ recursively — subdirectories become sub-pages and sub-menus.
+# Auto-sync all .md files into Next.js MDX pages.
+# Recursively scans configured directories — zero manual config needed.
 #
 # Usage: ./scripts/sync-docs.sh
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="$REPO_ROOT/documentation/src/app"
 NAV_FILE="$REPO_ROOT/documentation/src/navigation.json"
+
+# Directories to scan for .md files
+SCAN_DIRS=(handbook layers dev benchmarks post_release_audit sdk api)
+
+# Files and directories to exclude
+EXCLUDE_DIRS=(node_modules target .git documentation .claude)
+EXCLUDE_FILES=(CHANGELOG.md CODE_OF_CONDUCT.md SECURITY.md LICENSE .env)
 
 # ── Helpers ──────────────────────────────────────────────────
 
@@ -18,7 +25,7 @@ escape_mdx() {
         -e 's/{\([a-z_/][a-z_/.-]*\)}/\&#123;\1\&#125;/g'
 }
 
-# Extract H1 title from a markdown file, fallback to directory name
+# Extract H1 title from a markdown file, fallback to provided default
 extract_title() {
     local file="$1"
     local fallback="$2"
@@ -31,8 +38,29 @@ extract_title() {
     fi
 }
 
+# Get last-updated info from git history for a source file
+# Returns: "YYYY-MM-DD (abcdef0)" or "Not yet committed"
+get_last_updated() {
+    local file="$1"
+    local git_info
+    git_info=$(git -C "$REPO_ROOT" log -1 --format='%ai %h' -- "$file" 2>/dev/null || true)
+    if [ -n "$git_info" ]; then
+        local date hash
+        date=$(echo "$git_info" | awk '{print $1}')
+        hash=$(echo "$git_info" | awk '{print $4}')
+        echo "${date} (${hash})"
+    else
+        echo "Not yet committed"
+    fi
+}
+
+# Humanize a directory/file name: underscores/hyphens to spaces, title case
+humanize() {
+    echo "$1" | sed 's/[_-]/ /g' | sed 's/\b\(.\)/\u\1/g' \
+        | sed 's/\bSdk\b/SDK/g; s/\bApi\b/API/g; s/\bCli\b/CLI/g; s/\bCi\b/CI/g'
+}
+
 # Generate an MDX page from a markdown file
-# Args: <source.md> <output_dir> <title> <description> <relative_source>
 generate_page() {
     local src="$1"
     local outdir="$2"
@@ -45,6 +73,9 @@ generate_page() {
     local content
     content=$(tail -n +2 "$src" | escape_mdx)
 
+    local last_updated
+    last_updated=$(get_last_updated "$rel_src")
+
     cat > "$outdir/page.mdx" << MDXEOF
 {/* AUTO-GENERATED from ${rel_src} — do not edit */}
 
@@ -55,28 +86,61 @@ export const metadata = {
 
 # ${title}
 
+<p className="text-sm text-gray-500">Last updated: ${last_updated}</p>
+
 ${content}
 MDXEOF
 }
 
+# ── Clean previous generated pages ──────────────────────────
+
+# Remove all auto-generated page.mdx except layout/providers/not-found
+find "$APP_DIR" -name 'page.mdx' -type f -exec grep -l 'AUTO-GENERATED' {} \; | while read -r f; do
+    rm "$f"
+done
+
+# Remove empty directories left behind
+find "$APP_DIR" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+
 echo "Syncing documentation..."
 
-# ── Collect navigation data ──────────────────────────────────
+# ── Build find command with exclusions ───────────────────────
 
-# We build a JSON navigation file that Navigation.tsx imports.
-# Start with empty groups.
+build_find_args() {
+    local dir="$1"
+    local args=("$REPO_ROOT/$dir")
 
-NAV_OVERVIEW='[]'
-NAV_LAYERS='{}'
-NAV_OPS='[]'
-NAV_REF='[]'
+    # Add directory exclusions
+    local first_excl=true
+    args+=("(")
+    for excl in "${EXCLUDE_DIRS[@]}"; do
+        if [ "$first_excl" = true ]; then
+            first_excl=false
+        else
+            args+=("-o")
+        fi
+        args+=("-name" "$excl" "-type" "d")
+    done
+    args+=(")" "-prune" "-o")
 
-# ── Homepage (ARCHITECTURE.md) ───────────────────────────────
+    # Match .md files, exclude specific filenames
+    args+=("-name" "*.md" "-type" "f")
+    for excl_f in "${EXCLUDE_FILES[@]}"; do
+        args+=("!" "-name" "$excl_f")
+    done
+    args+=("-print")
 
-echo "  → index (ARCHITECTURE.md)"
-src="$REPO_ROOT/handbook/ARCHITECTURE.md"
-content=$(tail -n +2 "$src" | escape_mdx)
-cat > "$APP_DIR/page.mdx" << MDXEOF
+    find "${args[@]}" 2>/dev/null | sort
+}
+
+# ── Special case: ARCHITECTURE.md → homepage ─────────────────
+
+echo "  homepage (ARCHITECTURE.md)"
+arch_src="$REPO_ROOT/handbook/ARCHITECTURE.md"
+if [ -f "$arch_src" ]; then
+    content=$(tail -n +2 "$arch_src" | escape_mdx)
+    home_updated=$(get_last_updated "handbook/ARCHITECTURE.md")
+    cat > "$APP_DIR/page.mdx" << MDXEOF
 {/* AUTO-GENERATED from handbook/ARCHITECTURE.md — do not edit */}
 
 export const metadata = {
@@ -86,153 +150,281 @@ export const metadata = {
 
 # Architecture
 
+<p className="text-sm text-gray-500">Last updated: ${home_updated}</p>
+
 ${content}
 MDXEOF
+fi
 
-NAV_OVERVIEW='[{"title":"Architecture","href":"/"}]'
+# ── Collect all .md files and generate pages ─────────────────
 
-# ── Layer pages (recursive scan) ─────────────────────────────
+# Associative arrays to track the nav tree
+# nav_groups[scan_dir] = JSON array string of top-level links
+declare -A nav_groups
 
-# Scan layers/ for all README.md files
-# layers/fabric/README.md         → /fabric
-# layers/fabric/security/README.md → /fabric/security
+for scan_dir in "${SCAN_DIRS[@]}"; do
+    [ -d "$REPO_ROOT/$scan_dir" ] || continue
 
-for readme in $(find "$REPO_ROOT/layers" -name "README.md" -type f | sort); do
-    # Get the path relative to layers/
-    rel="${readme#$REPO_ROOT/layers/}"          # e.g. fabric/README.md or fabric/security/README.md
-    dir="$(dirname "$rel")"                      # e.g. fabric or fabric/security
-    layer="$(echo "$dir" | cut -d/ -f1)"         # e.g. fabric (top-level layer name)
-    rel_src="layers/$rel"
+    # Collect all .md files in this scan directory
+    mapfile -t md_files < <(build_find_args "$scan_dir")
+    [ ${#md_files[@]} -gt 0 ] || continue
 
-    # Compute the URL path
-    url_path="/$dir"                             # e.g. /fabric or /fabric/security
-
-    # Compute title from the README
-    fallback_name="$(basename "$dir" | sed 's/-/ /g; s/\b\(.\)/\u\1/g')"
-    title=$(extract_title "$readme" "$fallback_name")
-
-    # Create the page
-    outdir="$APP_DIR/$dir"
-    echo "  → $dir"
-    generate_page "$readme" "$outdir" "$title" "$title" "$rel_src"
-done
-
-# ── Build layer navigation tree ──────────────────────────────
-
-# For each layer, build a JSON object: { title, href, children: [...] }
-# We use a simple approach: list all pages per top-level layer
-
-NAV_LAYERS_JSON="["
-first_layer=true
-
-for layer_dir in "$REPO_ROOT"/layers/*/; do
-    layer="$(basename "$layer_dir")"
-    layer_readme="$layer_dir/README.md"
-    [ -f "$layer_readme" ] || continue
-
-    layer_title=$(extract_title "$layer_readme" "$layer")
-    layer_href="/$layer"
-
-    # Find children (subdirectories with README.md)
-    children_json="["
-    first_child=true
-
-    for child_readme in $(find "$layer_dir" -mindepth 2 -name "README.md" -type f | sort); do
-        child_rel="${child_readme#$layer_dir}"    # e.g. security/README.md
-        child_dir="$(dirname "$child_rel")"        # e.g. security
-        child_href="/$layer/$child_dir"
-
-        child_fallback="$(basename "$child_dir" | sed 's/-/ /g; s/\b\(.\)/\u\1/g')"
-        child_title=$(extract_title "$child_readme" "$child_fallback")
-
-        if [ "$first_child" = true ]; then
-            first_child=false
-        else
-            children_json="$children_json,"
+    # Skip ARCHITECTURE.md (already handled as homepage)
+    filtered_files=()
+    for f in "${md_files[@]}"; do
+        if [ "$f" = "$REPO_ROOT/handbook/ARCHITECTURE.md" ]; then
+            continue
         fi
-        children_json="$children_json{\"title\":\"$child_title\",\"href\":\"$child_href\"}"
+        filtered_files+=("$f")
+    done
+    [ ${#filtered_files[@]} -gt 0 ] || continue
+
+    # Build page for each file and collect nav entries
+    # We need a tree: top-level dirs become nav links, subdirs become children
+
+    # Associative array: dir_path -> list of {title, href} entries
+    declare -A dir_children
+    declare -A dir_readmes
+    declare -a dir_order=()
+
+    for md_file in "${filtered_files[@]}"; do
+        rel_path="${md_file#$REPO_ROOT/}"            # e.g. handbook/cli.md or layers/fabric/README.md
+        rel_inside="${md_file#$REPO_ROOT/$scan_dir/}" # e.g. cli.md or fabric/README.md
+
+        filename="$(basename "$rel_inside")"
+        dir_inside="$(dirname "$rel_inside")"        # e.g. . or fabric or sdk/go
+
+        # Compute the URL path for this page
+        if [ "$filename" = "README.md" ]; then
+            # README.md represents the directory itself
+            if [ "$dir_inside" = "." ]; then
+                url_path="/$scan_dir"
+            else
+                url_path="/$scan_dir/$dir_inside"
+            fi
+        else
+            # Regular .md file: strip .md extension for URL
+            name_no_ext="${filename%.md}"
+            if [ "$dir_inside" = "." ]; then
+                # handbook files live at root (e.g. /cli), others keep prefix
+                if [ "$scan_dir" = "handbook" ]; then
+                    url_path="/$name_no_ext"
+                else
+                    url_path="/$scan_dir/$name_no_ext"
+                fi
+            else
+                url_path="/$scan_dir/$dir_inside/$name_no_ext"
+            fi
+        fi
+
+        # Compute output directory
+        local_path="${url_path#/}"
+        outdir="$APP_DIR/$local_path"
+
+        # Compute title
+        fallback="$(humanize "${filename%.md}")"
+        if [ "$filename" = "README.md" ]; then
+            if [ "$dir_inside" = "." ]; then
+                fallback="$(humanize "$scan_dir")"
+            else
+                fallback="$(humanize "$(basename "$dir_inside")")"
+            fi
+        fi
+        title=$(extract_title "$md_file" "$fallback")
+
+        echo "  $local_path"
+        generate_page "$md_file" "$outdir" "$title" "$title" "$rel_path"
+
+        # Track for navigation
+        # Determine the parent nav node for this file
+        if [ "$filename" = "README.md" ]; then
+            # This file IS the page for its directory
+            dir_readmes["$dir_inside"]="$title|$url_path"
+        else
+            # Regular file: its parent is dir_inside
+            name_no_ext="${filename%.md}"
+            key="$dir_inside"
+            existing="${dir_children[$key]:-}"
+            entry="{\"title\":\"$title\",\"href\":\"$url_path\"}"
+            if [ -z "$existing" ]; then
+                dir_children["$key"]="$entry"
+            else
+                dir_children["$key"]="$existing,$entry"
+            fi
+        fi
+
+        # Track directory ordering
+        if [ "$dir_inside" != "." ]; then
+            top_dir="$(echo "$dir_inside" | cut -d/ -f1)"
+        else
+            top_dir="."
+        fi
     done
 
-    children_json="$children_json]"
+    # Build the navigation JSON for this scan_dir
+    # Strategy: collect top-level items (depth=1 dirs and root-level .md files)
 
-    if [ "$first_layer" = true ]; then
-        first_layer=false
-    else
-        NAV_LAYERS_JSON="$NAV_LAYERS_JSON,"
-    fi
-    NAV_LAYERS_JSON="$NAV_LAYERS_JSON{\"title\":\"$layer_title\",\"href\":\"$layer_href\",\"children\":$children_json}"
-done
+    links_json=""
 
-NAV_LAYERS_JSON="$NAV_LAYERS_JSON]"
+    # First: if there's a README at the root of scan_dir, it becomes the group page
+    # but we skip handbook root since there's no handbook/README.md typically
 
-# ── Cross-cutting docs ───────────────────────────────────────
+    # Collect all unique top-level directories that have content
+    declare -A seen_top_dirs
+    top_level_links=""
 
-# These are manually mapped since they have custom titles
-declare -a DOCS=(cli state-and-reconciliation zones-and-regions)
-declare -a DOC_TITLES=("CLI" "State and Reconciliation" "Zones and Regions")
+    for md_file in "${filtered_files[@]}"; do
+        rel_inside="${md_file#$REPO_ROOT/$scan_dir/}"
+        filename="$(basename "$rel_inside")"
+        dir_inside="$(dirname "$rel_inside")"
 
-NAV_OPS_JSON="["
-first_doc=true
-
-for i in "${!DOCS[@]}"; do
-    doc="${DOCS[$i]}"
-    title="${DOC_TITLES[$i]}"
-    src="$REPO_ROOT/handbook/$doc.md"
-
-    if [ -f "$src" ]; then
-        echo "  → handbook/$doc"
-        generate_page "$src" "$APP_DIR/$doc" "$title" "$title" "handbook/$doc.md"
-
-        if [ "$first_doc" = true ]; then
-            first_doc=false
+        if [ "$dir_inside" = "." ]; then
+            # Root-level file in this scan_dir
+            if [ "$filename" = "README.md" ]; then
+                # scan_dir's own page — add as first link
+                info="${dir_readmes[.]:-}"
+                if [ -n "$info" ]; then
+                    t="${info%%|*}"
+                    h="${info##*|}"
+                    entry="{\"title\":\"$t\",\"href\":\"$h\"}"
+                    if [ -z "$top_level_links" ]; then
+                        top_level_links="$entry"
+                    else
+                        top_level_links="$top_level_links,$entry"
+                    fi
+                fi
+            else
+                # Regular .md at root of scan_dir
+                name_no_ext="${filename%.md}"
+                fallback="$(humanize "$name_no_ext")"
+                title=$(extract_title "$md_file" "$fallback")
+                if [ "$scan_dir" = "handbook" ]; then
+                    url_path="/$name_no_ext"
+                else
+                    url_path="/$scan_dir/$name_no_ext"
+                fi
+                entry="{\"title\":\"$title\",\"href\":\"$url_path\"}"
+                if [ -z "$top_level_links" ]; then
+                    top_level_links="$entry"
+                else
+                    top_level_links="$top_level_links,$entry"
+                fi
+            fi
         else
-            NAV_OPS_JSON="$NAV_OPS_JSON,"
+            # File in a subdirectory
+            top_dir="$(echo "$dir_inside" | cut -d/ -f1)"
+            if [ -z "${seen_top_dirs[$top_dir]:-}" ]; then
+                seen_top_dirs["$top_dir"]=1
+
+                # Build this top-level dir's nav entry with children
+                dir_info="${dir_readmes[$top_dir]:-}"
+                if [ -n "$dir_info" ]; then
+                    t="${dir_info%%|*}"
+                    h="${dir_info##*|}"
+                else
+                    t="$(humanize "$top_dir")"
+                    h="/$scan_dir/$top_dir"
+                fi
+
+                # Collect children: sub-files and sub-dirs
+                children=""
+                child_entries="${dir_children[$top_dir]:-}"
+
+                # Also look for sub-directory READMEs (depth > 1)
+                for key in "${!dir_readmes[@]}"; do
+                    if [[ "$key" == "$top_dir/"* ]]; then
+                        sub_info="${dir_readmes[$key]}"
+                        st="${sub_info%%|*}"
+                        sh="${sub_info##*|}"
+                        sub_entry="{\"title\":\"$st\",\"href\":\"$sh\"}"
+                        if [ -z "$children" ]; then
+                            children="$sub_entry"
+                        else
+                            children="$children,$sub_entry"
+                        fi
+                    fi
+                done
+
+                # Add non-README children
+                if [ -n "$child_entries" ]; then
+                    if [ -z "$children" ]; then
+                        children="$child_entries"
+                    else
+                        children="$children,$child_entries"
+                    fi
+                fi
+
+                if [ -n "$children" ]; then
+                    entry="{\"title\":\"$t\",\"href\":\"$h\",\"children\":[$children]}"
+                else
+                    entry="{\"title\":\"$t\",\"href\":\"$h\"}"
+                fi
+
+                if [ -z "$top_level_links" ]; then
+                    top_level_links="$entry"
+                else
+                    top_level_links="$top_level_links,$entry"
+                fi
+            fi
         fi
-        NAV_OPS_JSON="$NAV_OPS_JSON{\"title\":\"$title\",\"href\":\"/$doc\"}"
+    done
+
+    if [ -n "$top_level_links" ]; then
+        nav_groups["$scan_dir"]="[$top_level_links]"
     fi
+
+    # Clean up per-scan_dir associative arrays
+    unset dir_children
+    unset dir_readmes
+    unset seen_top_dirs
+    declare -A dir_children
+    declare -A dir_readmes
+    declare -A seen_top_dirs
 done
-
-NAV_OPS_JSON="$NAV_OPS_JSON]"
-
-# Reference docs
-declare -a REFS=(repository documentation-strategy ci testing state-store)
-declare -a REF_TITLES=("Repository Structure" "Documentation Strategy" "CI/CD" "Testing" "State Store")
-
-NAV_REF_JSON="["
-first_ref=true
-
-for i in "${!REFS[@]}"; do
-    doc="${REFS[$i]}"
-    title="${REF_TITLES[$i]}"
-    src="$REPO_ROOT/handbook/$doc.md"
-
-    if [ -f "$src" ]; then
-        echo "  → handbook/$doc"
-        generate_page "$src" "$APP_DIR/$doc" "$title" "$title" "handbook/$doc.md"
-
-        if [ "$first_ref" = true ]; then
-            first_ref=false
-        else
-            NAV_REF_JSON="$NAV_REF_JSON,"
-        fi
-        NAV_REF_JSON="$NAV_REF_JSON{\"title\":\"$title\",\"href\":\"/$doc\"}"
-    fi
-done
-
-NAV_REF_JSON="$NAV_REF_JSON]"
 
 # ── Write navigation.json ────────────────────────────────────
 
+# Map scan directories to navigation group names
+# The Navigation.tsx expects: overview, layers, operations, reference
+# We map: handbook → split into overview + operations + reference (legacy compat)
+#          layers → layers
+#          everything else → their humanized name
+
+# Build the overview group (Architecture homepage)
+overview_json='[{"title":"Architecture","href":"/"}]'
+
+# Layers come from nav_groups[layers]
+layers_json="${nav_groups[layers]:-[]}"
+
+# All handbook pages go into a single "Handbook" group
+handbook_json="${nav_groups[handbook]:-[]}"
+
+# Build remaining groups
+other_groups=""
+for scan_dir in "${SCAN_DIRS[@]}"; do
+    case "$scan_dir" in
+        handbook|layers) continue ;;
+    esac
+    group_data="${nav_groups[$scan_dir]:-}"
+    if [ -n "$group_data" ] && [ "$group_data" != "[]" ]; then
+        group_title="$(humanize "$scan_dir")"
+        if [ -n "$other_groups" ]; then
+            other_groups="$other_groups,"
+        fi
+        other_groups="$other_groups\"$scan_dir\":{\"title\":\"$group_title\",\"links\":$group_data}"
+    fi
+done
+
 cat > "$NAV_FILE" << NAVEOF
 {
-  "overview": $NAV_OVERVIEW,
-  "layers": $NAV_LAYERS_JSON,
-  "operations": $NAV_OPS_JSON,
-  "reference": $NAV_REF_JSON
+  "overview": $overview_json,
+  "layers": $layers_json,
+  "handbook": $handbook_json,
+  "extra": {${other_groups}}
 }
 NAVEOF
 
-echo "  → navigation.json"
+echo "  navigation.json"
 
 page_count=$(find "$APP_DIR" -name 'page.mdx' | wc -l | tr -d ' ')
 echo "Done. $page_count pages synced."
