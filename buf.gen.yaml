@@ -15,17 +15,10 @@ plugins:
       - paths=source_relative
 
   # --- Rust ---
-  - remote: buf.build/protocolbuffers/rust
-    out: sdk/rust
+  # Rust uses prost-build locally (no buf remote plugin available).
+  # Generate via build.rs when proto compilation is wired.
 
-  # --- Python ---
-  - remote: buf.build/protocolbuffers/python
-    out: sdk/python
-  - remote: buf.build/grpc/python
-    out: sdk/python
-
-  # --- JS/TS ---
-  - remote: buf.build/protocolbuffers/es
-    out: sdk/js
-  - remote: buf.build/connectrpc/es
-    out: sdk/js
+  # --- Python / JS / TS ---
+  # Deferred until SDK consumers exist. Plugins:
+  # buf.build/protocolbuffers/python, buf.build/grpc/python
+  # buf.build/protocolbuffers/es, buf.build/connectrpc/es
