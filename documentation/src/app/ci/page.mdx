@@ -7,6 +7,8 @@ export const metadata = {
 
 # CI/CD
 
+<p className="text-sm text-gray-500">Last updated: 2026-03-24 (de5037f)</p>
+
 
 ## Overview
 
@@ -19,6 +21,7 @@ Syfrah uses GitHub Actions for continuous integration. The CI dynamically discov
 | **CI** | `.github/workflows/ci.yml` | Push/PR on `main` | Format, lint, test per layer |
 | **Documentation** | `.github/workflows/docs.yml` | Push on `main` (docs/layers change) | Build and deploy docs site |
 | **Security** | `.github/workflows/security.yml` | Weekly + Cargo.toml changes | `cargo audit` for vulnerabilities |
+| **Release** | `.github/workflows/release.yml` | `v*` tag push | Build static binaries, create GitHub Release |
 
 ## CI pipeline
 
@@ -116,6 +119,23 @@ Some tests require root privileges or WireGuard kernel support. These are marked
 ```bash
 sudo cargo test -- --ignored
 ```
+
+## Branch protection
+
+The `main` branch is protected by a GitHub ruleset named **main-protection**. The ruleset enforces:
+
+| Rule | Effect |
+|---|---|
+| **Pull request required** | All changes reach `main` through a PR. Stale reviews are dismissed on push. `required_approving_review_count` is 0 because the repo owner works solo. |
+| **Required status checks** | `Format`, `syfrah-core`, `syfrah-fabric`, `syfrah-bin`, and `syfrah-state` must pass. Branches must be up-to-date before merge (strict mode). |
+| **No force-push** | `non_fast_forward` rule prevents history rewrites on `main`. |
+| **No deletion** | `main` cannot be deleted. |
+
+Repository admins can bypass the ruleset when necessary.
+
+### CODEOWNERS
+
+`.github/CODEOWNERS` assigns `@sifrah` as the default reviewer for all paths. GitHub automatically requests a review from matching code owners on every PR.
 
 ## Cache
 

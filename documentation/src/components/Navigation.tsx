@@ -307,7 +307,7 @@ function NavigationGroup({
   )
 }
 
-// Build navigation groups from the generated JSON
+// Build navigation groups from the auto-generated JSON
 function buildNavigation(): NavGroup[] {
   let groups: NavGroup[] = []
 
@@ -319,12 +319,18 @@ function buildNavigation(): NavGroup[] {
     groups.push({ title: 'Layers', links: navData.layers })
   }
 
-  if (navData.operations?.length > 0) {
-    groups.push({ title: 'Operations', links: navData.operations })
+  if (navData.handbook?.length > 0) {
+    groups.push({ title: 'Handbook', links: navData.handbook })
   }
 
-  if (navData.reference?.length > 0) {
-    groups.push({ title: 'Reference', links: navData.reference })
+  // Dynamic extra groups (dev, benchmarks, post_release_audit, sdk, api, etc.)
+  if (navData.extra) {
+    for (const [, value] of Object.entries(navData.extra)) {
+      const group = value as { title: string; links: NavLink[] }
+      if (group.links?.length > 0) {
+        groups.push({ title: group.title, links: group.links })
+      }
+    }
   }
 
   return groups
