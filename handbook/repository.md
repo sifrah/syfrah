@@ -11,15 +11,16 @@ The repository is organized by architectural layer. Each layer is a self-contain
     ────────                              ────────────────              ──────
 
     layers/core/                          Foundation types (no I/O)     Implemented
+    layers/state/                         State library (cross-cutting) Implemented
+    layers/api/                           API library (cross-cutting)   Implemented
     layers/fabric/                        Fabric layer                  Implemented
-    layers/state/                         State inspection              Implemented
     layers/forge/                         Forge layer                   Planned (README only)
     layers/compute/                       Compute layer (Cloud Hypervisor) Planned (README only)
     layers/storage/                       Storage layer                 Planned (README only)
     layers/overlay/                       Overlay layer                 Planned (README only)
     layers/controlplane/                  Control plane layer           Planned (README only)
-    layers/org/                           Organization model            Planned (README only)
     layers/iam/                           IAM layer                     Planned (README only)
+    layers/org/                           Organization model            Planned (README only)
     layers/products/                      Products layer                Planned (README only)
 
     One folder = one layer.
@@ -347,8 +348,9 @@ Lower layers never depend on higher layers. `core` is the foundation.
 
 ```
     syfrah-core             ← depends on nothing (foundation)
-    syfrah-fabric           ← depends on core
-    syfrah-state            ← depends on nothing (standalone state inspection)
+    syfrah-state            ← depends on nothing (cross-cutting persistence library)
+    syfrah-api              ← depends on nothing (cross-cutting transport library)
+    syfrah-fabric           ← depends on core, state, api
     bin/syfrah              ← depends on fabric, state
 ```
 
@@ -356,8 +358,9 @@ Lower layers never depend on higher layers. `core` is the foundation.
 
 ```
     syfrah-core             ← depends on nothing (foundation)
-    syfrah-fabric           ← depends on core
-    syfrah-state            ← depends on nothing
+    syfrah-state            ← depends on nothing (cross-cutting)
+    syfrah-api              ← depends on nothing (cross-cutting)
+    syfrah-fabric           ← depends on core, state, api
     syfrah-org              ← depends on core
     syfrah-iam              ← depends on core, org
     syfrah-compute          ← depends on core, fabric

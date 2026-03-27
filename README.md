@@ -20,14 +20,15 @@ The long-term vision is to grow Syfrah into a full control plane that orchestrat
 |---|---|---|
 | **Core** | `syfrah-core` | Stable — types, crypto, IPv6 addressing |
 | **State** (library) | `syfrah-state` | Stable — embedded persistence (redb), cross-cutting library used by all layers |
+| **API** (library) | `syfrah-api` | Stable — error types, structured responses, cross-cutting library |
 | **Fabric** | `syfrah-fabric` | Stable — WireGuard mesh, peering, daemon, CLI |
 | Forge | — | Design phase |
 | Compute | — | Design phase |
 | Storage | — | Design phase |
 | Overlay | — | Design phase |
-| control plane | — | Design phase |
-| Org | — | Design phase |
+| Control Plane | — | Design phase |
 | IAM | — | Design phase |
+| Org | — | Design phase |
 | Products | — | Design phase |
 
 ## Install
@@ -150,9 +151,9 @@ The layers below are architecturally designed with concept documentation but hav
 - **Compute** — KVM-based microVMs via Cloud Hypervisor
 - **Storage** — S3-backed block devices (ZeroFS)
 - **Overlay** — VXLAN, VPCs, security groups, private DNS
-- **control plane** — Raft consensus + SWIM gossip, embedded on every node
-- **Org** — multi-tenant organization/project/environment model
+- **Control Plane** — Raft consensus + SWIM gossip, embedded on every node
 - **IAM** — role-based access control and API keys
+- **Org** — multi-tenant organization/project/environment model
 - **Products** — managed databases, load balancers, composed from forge primitives
 
 See [handbook/ARCHITECTURE.md](handbook/ARCHITECTURE.md) for the full design.
@@ -167,6 +168,8 @@ cargo test            # run tests
 cargo clippy          # lint
 cargo run -- --help   # run the CLI
 ```
+
+> **Note:** These are development commands for building from source, not the `syfrah` CLI. For CLI usage, see [Quick Start](#quick-start) above.
 
 ## Security
 

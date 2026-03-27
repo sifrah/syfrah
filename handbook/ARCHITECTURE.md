@@ -39,17 +39,17 @@ These are deliberate choices, not missing features:
     │                                                             │
     ├─────────────────────────────────────────────────────────────┤
     │                                                             │
-    │   IAM                           Organization Model          │
-    │   4 roles (owner, admin,        Org → Project → Env         │
-    │   developer, viewer)            Custom env names, TTL,      │
-    │   Per-org/project scoping       deletion protection         │
-    │   API keys per project                                      │
+    │   Products                                                  │
+    │   VMs, Load Balancers, Managed PostgreSQL, ...              │
+    │   Each product = forge primitives + product-specific config  │
     │                                                             │
     ├─────────────────────────────────────────────────────────────┤
     │                                                             │
-    │   Cloud Products                                            │
-    │   VMs, Load Balancers, Managed PostgreSQL, ...              │
-    │   Each product = forge primitives + product-specific config  │
+    │   Org                             IAM                       │
+    │   Org → Project → Env             4 roles (owner, admin,    │
+    │   Custom env names, TTL,          developer, viewer)        │
+    │   deletion protection             Per-org/project scoping   │
+    │                                   API keys per project      │
     │                                                             │
     ├─────────────────────────────────────────────────────────────┤
     │                                                             │
@@ -81,13 +81,24 @@ These are deliberate choices, not missing features:
     │                                                             │
     ├─────────────────────────────────────────────────────────────┤
     │                                                             │
+    │   Core                                                      │
+    │   Pure types, crypto, IPv6 addressing (no I/O)              │
+    │                                                             │
+    ├─────────────────────────────────────────────────────────────┤
+    │                                                             │
     │   Dedicated Servers        +        S3 Buckets              │
     │   (OVH, Hetzner, Scaleway)          (same providers)        │
     │                                                             │
     └─────────────────────────────────────────────────────────────┘
+
+    Cross-cutting libraries (not vertical layers — any layer may depend on these):
+    ┌─────────────────────────────────────────────────────────────┐
+    │  State (syfrah-state): redb wrapper, ACID persistence       │
+    │  API (syfrah-api): error types, structured responses        │
+    └─────────────────────────────────────────────────────────────┘
 ```
 
-**State** is a **cross-cutting library**, not a vertical stack layer. It provides embedded persistence (redb) and is used by all layers that need to store data locally. It does not appear in the stack diagram because it sits alongside every layer rather than above or below them.
+The vertical layer order (bottom to top) is: **Core, Fabric, Forge, Compute/Storage/Overlay, Control Plane, IAM/Org, Products**. **State** and **API** are cross-cutting libraries that sit alongside the stack rather than within it -- they provide embedded persistence and shared transport types respectively, and are used by all layers that need them.
 
 ## Layer by layer
 
@@ -352,7 +363,7 @@ Regions and availability zones are logical labels on nodes. They represent where
 | Storage engine | ZeroFS | S3-backed block devices, Rust, local cache |
 | Overlay encap | VXLAN | Standard, kernel-native, 16M VNIs |
 | Firewall | nftables | Per-VM security groups, stateful, conntrack |
-| DNS | CoreDNS | Lightweight, per-VPC zones |
+| DNS | CoreDNS (planned) | Lightweight, per-VPC zones -- not yet implemented, part of the overlay layer |
 | Serialization | serde + JSON | All public types are Serialize/Deserialize |
 | Errors | thiserror (lib), anyhow (bin) | Project convention |
 
@@ -430,7 +441,7 @@ The architecture assumes a hostile operational environment. Nodes are rented mac
 | **Compute** (`layers/compute/`) | Planned | README only, no code |
 | **Storage** (`layers/storage/`) | Planned | README only, no code |
 | **Overlay** (`layers/overlay/`) | Planned | README only, no code |
-| **control plane** (`layers/controlplane/`) | Planned | README only, no code |
+| **Control Plane** (`layers/controlplane/`) | Planned | README only, no code |
 | **IAM** (`layers/iam/`) | Planned | README only, no code |
 | **Organization** (`layers/org/`) | Planned | README only, no code |
 | **Products** (`layers/products/`) | Planned | README only, no code |
