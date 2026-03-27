@@ -17,6 +17,11 @@
 //! - `POST /v1/fabric/reload`                 — Reload
 //! - `POST /v1/fabric/rotate-secret`          — RotateSecret
 //! - `GET  /v1/fabric/status`                 — GetStatus (health check)
+//! - `GET  /v1/fabric/peers`                  — ListPeers
+//! - `GET  /v1/fabric/topology`               — GetTopology
+//! - `GET  /v1/fabric/events`                 — GetEvents
+//! - `GET  /v1/fabric/audit`                  — GetAudit
+//! - `GET  /v1/fabric/metrics`                — GetMetrics
 //!
 //! Configuration (in `~/.syfrah/config.toml`):
 //!
@@ -158,6 +163,76 @@ struct RotateSecretResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Response types for new read-only endpoints
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct PeerInfo {
+    name: String,
+    public_key: String,
+    endpoint: String,
+    ipv6_address: String,
+    status: String,
+    last_handshake: u64,
+    region: Option<String>,
+    zone: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ListPeersResponse {
+    peers: Vec<PeerInfo>,
+}
+
+#[derive(Debug, Serialize)]
+struct TopologyEdge {
+    from_peer: String,
+    to_peer: String,
+    latency_us: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct GetTopologyResponse {
+    peers: Vec<PeerInfo>,
+    edges: Vec<TopologyEdge>,
+}
+
+#[derive(Debug, Serialize)]
+struct FabricEventInfo {
+    id: String,
+    kind: String,
+    message: String,
+    timestamp: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct GetEventsResponse {
+    events: Vec<FabricEventInfo>,
+}
+
+#[derive(Debug, Serialize)]
+struct AuditEntryInfo {
+    id: String,
+    action: String,
+    actor: String,
+    details: String,
+    timestamp: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct GetAuditResponse {
+    entries: Vec<AuditEntryInfo>,
+}
+
+#[derive(Debug, Serialize)]
+struct GetMetricsResponse {
+    peer_count: u32,
+    bytes_sent: u64,
+    bytes_received: u64,
+    handshakes_completed: u32,
+    handshakes_failed: u32,
+}
+
+// ---------------------------------------------------------------------------
 // Shared state
 // ---------------------------------------------------------------------------
 
@@ -194,7 +269,12 @@ pub fn router_with_auth(handler: SharedHandler, validator: Option<SharedValidato
         )
         .route("/v1/fabric/reload", post(reload))
         .route("/v1/fabric/rotate-secret", post(rotate_secret))
-        .route("/v1/fabric/status", get(status));
+        .route("/v1/fabric/status", get(status))
+        .route("/v1/fabric/peers", get(list_peers))
+        .route("/v1/fabric/topology", get(get_topology))
+        .route("/v1/fabric/events", get(get_events))
+        .route("/v1/fabric/audit", get(get_audit))
+        .route("/v1/fabric/metrics", get(get_metrics));
 
     match validator {
         Some(v) => auth_middleware::with_auth_layer(base, v).with_state(handler),
@@ -367,6 +447,138 @@ async fn rotate_secret(
 
 async fn status() -> impl IntoResponse {
     Json(StatusResponse { status: "ok" })
+}
+
+// ---------------------------------------------------------------------------
+// Read-only handlers (store/events/audit/metrics)
+// ---------------------------------------------------------------------------
+
+fn peer_record_to_info(p: &syfrah_core::mesh::PeerRecord) -> PeerInfo {
+    PeerInfo {
+        name: p.name.clone(),
+        public_key: p.wg_public_key.clone(),
+        endpoint: p.endpoint.to_string(),
+        ipv6_address: p.mesh_ipv6.to_string(),
+        status: format!("{:?}", p.status),
+        last_handshake: p.last_seen,
+        region: p.region.clone(),
+        zone: p.zone.clone(),
+    }
+}
+
+async fn list_peers() -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let peers = crate::store::get_peers().map_err(|e| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: format!("store unavailable: {e}"),
+            }),
+        )
+    })?;
+    let mut infos: Vec<PeerInfo> = peers.iter().map(peer_record_to_info).collect();
+    infos.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(Json(ListPeersResponse { peers: infos }))
+}
+
+async fn get_topology() -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let peers = crate::store::get_peers().map_err(|e| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: format!("store unavailable: {e}"),
+            }),
+        )
+    })?;
+    let mut infos: Vec<PeerInfo> = peers.iter().map(peer_record_to_info).collect();
+    infos.sort_by(|a, b| a.name.cmp(&b.name));
+
+    // Build full-mesh edges between all active peers.
+    let active_names: Vec<&str> = peers
+        .iter()
+        .filter(|p| p.status == syfrah_core::mesh::PeerStatus::Active)
+        .map(|p| p.name.as_str())
+        .collect();
+    let mut edges = Vec::new();
+    for i in 0..active_names.len() {
+        for j in (i + 1)..active_names.len() {
+            edges.push(TopologyEdge {
+                from_peer: active_names[i].to_string(),
+                to_peer: active_names[j].to_string(),
+                latency_us: 0,
+            });
+        }
+    }
+
+    Ok(Json(GetTopologyResponse {
+        peers: infos,
+        edges,
+    }))
+}
+
+async fn get_events() -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let events = crate::events::list_events().map_err(|e| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: format!("events unavailable: {e}"),
+            }),
+        )
+    })?;
+    let items: Vec<FabricEventInfo> = events
+        .iter()
+        .enumerate()
+        .map(|(i, e)| FabricEventInfo {
+            id: format!("{}", i + 1),
+            kind: e.event_type.to_string(),
+            message: e
+                .details
+                .clone()
+                .unwrap_or_else(|| e.event_type.to_string()),
+            timestamp: e.timestamp,
+        })
+        .collect();
+    Ok(Json(GetEventsResponse { events: items }))
+}
+
+async fn get_audit() -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let entries = crate::audit::read_entries().map_err(|e| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: format!("audit log unavailable: {e}"),
+            }),
+        )
+    })?;
+    let items: Vec<AuditEntryInfo> = entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| AuditEntryInfo {
+            id: format!("{}", i + 1),
+            action: e.event_type.clone(),
+            actor: e
+                .caller_uid
+                .map(|uid| format!("uid:{uid}"))
+                .unwrap_or_else(|| "system".to_string()),
+            details: e.details.clone().unwrap_or_default(),
+            timestamp: e.timestamp,
+        })
+        .collect();
+    Ok(Json(GetAuditResponse { entries: items }))
+}
+
+async fn get_metrics() -> impl IntoResponse {
+    let peer_count = crate::store::peer_count().unwrap_or(0) as u32;
+    let bytes_sent = crate::store::inc_metric("bytes_sent", 0).unwrap_or(0);
+    let bytes_received = crate::store::inc_metric("bytes_received", 0).unwrap_or(0);
+    let handshakes_completed = crate::store::inc_metric("peers_discovered", 0).unwrap_or(0) as u32;
+    let handshakes_failed = crate::store::inc_metric("announcements_failed", 0).unwrap_or(0) as u32;
+    Json(GetMetricsResponse {
+        peer_count,
+        bytes_sent,
+        bytes_received,
+        handshakes_completed,
+        handshakes_failed,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -991,6 +1203,101 @@ mod tests {
             let resp = app.oneshot(req).await.unwrap();
             assert_eq!(resp.status(), StatusCode::OK);
         }
+    }
+
+    // ----- Read-only endpoint tests -----
+
+    #[tokio::test]
+    async fn list_peers_returns_json_array() {
+        let app = test_router();
+        let (status, body) = send_request(app, "GET", "/v1/fabric/peers", None).await;
+        // Without a store this may return SERVICE_UNAVAILABLE or OK with empty list.
+        assert!(
+            status == StatusCode::OK || status == StatusCode::SERVICE_UNAVAILABLE,
+            "unexpected status: {status}"
+        );
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        if status == StatusCode::OK {
+            assert!(v["peers"].is_array(), "peers field should be a JSON array");
+        }
+    }
+
+    #[tokio::test]
+    async fn get_topology_returns_peers_and_edges() {
+        let app = test_router();
+        let (status, body) = send_request(app, "GET", "/v1/fabric/topology", None).await;
+        assert!(
+            status == StatusCode::OK || status == StatusCode::SERVICE_UNAVAILABLE,
+            "unexpected status: {status}"
+        );
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        if status == StatusCode::OK {
+            assert!(v["peers"].is_array(), "peers field should be a JSON array");
+            assert!(v["edges"].is_array(), "edges field should be a JSON array");
+        }
+    }
+
+    #[tokio::test]
+    async fn get_events_returns_json_array() {
+        let app = test_router();
+        let (status, body) = send_request(app, "GET", "/v1/fabric/events", None).await;
+        assert!(
+            status == StatusCode::OK || status == StatusCode::SERVICE_UNAVAILABLE,
+            "unexpected status: {status}"
+        );
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        if status == StatusCode::OK {
+            assert!(
+                v["events"].is_array(),
+                "events field should be a JSON array"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn get_audit_returns_json_array() {
+        let app = test_router();
+        let (status, body) = send_request(app, "GET", "/v1/fabric/audit", None).await;
+        assert!(
+            status == StatusCode::OK || status == StatusCode::SERVICE_UNAVAILABLE,
+            "unexpected status: {status}"
+        );
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        if status == StatusCode::OK {
+            assert!(
+                v["entries"].is_array(),
+                "entries field should be a JSON array"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn get_metrics_returns_structured_json() {
+        let app = test_router();
+        let (status, body) = send_request(app, "GET", "/v1/fabric/metrics", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let obj = v.as_object().unwrap();
+        assert!(
+            obj.contains_key("peer_count"),
+            "missing proto field: peer_count"
+        );
+        assert!(
+            obj.contains_key("bytes_sent"),
+            "missing proto field: bytes_sent"
+        );
+        assert!(
+            obj.contains_key("bytes_received"),
+            "missing proto field: bytes_received"
+        );
+        assert!(
+            obj.contains_key("handshakes_completed"),
+            "missing proto field: handshakes_completed"
+        );
+        assert!(
+            obj.contains_key("handshakes_failed"),
+            "missing proto field: handshakes_failed"
+        );
     }
 
     // ----- Auth middleware integration tests -----
