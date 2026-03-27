@@ -8,7 +8,7 @@ use tracing::info;
 
 use crate::client::ChClient;
 use crate::error::{ComputeError, ProcessError};
-use crate::process::{self, ReconnectReport, RuntimeDir};
+use crate::process::{self, RuntimeDir};
 use crate::runtime::VmRuntimeState;
 use crate::types::{VmEvent, VmId, VmSpec, VmStatus};
 
@@ -108,6 +108,24 @@ fn now_unix() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+// ---------------------------------------------------------------------------
+// ReconnectSummary — public-facing reconnect result
+// ---------------------------------------------------------------------------
+
+/// Summary of a reconnect operation, safe to expose publicly.
+///
+/// This mirrors `process::ReconnectReport` but uses `VmStatus` instead of
+/// internal `VmRuntimeState`, keeping the crate boundary clean.
+#[derive(Debug)]
+pub struct ReconnectSummary {
+    /// Number of VMs successfully recovered.
+    pub recovered_count: usize,
+    /// VMs that failed to reconnect: (vm_id, error description).
+    pub failed: Vec<(String, String)>,
+    /// VM IDs of orphaned runtime dirs that were cleaned up.
+    pub orphans_cleaned: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -293,27 +311,33 @@ impl VmManager {
     /// Scan runtime dirs and recover VMs that survived a daemon restart.
     ///
     /// Calls `process::reconnect`, inserts recovered VMs into the map, and
-    /// returns the reconnect report (recovered / failed / orphans cleaned).
-    pub async fn reconnect(&self) -> Result<ReconnectReport, ComputeError> {
+    /// returns a summary (recovered count / failed / orphans cleaned).
+    pub async fn reconnect(&self) -> Result<ReconnectSummary, ComputeError> {
         let report = process::reconnect(&self.config.base_dir, self.event_tx.clone()).await;
+
+        let recovered_count = report.recovered.len();
 
         // Insert recovered VMs into the map.
         if !report.recovered.is_empty() {
             let mut map = self.vms.write().await;
-            for state in &report.recovered {
+            for state in report.recovered {
                 let id = state.vm_id.0.clone();
-                map.insert(id, Arc::new(Mutex::new(state.clone())));
+                map.insert(id, Arc::new(Mutex::new(state)));
             }
         }
 
         info!(
-            recovered = report.recovered.len(),
+            recovered = recovered_count,
             failed = report.failed.len(),
             orphans = report.orphans_cleaned.len(),
             "VmManager: reconnect complete"
         );
 
-        Ok(report)
+        Ok(ReconnectSummary {
+            recovered_count,
+            failed: report.failed,
+            orphans_cleaned: report.orphans_cleaned,
+        })
     }
 
     // -- Events ---------------------------------------------------------------
@@ -449,7 +473,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let mgr = make_test_manager(tmp.path());
         let report = mgr.reconnect().await.unwrap();
-        assert_eq!(report.recovered.len(), 0);
+        assert_eq!(report.recovered_count, 0);
         assert_eq!(report.failed.len(), 0);
         assert_eq!(report.orphans_cleaned.len(), 0);
         // Map should still be empty
@@ -469,7 +493,7 @@ mod tests {
 
         let report = mgr.reconnect().await.unwrap();
         assert_eq!(report.orphans_cleaned.len(), 1);
-        assert_eq!(report.recovered.len(), 0);
+        assert_eq!(report.recovered_count, 0);
         // Orphan should be cleaned
         assert!(!orphan_path.exists());
         // Nothing added to map
@@ -489,7 +513,7 @@ mod tests {
 
         let report = mgr.reconnect().await.unwrap();
         assert_eq!(report.orphans_cleaned.len(), 1);
-        assert_eq!(report.recovered.len(), 0);
+        assert_eq!(report.recovered_count, 0);
         assert!(!corrupt_path.exists());
     }
 
@@ -514,7 +538,7 @@ mod tests {
 
         let report = mgr.reconnect().await.unwrap();
         // Dead PID = failed, not recovered
-        assert_eq!(report.recovered.len(), 0);
+        assert_eq!(report.recovered_count, 0);
         assert_eq!(report.failed.len(), 1);
         assert_eq!(report.failed[0].0, "vm-dead-mgr");
         // Should NOT be in the map

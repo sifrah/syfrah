@@ -16,6 +16,6 @@ pub use error::{
     ClientError, ComputeError, ConcurrencyError, ConfigError, PreflightError, ProcessError,
     TransitionError,
 };
-pub use manager::{ComputeConfig, VmManager};
+pub use manager::{ComputeConfig, ReconnectSummary, VmManager};
 pub use phase::VmPhase;
 pub use types::{GpuMode, NetworkConfig, VmEvent, VmId, VmSpec, VmStatus, VolumeAttachment};
