@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package syfrah.v1;
+
+option go_package = "github.com/sacha-ops/syfrah/gen/go/syfrah/v1;syfrahv1";
+
+// ComputeService exposes VM and container orchestration operations.
+service ComputeService {
+  // GetStatus returns the health and summary of the compute layer.
+  rpc GetStatus(ComputeGetStatusRequest) returns (ComputeGetStatusResponse);
+}
+
+message ComputeGetStatusRequest {}
+
+message ComputeGetStatusResponse {
+  string status = 1;
+}

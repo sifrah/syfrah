@@ -1,0 +1,18 @@
+[package]
+name = "syfrah-forge"
+description = "Forge layer — bare-metal provisioning for Syfrah"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+syfrah-api = { path = "../api" }
+async-trait = "0.1"
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

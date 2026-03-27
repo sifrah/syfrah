@@ -6,6 +6,11 @@ members = [
     "layers/state",
     "layers/api",
     "layers/fabric",
+    "layers/forge",
+    "layers/compute",
+    "layers/overlay",
+    "layers/storage",
+    "layers/org",
     "bin/syfrah",
 ]
 
