@@ -76,15 +76,44 @@ pub struct VmStatus {
 /// always `info()` / `status()`, never the event stream alone.
 #[derive(Clone, Debug)]
 pub enum VmEvent {
-    Created { vm_id: VmId },
-    Booted { vm_id: VmId },
-    Stopped { vm_id: VmId },
-    Crashed { vm_id: VmId, error: String },
-    Deleted { vm_id: VmId },
-    ReconnectSucceeded { vm_id: VmId },
-    ReconnectFailed { vm_id: VmId, error: String },
-    VmOrphanCleaned { vm_id: VmId, reason: String },
-    Resized { vm_id: VmId, new_vcpus: u32, new_memory_mb: u32 },
-    DeviceAttached { vm_id: VmId, device: String },
-    DeviceDetached { vm_id: VmId, device: String },
+    Created {
+        vm_id: VmId,
+    },
+    Booted {
+        vm_id: VmId,
+    },
+    Stopped {
+        vm_id: VmId,
+    },
+    Crashed {
+        vm_id: VmId,
+        error: String,
+    },
+    Deleted {
+        vm_id: VmId,
+    },
+    ReconnectSucceeded {
+        vm_id: VmId,
+    },
+    ReconnectFailed {
+        vm_id: VmId,
+        error: String,
+    },
+    VmOrphanCleaned {
+        vm_id: VmId,
+        reason: String,
+    },
+    Resized {
+        vm_id: VmId,
+        new_vcpus: u32,
+        new_memory_mb: u32,
+    },
+    DeviceAttached {
+        vm_id: VmId,
+        device: String,
+    },
+    DeviceDetached {
+        vm_id: VmId,
+        device: String,
+    },
 }
