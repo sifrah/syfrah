@@ -25,10 +25,16 @@ def parse_proto(proto_path: str) -> dict:
     result = {
         "service_name": "",
         "service_comment": "",
+        "version": "",
         "rpcs": [],
         "messages": {},
         "enums": {},
     }
+
+    # Extract version from package declaration (e.g. package syfrah.fabric.v1;)
+    pkg_match = re.search(r"^package\s+syfrah\.\w+\.(v\d+)\s*;", content, re.MULTILINE)
+    if pkg_match:
+        result["version"] = pkg_match.group(1)
 
     # Extract service name
     svc_match = re.search(r"service\s+(\w+)\s*\{", content)
@@ -202,6 +208,7 @@ def generate_openapi(proto_data: dict, layer_name: str, is_stub: bool) -> str:
     """Generate OpenAPI 3.0 YAML string from parsed proto data."""
     service = proto_data["service_name"]
     description = proto_data["service_comment"] or f"{service} API"
+    version = proto_data.get("version", "v1") or "v1"
 
     # Determine display name for the layer
     display_name = layer_name.capitalize()
@@ -237,7 +244,7 @@ def generate_openapi(proto_data: dict, layer_name: str, is_stub: bool) -> str:
     lines.append("paths:")
 
     if is_stub:
-        path = f"/v1/{layer_name}/status"
+        path = f"/{version}/{layer_name}/status"
         lines.append(f"  '{path}':")
         lines.append("    get:")
         lines.append(f"      operationId: get{display_name}Status")
@@ -264,7 +271,7 @@ def generate_openapi(proto_data: dict, layer_name: str, is_stub: bool) -> str:
             if not rpc["http_path"]:
                 continue
             method = rpc["http_method"].lower()
-            path = rpc["http_path"]
+            path = f"/{version}{rpc['http_path']}"
             tag = _rpc_tag(rpc["name"], layer_name)
             op_id = rpc["name"][0].lower() + rpc["name"][1:]
 
