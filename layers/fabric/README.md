@@ -1,3 +1,6 @@
+---
+tags: [networking, wireguard, security, mesh]
+---
 # Fabric
 
 ## What is the fabric?

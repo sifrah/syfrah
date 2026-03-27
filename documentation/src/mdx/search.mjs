@@ -71,7 +71,18 @@ export default function Search(nextConfig = {}) {
                 cache.set(file, [mdx, sections])
               }
 
-              return { url, sections }
+              // Extract tags from PageTags component in MDX
+              let tags = []
+              let tagsMatch = mdx.match(/tags=\{(\[[^\]]*\])\}/)
+              if (tagsMatch) {
+                try {
+                  tags = JSON.parse(tagsMatch[1])
+                } catch (e) {
+                  // ignore parse errors
+                }
+              }
+
+              return { url, sections, tags }
             })
 
             // When this file is imported within the application
@@ -83,8 +94,8 @@ export default function Search(nextConfig = {}) {
                 tokenize: 'full',
                 document: {
                   id: 'url',
-                  index: 'content',
-                  store: ['title', 'pageTitle'],
+                  index: ['content', 'tags'],
+                  store: ['title', 'pageTitle', 'tags'],
                 },
                 context: {
                   resolution: 9,
@@ -95,13 +106,15 @@ export default function Search(nextConfig = {}) {
 
               let data = ${JSON.stringify(data)}
 
-              for (let { url, sections } of data) {
+              for (let { url, sections, tags } of data) {
                 for (let [title, hash, content] of sections) {
+                  let isFirst = !hash
                   sectionIndex.add({
                     url: url + (hash ? ('#' + hash) : ''),
                     title,
                     content: [title, ...content].join('\\n'),
                     pageTitle: hash ? sections[0][0] : undefined,
+                    tags: isFirst && tags.length > 0 ? tags.join(' ') : '',
                   })
                 }
               }
@@ -114,10 +127,22 @@ export default function Search(nextConfig = {}) {
                 if (result.length === 0) {
                   return []
                 }
-                return result[0].result.map((item) => ({
+                // Deduplicate results across multiple index fields
+                let seen = new Set()
+                let merged = []
+                for (let field of result) {
+                  for (let item of field.result) {
+                    if (!seen.has(item.id)) {
+                      seen.add(item.id)
+                      merged.push(item)
+                    }
+                  }
+                }
+                return merged.slice(0, options.limit || 5).map((item) => ({
                   url: item.id,
                   title: item.doc.title,
                   pageTitle: item.doc.pageTitle,
+                  tags: item.doc.tags || '',
                 }))
               }
             `
