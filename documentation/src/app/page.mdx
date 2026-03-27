@@ -421,8 +421,22 @@ The architecture assumes a hostile operational environment. Nodes are rented mac
 
 **See also:** [`handbook/state-and-reconciliation.md`](state-and-reconciliation.md) for detailed phase models and reconciliation loop design.
 
-## Current status
+## Implementation status
 
-The **fabric layer** is implemented and functional: WireGuard mesh with manual TCP peering, encrypted peer announcements, IPv6 ULA addressing, daemon with health checks, and a full CLI (init, join, start, stop, leave, peers, peering, status, token, rotate).
+> **Important:** This document describes the full architectural vision. Only a subset is currently implemented. The table below tracks what exists today vs. what is planned.
 
-Everything else described in this document is the architectural plan, documented in detail in the concept docs, ready to be implemented.
+| Layer | Status | Notes |
+|---|---|---|
+| **Core** (`layers/core/`) | Implemented | Types, crypto, addressing, identity |
+| **Fabric** (`layers/fabric/`) | Implemented | WireGuard mesh, TCP peering, daemon, full CLI |
+| **State** (`layers/state/`) | Implemented | State inspection CLI (`syfrah state list/get/drop`) |
+| **Forge** (`layers/forge/`) | Planned | README only, no code |
+| **Compute** (`layers/compute/`) | Planned | README only, no code |
+| **Storage** (`layers/storage/`) | Planned | README only, no code |
+| **Overlay** (`layers/overlay/`) | Planned | README only, no code |
+| **Control Plane** (`layers/controlplane/`) | Planned | README only, no code |
+| **Organization** (`layers/org/`) | Planned | README only, no code |
+| **IAM** (`layers/iam/`) | Planned | README only, no code |
+| **Products** (`layers/products/`) | Planned | README only, no code |
+
+Sections above describing Raft, gossip, forge reconciliation, compute, storage, overlay, org model, IAM, and cloud products reflect the **architectural plan**, not current functionality.
