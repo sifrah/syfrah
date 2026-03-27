@@ -397,20 +397,8 @@ def _render_schema(lines: list, schema: dict, indent: int):
 
 
 def _rpc_tag(rpc_name: str, layer_name: str) -> str:
-    """Derive a tag name from the RPC name, prefixed with the layer name."""
-    display = layer_name.capitalize()
-    name_lower = rpc_name.lower()
-    if "peer" in name_lower and "peering" not in name_lower:
-        return f"{display}: Peers"
-    if "peering" in name_lower or "join" in name_lower:
-        return f"{display}: Peering"
-    if "status" in name_lower or "topology" in name_lower:
-        return f"{display}: Status"
-    if "reload" in name_lower or "rotate" in name_lower:
-        return f"{display}: Operations"
-    if "event" in name_lower or "audit" in name_lower or "metric" in name_lower:
-        return f"{display}: Observability"
-    return display
+    """Return the layer name as the tag — Scalar groups by tag in the sidebar."""
+    return layer_name.capitalize()
 
 
 def _humanize(name: str) -> str:

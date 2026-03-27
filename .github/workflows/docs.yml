@@ -8,7 +8,7 @@ on:
       - 'layers/*/proto/*.proto'
       - 'handbook/**'
       - 'api/proto/**'
-      - 'api/redocly.yaml'
+      - 'api/openapi.yaml'
       - 'scripts/gen-openapi.*'
       - 'dev/**/*.md'
       - 'benchmarks/**/*.md'
@@ -48,11 +48,8 @@ jobs:
         working-directory: docs
         run: bash sync.sh && npm run build
 
-      - name: Generate OpenAPI from proto files
+      - name: Generate OpenAPI and Scalar API docs
         run: bash scripts/gen-openapi.sh
-
-      - name: Build API docs (Redocly)
-        run: npx @redocly/cli build-docs api/openapi.yaml -o docs/dist/api/index.html
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
