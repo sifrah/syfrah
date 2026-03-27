@@ -437,7 +437,73 @@ mod tests {
         assert_eq!(extract_bdf_from_sysfs(path), "0000:01:00.0");
     }
 
+    // -- check_kvm (graceful in CI) -------------------------------------------
+
+    #[test]
+    fn kvm_check_graceful_in_ci() {
+        let result = check_kvm();
+        if Path::new("/dev/kvm").exists() {
+            // KVM is available — check may pass or fail on permissions.
+            // Either outcome is acceptable in CI.
+            let _ = result;
+        } else {
+            assert!(matches!(result, Some(PreflightError::KvmNotAvailable)));
+        }
+    }
+
     // -- run_preflight (integration) ------------------------------------------
+
+    #[test]
+    fn run_preflight_all_checks_pass_with_valid_setup() {
+        use crate::types::VmId;
+
+        let dir = TempDir::new().unwrap();
+
+        // Create real CH binary (executable)
+        let bin = dir.path().join("cloud-hypervisor");
+        fs::write(&bin, b"#!/bin/sh\necho fake").unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Create real kernel and image files
+        let kernel = dir.path().join("vmlinux");
+        fs::write(&kernel, b"kernel-data").unwrap();
+        let image = dir.path().join("rootfs.raw");
+        fs::write(&image, b"image-data").unwrap();
+
+        // Socket path that does not exist yet (free)
+        let socket = dir.path().join("api.sock");
+
+        let spec = ResolvedSpec {
+            vm_id: VmId("vm-valid".to_string()),
+            vcpus: 1,
+            memory_mb: 128,
+            kernel_path: kernel,
+            rootfs_path: image,
+            network: None,
+            volume_paths: vec![],
+            gpu_sysfs_path: None,
+        };
+
+        let result = run_preflight(&spec, &bin, &socket);
+
+        // KVM/cgroup may cause errors in CI — filter those out
+        match result {
+            Ok(()) => {} // all checks passed
+            Err(errors) => {
+                // Only KVM and cgroup errors are acceptable in CI
+                for e in &errors {
+                    assert!(
+                        matches!(
+                            e,
+                            PreflightError::KvmNotAvailable | PreflightError::CgroupV2NotAvailable
+                        ),
+                        "unexpected error in valid setup: {:?}",
+                        e
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn run_preflight_collects_multiple_errors() {
@@ -462,15 +528,15 @@ mod tests {
         )
         .unwrap_err();
 
-        // Should have at least kernel + image errors (CH binary too, but depends on host)
+        // Should have at least CH binary + kernel + image errors
         assert!(
-            errors.len() >= 2,
-            "expected multiple errors, got {}: {:?}",
+            errors.len() >= 3,
+            "expected at least 3 errors, got {}: {:?}",
             errors.len(),
             errors
         );
 
-        // Verify kernel and image errors are present
+        // Verify all three filesystem errors are present (order doesn't matter)
         assert!(errors
             .iter()
             .any(|e| matches!(e, PreflightError::KernelNotFound)));
@@ -480,5 +546,127 @@ mod tests {
         assert!(errors
             .iter()
             .any(|e| matches!(e, PreflightError::ChBinaryNotFound)));
+    }
+
+    #[test]
+    fn run_preflight_multi_error_collects_all_not_just_first() {
+        use crate::types::VmId;
+        use std::path::PathBuf;
+
+        // Create an occupied socket to add a 4th error source
+        let dir = TempDir::new().unwrap();
+        let socket = dir.path().join("api.sock");
+        fs::write(&socket, b"stale").unwrap();
+
+        let spec = ResolvedSpec {
+            vm_id: VmId("vm-multi".to_string()),
+            vcpus: 1,
+            memory_mb: 128,
+            kernel_path: PathBuf::from("/nonexistent/vmlinux"),
+            rootfs_path: PathBuf::from("/nonexistent/rootfs.raw"),
+            network: None,
+            volume_paths: vec![],
+            gpu_sysfs_path: None,
+        };
+
+        let errors =
+            run_preflight(&spec, Path::new("/nonexistent/cloud-hypervisor"), &socket).unwrap_err();
+
+        // Must have at least 4: CH binary + kernel + image + socket
+        assert!(
+            errors.len() >= 4,
+            "expected at least 4 errors, got {}: {:?}",
+            errors.len(),
+            errors
+        );
+
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, PreflightError::ChBinaryNotFound)));
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, PreflightError::KernelNotFound)));
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, PreflightError::ImageNotFound)));
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, PreflightError::SocketPathOccupied { .. })));
+    }
+
+    #[test]
+    fn run_preflight_no_gpu_skips_vfio_check() {
+        use crate::types::VmId;
+
+        let dir = TempDir::new().unwrap();
+
+        // Create valid CH binary, kernel, image
+        let bin = dir.path().join("cloud-hypervisor");
+        fs::write(&bin, b"fake").unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        let kernel = dir.path().join("vmlinux");
+        fs::write(&kernel, b"kernel").unwrap();
+        let image = dir.path().join("rootfs.raw");
+        fs::write(&image, b"image").unwrap();
+        let socket = dir.path().join("api.sock");
+
+        let spec = ResolvedSpec {
+            vm_id: VmId("vm-no-gpu".to_string()),
+            vcpus: 1,
+            memory_mb: 128,
+            kernel_path: kernel,
+            rootfs_path: image,
+            network: None,
+            volume_paths: vec![],
+            gpu_sysfs_path: None, // No GPU requested
+        };
+
+        let result = run_preflight(&spec, &bin, &socket);
+
+        // Even if VFIO is not available on this system, there should be
+        // no VfioNotBound error because gpu_sysfs_path is None.
+        match result {
+            Ok(()) => {}
+            Err(errors) => {
+                for e in &errors {
+                    assert!(
+                        !matches!(e, PreflightError::VfioNotBound { .. }),
+                        "VFIO error should not appear when no GPU requested, got: {:?}",
+                        e
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn run_preflight_capacity_absurd_vcpus_fails() {
+        use crate::types::VmId;
+
+        let dir = TempDir::new().unwrap();
+        let bin = dir.path().join("cloud-hypervisor");
+        fs::write(&bin, b"fake").unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        let kernel = dir.path().join("vmlinux");
+        fs::write(&kernel, b"kernel").unwrap();
+        let image = dir.path().join("rootfs.raw");
+        fs::write(&image, b"image").unwrap();
+        let socket = dir.path().join("api.sock");
+
+        let spec = ResolvedSpec {
+            vm_id: VmId("vm-absurd".to_string()),
+            vcpus: 10_000,
+            memory_mb: 128,
+            kernel_path: kernel,
+            rootfs_path: image,
+            network: None,
+            volume_paths: vec![],
+            gpu_sysfs_path: None,
+        };
+
+        let errors = run_preflight(&spec, &bin, &socket).unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, PreflightError::InsufficientResources { .. })));
     }
 }
