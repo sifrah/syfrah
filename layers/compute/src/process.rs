@@ -1,9 +1,12 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::{broadcast, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 
 use crate::client::ChClient;
@@ -12,7 +15,7 @@ use crate::error::{ComputeError, ProcessError};
 use crate::phase::VmPhase;
 use crate::preflight::run_preflight;
 use crate::runtime::{ReconnectSource, VmRuntimeState};
-use crate::types::VmSpec;
+use crate::types::{VmEvent, VmId, VmSpec};
 
 // ---------------------------------------------------------------------------
 // RuntimeDir (#475)
@@ -697,6 +700,371 @@ pub async fn delete_vm(
 }
 
 // ---------------------------------------------------------------------------
+// Scan all runtime dirs (including those without meta.json, for orphan detection)
+// ---------------------------------------------------------------------------
+
+/// Scan a base directory for all subdirectories, including those without meta.json.
+///
+/// Returns `(with_meta, without_meta)` — dirs with meta.json and orphan dirs without.
+fn scan_all_runtime_dirs(base: &Path) -> (Vec<RuntimeDir>, Vec<RuntimeDir>) {
+    let entries = match fs::read_dir(base) {
+        Ok(e) => e,
+        Err(_) => return (Vec::new(), Vec::new()),
+    };
+
+    let mut with_meta = Vec::new();
+    let mut without_meta = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if path.join("meta.json").exists() {
+                with_meta.push(RuntimeDir::from_existing(path));
+            } else {
+                without_meta.push(RuntimeDir::from_existing(path));
+            }
+        }
+    }
+    (with_meta, without_meta)
+}
+
+// ---------------------------------------------------------------------------
+// Monitor (#477) — periodic health check and crash detection
+// ---------------------------------------------------------------------------
+
+/// Periodic health-check loop for all tracked VMs.
+///
+/// Runs every `interval` (default 5s). For each VM in Running or Starting phase:
+/// 1. Check PID alive via `kill(pid, 0)`
+/// 2. Try `ping()` on the CH socket
+/// 3. If dead: transition to Failed, emit `VmEvent::Crashed`
+/// 4. If alive: update `last_ping_at`
+///
+/// Uses `try_lock()` on individual VM mutexes to avoid blocking on VMs that are
+/// mid-operation (e.g., a long shutdown). Skipped VMs are checked next iteration.
+pub async fn monitor_loop(
+    vms: Arc<RwLock<HashMap<String, Arc<Mutex<VmRuntimeState>>>>>,
+    event_tx: broadcast::Sender<VmEvent>,
+    interval: Duration,
+) {
+    loop {
+        tokio::time::sleep(interval).await;
+
+        // Take a snapshot of current VM keys under a brief read lock.
+        let snapshot: Vec<(String, Arc<Mutex<VmRuntimeState>>)> = {
+            let map = vms.read().await;
+            map.iter()
+                .map(|(k, v)| (k.clone(), Arc::clone(v)))
+                .collect()
+        };
+
+        for (vm_id_str, vm_arc) in snapshot {
+            // Use try_lock to avoid blocking on VMs mid-operation.
+            let mut guard = match vm_arc.try_lock() {
+                Ok(g) => g,
+                Err(_) => {
+                    debug!(vm_id = %vm_id_str, "monitor: skipping busy VM");
+                    continue;
+                }
+            };
+
+            // Only check VMs in Running or Starting phase.
+            if guard.current_phase != VmPhase::Running && guard.current_phase != VmPhase::Starting {
+                continue;
+            }
+
+            let pid = guard.pid;
+            let pid_alive = is_pid_alive(pid);
+
+            if !pid_alive {
+                warn!(vm_id = %vm_id_str, pid = pid, "monitor: PID dead, transitioning to Failed");
+                guard.current_phase = VmPhase::Failed;
+                guard.last_error = Some(format!("process {pid} no longer alive"));
+                let _ = event_tx.send(VmEvent::Crashed {
+                    vm_id: guard.vm_id.clone(),
+                    error: format!("process {pid} exited unexpectedly"),
+                });
+                continue;
+            }
+
+            // PID is alive — try ping on the socket.
+            let client = ChClient::with_timeout(guard.socket_path.clone(), Duration::from_secs(3));
+            // Drop the guard before the async ping to avoid holding the lock across await.
+            // We re-acquire after the ping completes.
+            let vm_id_clone = guard.vm_id.clone();
+            let socket_path = guard.socket_path.clone();
+            drop(guard);
+
+            let ping_ok = matches!(client.ping().await, Ok(true));
+
+            // Re-acquire the lock to update state.
+            let mut guard = match vm_arc.try_lock() {
+                Ok(g) => g,
+                Err(_) => continue,
+            };
+
+            // Re-check phase — it may have changed while we were pinging.
+            if guard.current_phase != VmPhase::Running && guard.current_phase != VmPhase::Starting {
+                continue;
+            }
+
+            if ping_ok {
+                guard.last_ping_at = Some(now_unix());
+            } else {
+                warn!(
+                    vm_id = %vm_id_str,
+                    socket = %socket_path.display(),
+                    "monitor: ping failed, transitioning to Failed"
+                );
+                guard.current_phase = VmPhase::Failed;
+                guard.last_error = Some("API socket unresponsive".to_string());
+                let _ = event_tx.send(VmEvent::Crashed {
+                    vm_id: vm_id_clone,
+                    error: "API socket unresponsive while PID alive".to_string(),
+                });
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Reconnect (#482) — recover VMs after daemon restart
+// ---------------------------------------------------------------------------
+
+/// Report returned by the reconnect scan.
+#[derive(Debug)]
+pub struct ReconnectReport {
+    /// VMs successfully recovered.
+    pub recovered: Vec<VmRuntimeState>,
+    /// VMs that failed to reconnect: (vm_id, error description).
+    pub failed: Vec<(String, String)>,
+    /// VM IDs of orphaned runtime dirs that were cleaned up.
+    pub orphans_cleaned: Vec<String>,
+}
+
+/// Scan runtime dirs, recover live VMs, report failures, clean orphans.
+///
+/// Truth model: `meta.json` = intention. PID alive + socket responding = reality.
+/// All three must agree for a successful reconnect.
+///
+/// Orphans (runtime dir with no meta.json, or with dead PID + dead socket)
+/// where meta.json is corrupt are cleaned immediately.
+pub async fn reconnect(base_dir: &Path, event_tx: broadcast::Sender<VmEvent>) -> ReconnectReport {
+    let mut report = ReconnectReport {
+        recovered: Vec::new(),
+        failed: Vec::new(),
+        orphans_cleaned: Vec::new(),
+    };
+
+    let (with_meta, without_meta) = scan_all_runtime_dirs(base_dir);
+
+    // Handle dirs without meta.json — completely corrupt orphans.
+    for dir in without_meta {
+        let dir_name = dir
+            .path()
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        warn!(
+            dir = %dir.path().display(),
+            "reconnect: orphan dir without meta.json, cleaning"
+        );
+
+        match cleanup_orphan(&dir, "no meta.json found") {
+            Ok(vm_id) => {
+                let _ = event_tx.send(VmEvent::VmOrphanCleaned {
+                    vm_id: VmId(vm_id.clone()),
+                    reason: "no meta.json found".to_string(),
+                });
+                report.orphans_cleaned.push(vm_id);
+            }
+            Err(e) => {
+                warn!(dir = %dir_name, error = %e, "failed to clean orphan dir");
+                report.orphans_cleaned.push(dir_name);
+            }
+        }
+    }
+
+    // Handle dirs with meta.json — attempt reconnect.
+    for dir in with_meta {
+        let meta = match dir.read_meta() {
+            Ok(m) => m,
+            Err(e) => {
+                // meta.json exists but is corrupt — treat as orphan.
+                let dir_name = dir
+                    .path()
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                warn!(
+                    dir = %dir.path().display(),
+                    error = %e,
+                    "reconnect: corrupt meta.json, treating as orphan"
+                );
+
+                match cleanup_orphan(&dir, "corrupt meta.json") {
+                    Ok(vm_id) => {
+                        let _ = event_tx.send(VmEvent::VmOrphanCleaned {
+                            vm_id: VmId(vm_id.clone()),
+                            reason: "corrupt meta.json".to_string(),
+                        });
+                        report.orphans_cleaned.push(vm_id);
+                    }
+                    Err(_) => {
+                        report.orphans_cleaned.push(dir_name);
+                    }
+                }
+                continue;
+            }
+        };
+
+        let vm_id_str = meta.vm_id.clone();
+
+        // Check PID alive.
+        if !is_pid_alive(meta.pid) {
+            info!(
+                vm_id = %vm_id_str,
+                pid = meta.pid,
+                "reconnect: PID dead"
+            );
+            let _ = event_tx.send(VmEvent::ReconnectFailed {
+                vm_id: VmId(vm_id_str.clone()),
+                error: format!("process {} no longer alive", meta.pid),
+            });
+            report
+                .failed
+                .push((vm_id_str, format!("PID {} dead", meta.pid)));
+            // Don't cleanup — forge decides.
+            continue;
+        }
+
+        // PID alive — check socket.
+        let socket_path = PathBuf::from(&meta.socket_path);
+        let client = ChClient::with_timeout(socket_path.clone(), Duration::from_secs(3));
+
+        let ping_ok = matches!(client.ping().await, Ok(true));
+
+        if !ping_ok {
+            info!(
+                vm_id = %vm_id_str,
+                "reconnect: PID alive but socket unresponsive"
+            );
+            let _ = event_tx.send(VmEvent::ReconnectFailed {
+                vm_id: VmId(vm_id_str.clone()),
+                error: "PID alive but API socket unresponsive".to_string(),
+            });
+            report.failed.push((
+                vm_id_str,
+                "PID alive but API socket unresponsive".to_string(),
+            ));
+            // Don't cleanup — forge decides.
+            continue;
+        }
+
+        // All three agree: meta.json + PID alive + socket responds.
+        info!(
+            vm_id = %vm_id_str,
+            pid = meta.pid,
+            "reconnect: successfully recovered VM"
+        );
+
+        let state = VmRuntimeState {
+            vm_id: VmId(vm_id_str.clone()),
+            pid: meta.pid,
+            socket_path,
+            cgroup_path: None,
+            ch_binary_path: PathBuf::from(&meta.ch_binary),
+            ch_binary_version: meta.ch_version,
+            launched_at: now_unix(),
+            last_ping_at: Some(now_unix()),
+            last_error: None,
+            current_phase: VmPhase::Running,
+            reconnect_source: ReconnectSource::Recovered,
+        };
+
+        let _ = event_tx.send(VmEvent::ReconnectSucceeded {
+            vm_id: VmId(vm_id_str),
+        });
+
+        report.recovered.push(state);
+    }
+
+    info!(
+        recovered = report.recovered.len(),
+        failed = report.failed.len(),
+        orphans = report.orphans_cleaned.len(),
+        "reconnect complete: recovered {} VMs, {} failed, {} orphaned and cleaned",
+        report.recovered.len(),
+        report.failed.len(),
+        report.orphans_cleaned.len(),
+    );
+
+    report
+}
+
+// ---------------------------------------------------------------------------
+// Orphan cleanup (#484)
+// ---------------------------------------------------------------------------
+
+/// Clean up an orphaned runtime directory.
+///
+/// An orphan is a runtime dir that exists with no corresponding live process
+/// (PID dead, socket dead, no recoverable state).
+///
+/// Steps:
+/// 1. Read vm_id from meta.json (if readable), otherwise use dir name
+/// 2. Remove all files in the runtime directory
+/// 3. Remove the runtime directory itself
+/// 4. Try to remove the cgroup `/sys/fs/cgroup/syfrah/{vm_id}/` (best effort)
+/// 5. Return the vm_id for event emission
+pub fn cleanup_orphan(dir: &RuntimeDir, reason: &str) -> Result<String, ProcessError> {
+    // Try to read vm_id from meta.json, fall back to dir name.
+    let vm_id = match dir.read_meta() {
+        Ok(meta) => meta.vm_id,
+        Err(_) => dir
+            .path()
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string(),
+    };
+
+    info!(
+        vm_id = %vm_id,
+        reason = %reason,
+        dir = %dir.path().display(),
+        "cleaning up orphaned runtime dir"
+    );
+
+    // Remove the entire runtime directory.
+    dir.cleanup()
+        .map_err(|e| ProcessError::OrphanCleanupFailed {
+            vm_id: vm_id.clone(),
+            reason: format!("failed to remove runtime dir: {e}"),
+        })?;
+
+    // Best-effort cgroup removal.
+    let cgroup_path = PathBuf::from(format!("/sys/fs/cgroup/syfrah/{vm_id}"));
+    if cgroup_path.exists() {
+        if let Err(e) = fs::remove_dir_all(&cgroup_path) {
+            warn!(
+                vm_id = %vm_id,
+                cgroup = %cgroup_path.display(),
+                error = %e,
+                "best-effort cgroup removal failed"
+            );
+        } else {
+            debug!(vm_id = %vm_id, "removed cgroup dir");
+        }
+    }
+
+    Ok(vm_id)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1043,5 +1411,221 @@ mod tests {
         assert_eq!(state.current_phase, VmPhase::Stopped);
         // Runtime dir should be cleaned up
         assert!(!dir.exists());
+    }
+
+    // -- scan_all_runtime_dirs ------------------------------------------------
+
+    #[test]
+    fn scan_all_runtime_dirs_separates_meta_and_orphan() {
+        let tmp = TempDir::new().unwrap();
+
+        // Dir with meta.json
+        let dir1 = RuntimeDir::create(tmp.path(), "vm-with-meta").unwrap();
+        let meta = VmMeta {
+            vm_id: "vm-with-meta".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            socket_path: "/tmp/api.sock".to_string(),
+            pid: 1,
+            ch_binary: "/bin/true".to_string(),
+            ch_version: "v1".to_string(),
+            spec_hash: "hash:0".to_string(),
+        };
+        dir1.write_meta(&meta).unwrap();
+
+        // Dir without meta.json (orphan)
+        fs::create_dir_all(tmp.path().join("vm-orphan")).unwrap();
+
+        let (with, without) = scan_all_runtime_dirs(tmp.path());
+        assert_eq!(with.len(), 1);
+        assert_eq!(without.len(), 1);
+    }
+
+    #[test]
+    fn scan_all_runtime_dirs_empty() {
+        let tmp = TempDir::new().unwrap();
+        let (with, without) = scan_all_runtime_dirs(tmp.path());
+        assert!(with.is_empty());
+        assert!(without.is_empty());
+    }
+
+    // -- cleanup_orphan -------------------------------------------------------
+
+    #[test]
+    fn cleanup_orphan_with_meta() {
+        let tmp = TempDir::new().unwrap();
+        let dir = RuntimeDir::create(tmp.path(), "vm-orphan-meta").unwrap();
+        let meta = VmMeta {
+            vm_id: "vm-orphan-meta".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            socket_path: "/tmp/api.sock".to_string(),
+            pid: 1,
+            ch_binary: "/bin/true".to_string(),
+            ch_version: "v1".to_string(),
+            spec_hash: "hash:0".to_string(),
+        };
+        dir.write_meta(&meta).unwrap();
+
+        let result = cleanup_orphan(&dir, "test cleanup");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "vm-orphan-meta");
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn cleanup_orphan_without_meta_uses_dir_name() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("vm-no-meta");
+        fs::create_dir_all(&path).unwrap();
+        let dir = RuntimeDir::from_existing(path);
+
+        let result = cleanup_orphan(&dir, "no meta");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "vm-no-meta");
+        assert!(!dir.exists());
+    }
+
+    // -- reconnect ------------------------------------------------------------
+
+    #[tokio::test]
+    async fn reconnect_with_dead_pid() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create a runtime dir with meta pointing to a dead PID.
+        let dir = RuntimeDir::create(tmp.path(), "vm-dead").unwrap();
+        let meta = VmMeta {
+            vm_id: "vm-dead".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            socket_path: tmp
+                .path()
+                .join("vm-dead/api.sock")
+                .to_string_lossy()
+                .into_owned(),
+            pid: 4_000_000, // nonexistent
+            ch_binary: "/bin/true".to_string(),
+            ch_version: "v1".to_string(),
+            spec_hash: "hash:0".to_string(),
+        };
+        dir.write_meta(&meta).unwrap();
+
+        let (tx, mut rx) = broadcast::channel(16);
+        let report = reconnect(tmp.path(), tx).await;
+
+        assert_eq!(report.recovered.len(), 0);
+        assert_eq!(report.failed.len(), 1);
+        assert_eq!(report.failed[0].0, "vm-dead");
+        assert_eq!(report.orphans_cleaned.len(), 0);
+
+        // Should have emitted ReconnectFailed event.
+        let event = rx.try_recv().unwrap();
+        assert!(matches!(event, VmEvent::ReconnectFailed { .. }));
+    }
+
+    #[tokio::test]
+    async fn reconnect_cleans_orphan_without_meta() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create an orphan dir without meta.json.
+        fs::create_dir_all(tmp.path().join("vm-orphan")).unwrap();
+
+        let (tx, mut rx) = broadcast::channel(16);
+        let report = reconnect(tmp.path(), tx).await;
+
+        assert_eq!(report.recovered.len(), 0);
+        assert_eq!(report.failed.len(), 0);
+        assert_eq!(report.orphans_cleaned.len(), 1);
+        assert_eq!(report.orphans_cleaned[0], "vm-orphan");
+
+        // Orphan dir should be removed.
+        assert!(!tmp.path().join("vm-orphan").exists());
+
+        // Should have emitted VmOrphanCleaned event.
+        let event = rx.try_recv().unwrap();
+        assert!(matches!(event, VmEvent::VmOrphanCleaned { .. }));
+    }
+
+    #[tokio::test]
+    async fn reconnect_cleans_corrupt_meta() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create a dir with corrupt meta.json.
+        let dir_path = tmp.path().join("vm-corrupt");
+        fs::create_dir_all(&dir_path).unwrap();
+        fs::write(dir_path.join("meta.json"), "not valid json!!!").unwrap();
+
+        let (tx, mut rx) = broadcast::channel(16);
+        let report = reconnect(tmp.path(), tx).await;
+
+        assert_eq!(report.recovered.len(), 0);
+        assert_eq!(report.failed.len(), 0);
+        assert_eq!(report.orphans_cleaned.len(), 1);
+
+        // Corrupt dir should be removed.
+        assert!(!dir_path.exists());
+
+        let event = rx.try_recv().unwrap();
+        assert!(matches!(event, VmEvent::VmOrphanCleaned { .. }));
+    }
+
+    #[tokio::test]
+    async fn reconnect_empty_dir() {
+        let tmp = TempDir::new().unwrap();
+
+        let (tx, _rx) = broadcast::channel(16);
+        let report = reconnect(tmp.path(), tx).await;
+
+        assert_eq!(report.recovered.len(), 0);
+        assert_eq!(report.failed.len(), 0);
+        assert_eq!(report.orphans_cleaned.len(), 0);
+    }
+
+    // -- monitor_loop (basic test with dead PID) ------------------------------
+
+    #[tokio::test]
+    async fn monitor_detects_dead_pid() {
+        let vms: Arc<RwLock<HashMap<String, Arc<Mutex<VmRuntimeState>>>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+
+        let state = VmRuntimeState {
+            vm_id: VmId("vm-monitor-dead".to_string()),
+            pid: 4_000_000, // nonexistent
+            socket_path: PathBuf::from("/tmp/nonexistent.sock"),
+            cgroup_path: None,
+            ch_binary_path: PathBuf::from("/bin/true"),
+            ch_binary_version: "v1".to_string(),
+            launched_at: 0,
+            last_ping_at: None,
+            last_error: None,
+            current_phase: VmPhase::Running,
+            reconnect_source: ReconnectSource::FreshSpawn,
+        };
+
+        let vm_arc = Arc::new(Mutex::new(state));
+        {
+            let mut map = vms.write().await;
+            map.insert("vm-monitor-dead".to_string(), Arc::clone(&vm_arc));
+        }
+
+        let (tx, mut rx) = broadcast::channel(16);
+
+        // Run monitor for one iteration (very short interval).
+        let vms_clone = Arc::clone(&vms);
+        let handle = tokio::spawn(async move {
+            monitor_loop(vms_clone, tx, Duration::from_millis(10)).await;
+        });
+
+        // Wait for the monitor to detect the dead VM.
+        let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("timeout waiting for event")
+            .expect("channel error");
+
+        assert!(matches!(event, VmEvent::Crashed { .. }));
+
+        // Verify state transitioned to Failed.
+        let guard = vm_arc.lock().await;
+        assert_eq!(guard.current_phase, VmPhase::Failed);
+        assert!(guard.last_error.is_some());
+
+        handle.abort();
     }
 }

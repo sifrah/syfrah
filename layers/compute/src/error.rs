@@ -127,6 +127,12 @@ pub enum ProcessError {
 
     #[error("failed to send signal {signal} to PID {pid}")]
     SignalFailed { signal: String, pid: u32 },
+
+    #[error("orphan cleanup failed for {vm_id}: {reason}")]
+    OrphanCleanupFailed { vm_id: String, reason: String },
+
+    #[error("reconnect failed for {vm_id}: {reason}")]
+    ReconnectFailed { vm_id: String, reason: String },
 }
 
 pub use crate::phase::TransitionError;
