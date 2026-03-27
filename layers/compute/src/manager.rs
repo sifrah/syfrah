@@ -8,6 +8,7 @@ use tracing::info;
 
 use crate::client::ChClient;
 use crate::error::{ComputeError, ProcessError};
+use crate::events;
 use crate::process::{self, RuntimeDir};
 use crate::runtime::VmRuntimeState;
 use crate::types::{VmEvent, VmId, VmSpec, VmStatus};
@@ -220,12 +221,18 @@ impl VmManager {
         }
 
         // Emit events (best-effort — receivers may lag).
-        let _ = self.event_tx.send(VmEvent::Created {
-            vm_id: VmId(vm_id_str.clone()),
-        });
-        let _ = self.event_tx.send(VmEvent::Booted {
-            vm_id: VmId(vm_id_str),
-        });
+        events::emit(
+            &self.event_tx,
+            VmEvent::Created {
+                vm_id: VmId(vm_id_str.clone()),
+            },
+        );
+        events::emit(
+            &self.event_tx,
+            VmEvent::Booted {
+                vm_id: VmId(vm_id_str),
+            },
+        );
 
         Ok(status)
     }
@@ -243,9 +250,12 @@ impl VmManager {
 
         process::kill_vm(&mut guard, &client, &runtime_dir).await?;
 
-        let _ = self.event_tx.send(VmEvent::Stopped {
-            vm_id: VmId(id.to_string()),
-        });
+        events::emit(
+            &self.event_tx,
+            VmEvent::Stopped {
+                vm_id: VmId(id.to_string()),
+            },
+        );
 
         Ok(())
     }
@@ -271,9 +281,12 @@ impl VmManager {
             map.remove(id);
         }
 
-        let _ = self.event_tx.send(VmEvent::Deleted {
-            vm_id: VmId(id.to_string()),
-        });
+        events::emit(
+            &self.event_tx,
+            VmEvent::Deleted {
+                vm_id: VmId(id.to_string()),
+            },
+        );
 
         Ok(())
     }
