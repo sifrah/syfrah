@@ -31,6 +31,22 @@ extract_title() {
     fi
 }
 
+# Get last-updated info from git history for a source file
+# Returns: "YYYY-MM-DD (abcdef0)" or "Not yet committed"
+get_last_updated() {
+    local file="$1"
+    local git_info
+    git_info=$(git -C "$REPO_ROOT" log -1 --format='%ai %h' -- "$file" 2>/dev/null || true)
+    if [ -n "$git_info" ]; then
+        local date hash
+        date=$(echo "$git_info" | awk '{print $1}')
+        hash=$(echo "$git_info" | awk '{print $4}')
+        echo "${date} (${hash})"
+    else
+        echo "Not yet committed"
+    fi
+}
+
 # Generate an MDX page from a markdown file
 # Args: <source.md> <output_dir> <title> <description> <relative_source>
 generate_page() {
@@ -45,6 +61,9 @@ generate_page() {
     local content
     content=$(tail -n +2 "$src" | escape_mdx)
 
+    local last_updated
+    last_updated=$(get_last_updated "$rel_src")
+
     cat > "$outdir/page.mdx" << MDXEOF
 {/* AUTO-GENERATED from ${rel_src} — do not edit */}
 
@@ -54,6 +73,8 @@ export const metadata = {
 }
 
 # ${title}
+
+<p className="text-sm text-gray-500">Last updated: ${last_updated}</p>
 
 ${content}
 MDXEOF
@@ -76,6 +97,7 @@ NAV_REF='[]'
 echo "  → index (ARCHITECTURE.md)"
 src="$REPO_ROOT/handbook/ARCHITECTURE.md"
 content=$(tail -n +2 "$src" | escape_mdx)
+home_updated=$(get_last_updated "handbook/ARCHITECTURE.md")
 cat > "$APP_DIR/page.mdx" << MDXEOF
 {/* AUTO-GENERATED from handbook/ARCHITECTURE.md — do not edit */}
 
@@ -85,6 +107,8 @@ export const metadata = {
 }
 
 # Architecture
+
+<p className="text-sm text-gray-500">Last updated: ${home_updated}</p>
 
 ${content}
 MDXEOF
