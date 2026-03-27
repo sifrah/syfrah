@@ -12,6 +12,8 @@ export const metadata = {
 
 > **Implementation status:** This document describes the **planned** state ownership and reconciliation design. Currently, only the **fabric layer's** state management is implemented (local `state.json` / redb, mesh secret, node membership, WireGuard config). The Raft consensus, gossip protocol, forge reconciliation loop, and all resource phase models described below are architectural plans, not running code.
 
+> **Implementation status:** This document describes the **planned** state ownership and reconciliation design. Currently, only the **fabric layer's** state management is implemented (local `state.json` / redb, mesh secret, node membership, WireGuard config). The Raft consensus, gossip protocol, forge reconciliation loop, and all resource phase models described below are architectural plans, not running code.
+
 ## Why this document
 
 The other concept docs describe *what* each layer does. This document describes *who owns the truth* for every piece of state, *how* that state is reconciled into reality, and *what phases* each resource goes through during its lifetime.
