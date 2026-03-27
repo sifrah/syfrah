@@ -9,6 +9,13 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="$REPO_ROOT/documentation/src/app"
 NAV_FILE="$REPO_ROOT/documentation/src/navigation.json"
+VERSION_FILE="$REPO_ROOT/documentation/public/version.json"
+
+# ── Write version.json from latest git tag ────────────────────
+DOC_VERSION="$(git -C "$REPO_ROOT" describe --tags --abbrev=0 2>/dev/null || echo "dev")"
+mkdir -p "$(dirname "$VERSION_FILE")"
+echo "{\"version\":\"${DOC_VERSION}\"}" > "$VERSION_FILE"
+echo "Wrote version.json: ${DOC_VERSION}"
 
 # Directories to scan for .md files
 SCAN_DIRS=(handbook layers dev benchmarks post_release_audit sdk api)
