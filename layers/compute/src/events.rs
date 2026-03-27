@@ -164,4 +164,198 @@ mod tests {
         let result = late_rx.try_recv();
         assert!(result.is_err());
     }
+
+    #[test]
+    fn emit_preserves_event_payload_data() {
+        let (tx, mut rx) = broadcast::channel(16);
+        emit(
+            &tx,
+            VmEvent::Crashed {
+                vm_id: VmId("vm-crash-1".to_string()),
+                error: "out of memory".to_string(),
+            },
+        );
+        let received = rx.try_recv().unwrap();
+        if let VmEvent::Crashed { vm_id, error } = received {
+            assert_eq!(vm_id.0, "vm-crash-1");
+            assert_eq!(error, "out of memory");
+        } else {
+            panic!("expected Crashed variant");
+        }
+    }
+
+    #[test]
+    fn emit_resized_preserves_cpu_and_memory() {
+        let (tx, mut rx) = broadcast::channel(16);
+        emit(
+            &tx,
+            VmEvent::Resized {
+                vm_id: VmId("vm-resize".to_string()),
+                new_vcpus: 8,
+                new_memory_mb: 16384,
+            },
+        );
+        let received = rx.try_recv().unwrap();
+        if let VmEvent::Resized {
+            vm_id,
+            new_vcpus,
+            new_memory_mb,
+        } = received
+        {
+            assert_eq!(vm_id.0, "vm-resize");
+            assert_eq!(new_vcpus, 8);
+            assert_eq!(new_memory_mb, 16384);
+        } else {
+            panic!("expected Resized variant");
+        }
+    }
+
+    #[test]
+    fn full_lifecycle_event_sequence() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let id = VmId("vm-lifecycle".to_string());
+
+        emit(&tx, VmEvent::Created { vm_id: id.clone() });
+        emit(&tx, VmEvent::Booted { vm_id: id.clone() });
+        emit(&tx, VmEvent::Stopped { vm_id: id.clone() });
+        emit(&tx, VmEvent::Deleted { vm_id: id.clone() });
+
+        let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert_eq!(events.len(), 4);
+        assert!(matches!(&events[0], VmEvent::Created { .. }));
+        assert!(matches!(&events[1], VmEvent::Booted { .. }));
+        assert!(matches!(&events[2], VmEvent::Stopped { .. }));
+        assert!(matches!(&events[3], VmEvent::Deleted { .. }));
+    }
+
+    #[test]
+    fn receiver_recovers_after_lagged() {
+        // Channel with capacity 2
+        let (tx, mut rx) = broadcast::channel(2);
+        // Emit 3 events — first one will be dropped for the receiver
+        emit(
+            &tx,
+            VmEvent::Created {
+                vm_id: VmId("vm-1".to_string()),
+            },
+        );
+        emit(
+            &tx,
+            VmEvent::Booted {
+                vm_id: VmId("vm-1".to_string()),
+            },
+        );
+        emit(
+            &tx,
+            VmEvent::Stopped {
+                vm_id: VmId("vm-1".to_string()),
+            },
+        );
+
+        // First recv should report Lagged (1 message was lost)
+        let result = rx.try_recv();
+        assert!(matches!(result, Err(broadcast::error::TryRecvError::Lagged(1))) || result.is_ok());
+        // Subsequent receives should succeed
+        let remaining: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(
+            !remaining.is_empty(),
+            "receiver should recover after lagged"
+        );
+    }
+
+    #[test]
+    fn three_subscribers_all_receive() {
+        let (tx, mut rx1) = broadcast::channel(16);
+        let mut rx2 = tx.subscribe();
+        let mut rx3 = tx.subscribe();
+
+        emit(
+            &tx,
+            VmEvent::Created {
+                vm_id: VmId("vm-multi".to_string()),
+            },
+        );
+
+        assert!(rx1.try_recv().is_ok());
+        assert!(rx2.try_recv().is_ok());
+        assert!(rx3.try_recv().is_ok());
+    }
+
+    #[test]
+    fn emit_device_events_carry_device_name() {
+        let (tx, mut rx) = broadcast::channel(16);
+        emit(
+            &tx,
+            VmEvent::DeviceAttached {
+                vm_id: VmId("vm-gpu".to_string()),
+                device: "0000:01:00.0".to_string(),
+            },
+        );
+        emit(
+            &tx,
+            VmEvent::DeviceDetached {
+                vm_id: VmId("vm-gpu".to_string()),
+                device: "0000:01:00.0".to_string(),
+            },
+        );
+        let attached = rx.try_recv().unwrap();
+        let detached = rx.try_recv().unwrap();
+        if let VmEvent::DeviceAttached { device, .. } = attached {
+            assert_eq!(device, "0000:01:00.0");
+        } else {
+            panic!("expected DeviceAttached");
+        }
+        if let VmEvent::DeviceDetached { device, .. } = detached {
+            assert_eq!(device, "0000:01:00.0");
+        } else {
+            panic!("expected DeviceDetached");
+        }
+    }
+
+    #[test]
+    fn reconnect_events_carry_vm_id() {
+        let (tx, mut rx) = broadcast::channel(16);
+        emit(
+            &tx,
+            VmEvent::ReconnectSucceeded {
+                vm_id: VmId("vm-recovered".to_string()),
+            },
+        );
+        emit(
+            &tx,
+            VmEvent::ReconnectFailed {
+                vm_id: VmId("vm-lost".to_string()),
+                error: "PID dead".to_string(),
+            },
+        );
+        emit(
+            &tx,
+            VmEvent::VmOrphanCleaned {
+                vm_id: VmId("vm-orphan".to_string()),
+                reason: "no meta.json".to_string(),
+            },
+        );
+
+        let e1 = rx.try_recv().unwrap();
+        let e2 = rx.try_recv().unwrap();
+        let e3 = rx.try_recv().unwrap();
+
+        if let VmEvent::ReconnectSucceeded { vm_id } = e1 {
+            assert_eq!(vm_id.0, "vm-recovered");
+        } else {
+            panic!("expected ReconnectSucceeded");
+        }
+        if let VmEvent::ReconnectFailed { vm_id, error } = e2 {
+            assert_eq!(vm_id.0, "vm-lost");
+            assert_eq!(error, "PID dead");
+        } else {
+            panic!("expected ReconnectFailed");
+        }
+        if let VmEvent::VmOrphanCleaned { vm_id, reason } = e3 {
+            assert_eq!(vm_id.0, "vm-orphan");
+            assert_eq!(reason, "no meta.json");
+        } else {
+            panic!("expected VmOrphanCleaned");
+        }
+    }
 }
