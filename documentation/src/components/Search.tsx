@@ -195,6 +195,18 @@ function SearchResult({
       >
         <HighlightQuery text={result.title} query={query} />
       </div>
+      {result.tags && (
+        <div className="mt-0.5 flex flex-wrap gap-1">
+          {result.tags.split(' ').filter(Boolean).map((tag: string) => (
+            <span
+              key={tag}
+              className="inline-flex items-center rounded-full bg-blue-50 px-1.5 py-0.5 text-[0.625rem] font-medium text-blue-600 dark:bg-blue-400/10 dark:text-blue-400"
+            >
+              {tag}
+            </span>
+          ))}
+        </div>
+      )}
       {hierarchy.length > 0 && (
         <div
           id={`${id}-hierarchy`}

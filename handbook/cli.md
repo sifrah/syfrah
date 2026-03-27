@@ -1,3 +1,6 @@
+---
+tags: [cli, tooling, operations]
+---
 # CLI
 
 ## Overview

@@ -1,3 +1,6 @@
+---
+tags: [workflow, contributing, ci]
+---
 # Workflow
 
 ## Overview

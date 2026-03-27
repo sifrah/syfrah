@@ -25,6 +25,76 @@ escape_mdx() {
         -e 's/{\([a-z_/][a-z_/.-]*\)}/\&#123;\1\&#125;/g'
 }
 
+# Extract tags from YAML frontmatter: ---\ntags: [a, b, c]\n---
+# Returns comma-separated tags or empty string
+extract_tags() {
+    local file="$1"
+    local in_frontmatter=false
+    local tags=""
+
+    while IFS= read -r line; do
+        if [ "$in_frontmatter" = false ]; then
+            if [ "$line" = "---" ]; then
+                in_frontmatter=true
+                continue
+            else
+                # No frontmatter
+                break
+            fi
+        else
+            if [ "$line" = "---" ]; then
+                break
+            fi
+            # Match tags: [tag1, tag2, ...]
+            if echo "$line" | grep -qE '^tags:\s*\['; then
+                tags=$(echo "$line" | sed -E 's/^tags:\s*\[//;s/\]\s*$//' | sed 's/,/ /g')
+                # Trim whitespace around each tag
+                local cleaned=""
+                for t in $tags; do
+                    t=$(echo "$t" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                    if [ -n "$t" ]; then
+                        if [ -n "$cleaned" ]; then
+                            cleaned="$cleaned,$t"
+                        else
+                            cleaned="$t"
+                        fi
+                    fi
+                done
+                echo "$cleaned"
+                return
+            fi
+        fi
+    done < "$file"
+    echo ""
+}
+
+# Strip YAML frontmatter from content (returns line number where content starts)
+strip_frontmatter_line() {
+    local file="$1"
+    local line_num=0
+    local in_frontmatter=false
+    local found_end=false
+
+    while IFS= read -r line; do
+        line_num=$((line_num + 1))
+        if [ "$in_frontmatter" = false ]; then
+            if [ "$line" = "---" ] && [ "$line_num" -eq 1 ]; then
+                in_frontmatter=true
+                continue
+            else
+                echo "1"
+                return
+            fi
+        else
+            if [ "$line" = "---" ]; then
+                echo "$((line_num + 1))"
+                return
+            fi
+        fi
+    done < "$file"
+    echo "1"
+}
+
 # Extract H1 title from a markdown file, fallback to provided default
 extract_title() {
     local file="$1"
@@ -103,15 +173,44 @@ generate_page() {
     local title="$3"
     local desc="$4"
     local rel_src="$5"
-    local badge="${6:-}"
+    local tags_csv="${6:-}"
+    local badge="${7:-}"
 
     mkdir -p "$outdir"
 
+    # Determine where content starts (after frontmatter if present)
+    local start_line
+    start_line=$(strip_frontmatter_line "$src")
+    # Skip the H1 title line (first non-frontmatter line)
     local content
-    content=$(tail -n +2 "$src" | escape_mdx)
+    content=$(tail -n +"$start_line" "$src" | tail -n +2 | escape_mdx)
 
     local last_updated
     last_updated=$(get_last_updated "$rel_src")
+
+    # Build tags JSX if tags are present
+    local tags_import=""
+    local tags_jsx=""
+    if [ -n "$tags_csv" ]; then
+        tags_import="import { PageTags } from '@/components/PageTags'"
+        # Build JSON array from comma-separated tags
+        local tags_json="["
+        local first=true
+        IFS=',' read -ra tag_arr <<< "$tags_csv"
+        for t in "${tag_arr[@]}"; do
+            t=$(echo "$t" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            if [ -n "$t" ]; then
+                if [ "$first" = true ]; then
+                    first=false
+                else
+                    tags_json="$tags_json,"
+                fi
+                tags_json="$tags_json\"$t\""
+            fi
+        done
+        tags_json="$tags_json]"
+        tags_jsx="<PageTags tags={${tags_json}} />"
+    fi
 
     local badge_line=""
     if [ -n "$badge" ]; then
@@ -121,6 +220,7 @@ generate_page() {
 
     cat > "$outdir/page.mdx" << MDXEOF
 {/* AUTO-GENERATED from ${rel_src} — do not edit */}
+${tags_import}
 
 export const metadata = {
   title: '${title}',
@@ -130,6 +230,7 @@ export const metadata = {
 # ${title}
 
 ${badge_line}<p className="text-sm text-gray-500">Last updated: ${last_updated}</p>
+${tags_jsx}
 
 ${content}
 MDXEOF
@@ -275,6 +376,9 @@ for scan_dir in "${SCAN_DIRS[@]}"; do
         fi
         title=$(extract_title "$md_file" "$fallback")
 
+        # Extract tags from frontmatter
+        file_tags=$(extract_tags "$md_file")
+
         # Detect layer status badge if this is a layer page
         page_badge=""
         layer_status=""
@@ -295,9 +399,30 @@ for scan_dir in "${SCAN_DIRS[@]}"; do
         fi
 
         echo "  $local_path"
-        generate_page "$md_file" "$outdir" "$title" "$title" "$rel_path" "$page_badge"
+        generate_page "$md_file" "$outdir" "$title" "$title" "$rel_path" "$file_tags" "$page_badge"
 
         # Track for navigation
+        # Build tags JSON for nav entry
+        tags_nav_field=""
+        if [ -n "$file_tags" ]; then
+            tags_json_nav="["
+            first_nav=true
+            IFS=',' read -ra tag_nav_arr <<< "$file_tags"
+            for t in "${tag_nav_arr[@]}"; do
+                t=$(echo "$t" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                if [ -n "$t" ]; then
+                    if [ "$first_nav" = true ]; then
+                        first_nav=false
+                    else
+                        tags_json_nav="$tags_json_nav,"
+                    fi
+                    tags_json_nav="$tags_json_nav\"$t\""
+                fi
+            done
+            tags_json_nav="$tags_json_nav]"
+            tags_nav_field=",\"tags\":$tags_json_nav"
+        fi
+
         # Determine the parent nav node for this file
         if [ "$filename" = "README.md" ]; then
             # This file IS the page for its directory
@@ -307,7 +432,7 @@ for scan_dir in "${SCAN_DIRS[@]}"; do
             name_no_ext="${filename%.md}"
             key="$dir_inside"
             existing="${dir_children[$key]:-}"
-            entry="{\"title\":\"$title\",\"href\":\"$url_path\"}"
+            entry="{\"title\":\"$title\",\"href\":\"$url_path\"$tags_nav_field}"
             if [ -z "$existing" ]; then
                 dir_children["$key"]="$entry"
             else
@@ -371,7 +496,24 @@ for scan_dir in "${SCAN_DIRS[@]}"; do
                 else
                     url_path="/$scan_dir/$name_no_ext"
                 fi
-                entry="{\"title\":\"$title\",\"href\":\"$url_path\"}"
+                # Include tags in nav entry if present
+                nav_tags_csv=$(extract_tags "$md_file")
+                nav_tags_field=""
+                if [ -n "$nav_tags_csv" ]; then
+                    nav_tags_json="["
+                    nf=true
+                    IFS=',' read -ra nta <<< "$nav_tags_csv"
+                    for nt in "${nta[@]}"; do
+                        nt=$(echo "$nt" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                        if [ -n "$nt" ]; then
+                            if [ "$nf" = true ]; then nf=false; else nav_tags_json="$nav_tags_json,"; fi
+                            nav_tags_json="$nav_tags_json\"$nt\""
+                        fi
+                    done
+                    nav_tags_json="$nav_tags_json]"
+                    nav_tags_field=",\"tags\":$nav_tags_json"
+                fi
+                entry="{\"title\":\"$title\",\"href\":\"$url_path\"$nav_tags_field}"
                 if [ -z "$top_level_links" ]; then
                     top_level_links="$entry"
                 else
