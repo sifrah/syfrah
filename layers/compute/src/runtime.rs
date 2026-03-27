@@ -5,6 +5,7 @@ use crate::types::{VmId, VmStatus};
 
 /// How this VM's runtime state was established.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub(crate) enum ReconnectSource {
     /// The VM was freshly spawned by this daemon instance.
     FreshSpawn,
@@ -18,6 +19,7 @@ pub(crate) enum ReconnectSource {
 /// the OS PID, socket path, cgroup, binary version, health-check timestamps,
 /// and the current lifecycle phase.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub(crate) struct VmRuntimeState {
     pub(crate) vm_id: VmId,
     pub(crate) pid: u32,
@@ -35,6 +37,7 @@ pub(crate) struct VmRuntimeState {
     pub(crate) reconnect_source: ReconnectSource,
 }
 
+#[allow(dead_code)]
 impl VmRuntimeState {
     /// Produce the public external view of this VM's state.
     ///
