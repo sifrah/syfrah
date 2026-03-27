@@ -4,20 +4,20 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+axum = "0.8"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+libc = "0.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tower = { version = "0.5", features = ["util"] }
-http-body-util = "0.1"
 tracing = { workspace = true }
-libc = "0.2"
-axum = "0.8"
 
 [dev-dependencies]
+http-body-util = "0.1"
 hyper = { version = "1", features = ["server", "http1"] }
 tempfile = "3"
 tokio = { workspace = true }
+tower = { version = "0.5", features = ["util"] }
