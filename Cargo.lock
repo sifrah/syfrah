@@ -2100,6 +2100,7 @@ dependencies = [
 name = "syfrah-compute"
 version = "0.2.0"
 dependencies = [
+ "axum",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -2109,6 +2110,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tower",
  "tracing",
 ]
 
