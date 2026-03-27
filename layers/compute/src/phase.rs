@@ -1,7 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use crate::error::TransitionError;
-
 /// Current phase in the VM lifecycle.
 ///
 /// Every VM moves through these phases in a strict order.
@@ -18,6 +16,25 @@ pub enum VmPhase {
     Deleted,
     Failed,
 }
+
+/// Error returned when an invalid state transition is attempted.
+#[derive(Debug, Clone)]
+pub struct TransitionError {
+    pub from: VmPhase,
+    pub to: VmPhase,
+}
+
+impl std::fmt::Display for TransitionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "invalid transition from {:?} to {:?}",
+            self.from, self.to
+        )
+    }
+}
+
+impl std::error::Error for TransitionError {}
 
 impl VmPhase {
     /// Returns `true` if the transition from `self` to `target` is allowed.
@@ -48,8 +65,8 @@ impl VmPhase {
             Ok(target)
         } else {
             Err(TransitionError {
-                from: format!("{self:?}"),
-                to: format!("{target:?}"),
+                from: self,
+                to: target,
             })
         }
     }
@@ -127,8 +144,9 @@ mod tests {
                 "{from:?} -> {to:?} should be rejected"
             );
             let err = from.transition(to).unwrap_err();
-            assert_eq!(err.from, format!("{from:?}"));
-            assert_eq!(err.to, format!("{to:?}"));
+            assert_eq!(err.from, from);
+            assert_eq!(err.to, to);
+            assert!(err.to_string().contains("invalid transition"));
         }
     }
 

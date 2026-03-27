@@ -123,13 +123,7 @@ pub enum ProcessError {
     SignalFailed { signal: String, pid: u32 },
 }
 
-/// Invalid state machine transition.
-#[derive(Debug, thiserror::Error)]
-#[error("cannot transition from {from} to {to}")]
-pub struct TransitionError {
-    pub from: String,
-    pub to: String,
-}
+pub use crate::phase::TransitionError;
 
 /// Operation blocked by a concurrent operation on the same VM.
 #[derive(Debug, thiserror::Error)]
@@ -248,9 +242,10 @@ mod tests {
 
     #[test]
     fn transition_error_display() {
+        use crate::phase::VmPhase;
         let e = TransitionError {
-            from: "Running".to_string(),
-            to: "Pending".to_string(),
+            from: VmPhase::Running,
+            to: VmPhase::Pending,
         };
         let msg = e.to_string();
         assert!(msg.contains("Running"));
@@ -291,9 +286,10 @@ mod tests {
 
     #[test]
     fn compute_error_from_transition() {
+        use crate::phase::VmPhase;
         let inner = TransitionError {
-            from: "Pending".to_string(),
-            to: "Running".to_string(),
+            from: VmPhase::Pending,
+            to: VmPhase::Running,
         };
         let outer: ComputeError = inner.into();
         assert!(matches!(outer, ComputeError::Transition(_)));
