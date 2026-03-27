@@ -13,7 +13,7 @@ syfrah <namespace> <command> [flags]
 
 The CLI communicates with the local daemon via a Unix domain socket (`~/.syfrah/control.sock`) for runtime operations, or directly reads/writes state for offline operations. The socket uses length-prefixed JSON frames (max 64 KB, 5 s read timeout); see [api-architecture.md](api-architecture.md#1-local-server-cli--daemon) for details.
 
-> **Implementation status:** Only `syfrah fabric`, `syfrah state`, and `syfrah update` are implemented. All other namespaces (`forge`, `org`, `vm`, `vpc`, etc.) are planned. See the command tree below for details.
+> **Implementation status:** Only `syfrah fabric`, `syfrah state`, `syfrah update`, and `syfrah completions` are implemented. All other namespaces (`forge`, `org`, `vm`, `vpc`, etc.) are planned. See the command tree below for details.
 
 ## Command tree
 
@@ -22,7 +22,9 @@ Commands marked **(planned)** are not yet implemented.
 ```
 syfrah
 │
-├── update                        Update syfrah binary
+├── update                        Update syfrah to the latest release
+│
+├── completions                   Generate shell completions (bash, zsh, fish)
 │
 ├── fabric                        Fabric mesh management
 │   ├── init                      Create a new mesh
@@ -32,101 +34,111 @@ syfrah
 │   ├── leave                     Leave the mesh, clear state
 │   ├── status                    Show mesh and daemon status
 │   ├── events                    Show the event log
+│   ├── audit                     Show the security audit log
 │   ├── peers                     List all mesh peers
+│   │   ├── remove                Remove a peer from the mesh
+│   │   └── update                Update a peer's endpoint
 │   ├── token                     Show the mesh secret
 │   ├── rotate                    Rotate the mesh secret
 │   ├── diagnose                  Run diagnostic checks
+│   ├── reload                    Reload config.toml without restart
+│   ├── topology                  Show mesh topology by region/zone
+│   ├── metrics                   Export Prometheus metrics
+│   ├── hosts                     Print /etc/hosts entries for peers
 │   ├── service                   Manage the systemd service
 │   │   ├── install               Install and enable service
 │   │   ├── uninstall             Disable and remove service
 │   │   └── status                Show service status
-│   └── peering                   Manage join requests
-│       ├── start                 Start accepting joins
-│       ├── stop                  Stop accepting joins
-│       ├── list                  List pending requests
-│       ├── accept                Accept a request
-│       └── reject                Reject a request
+│   ├── peering                   Manage join requests
+│   │   ├── start                 Start accepting joins
+│   │   ├── stop                  Stop accepting joins
+│   │   ├── list                  List pending requests
+│   │   ├── watch                 Watch for requests interactively
+│   │   ├── accept                Accept a request
+│   │   └── reject                Reject a request
+│   └── zone                      Manage zone drain state
+│       ├── drain                 Mark a zone as draining
+│       ├── undrain               Restore a zone to active
+│       └── status                Show zone health and drain status
 │
 ├── state                         Inspect and manage layer state databases
 │   ├── list                      List tables in a layer's state database
 │   ├── get                       Get values from a table
 │   └── drop                      Drop (delete) a layer's state database
 │
-├── update                        Update syfrah to the latest release
-│
 ├── forge                         Per-node debug and ops (planned)
-│   ├── status                    This node's health and resources
-│   ├── vms                       Cloud Hypervisor microVM processes on this node
-│   ├── bridges                   Active bridges, VXLAN, TAP devices
-│   ├── volumes                   Mounted ZeroFS volumes, cache stats
-│   ├── nftables                  Active security group rules
-│   ├── logs                      Tail daemon logs
-│   └── drain                     Prepare node for maintenance
+│   ├── status                    This node's health and resources (planned)
+│   ├── vms                       Cloud Hypervisor microVM processes on this node (planned)
+│   ├── bridges                   Active bridges, VXLAN, TAP devices (planned)
+│   ├── volumes                   Mounted ZeroFS volumes, cache stats (planned)
+│   ├── nftables                  Active security group rules (planned)
+│   ├── logs                      Tail daemon logs (planned)
+│   └── drain                     Prepare node for maintenance (planned)
 │
 ├── org                           Organization management (planned)
-│   ├── create
-│   ├── list
-│   └── delete
+│   ├── create                    (planned)
+│   ├── list                      (planned)
+│   └── delete                    (planned)
 │
 ├── project                       Project management (planned)
-│   ├── create
-│   ├── list
-│   └── delete
+│   ├── create                    (planned)
+│   ├── list                      (planned)
+│   └── delete                    (planned)
 │
 ├── env                           Environment management (planned)
-│   ├── create
-│   ├── list
-│   ├── update
-│   └── destroy
+│   ├── create                    (planned)
+│   ├── list                      (planned)
+│   ├── update                    (planned)
+│   └── destroy                   (planned)
 │
 ├── vm                            Virtual machine management (planned)
-│   ├── create
-│   ├── list
-│   ├── start
-│   ├── stop
-│   ├── reboot
-│   ├── delete
-│   └── ssh
+│   ├── create                    (planned)
+│   ├── list                      (planned)
+│   ├── start                     (planned)
+│   ├── stop                      (planned)
+│   ├── reboot                    (planned)
+│   ├── delete                    (planned)
+│   └── ssh                       (planned)
 │
 ├── vpc                           VPC management (planned)
-│   ├── create
-│   ├── list
-│   ├── delete
-│   └── peer
+│   ├── create                    (planned)
+│   ├── list                      (planned)
+│   ├── delete                    (planned)
+│   └── peer                      (planned)
 │
 ├── subnet                        Subnet management (planned)
-│   ├── create
-│   └── list
+│   ├── create                    (planned)
+│   └── list                      (planned)
 │
 ├── sg                            Security group management (planned)
-│   ├── create
-│   ├── list
-│   ├── add-rule
-│   └── remove-rule
+│   ├── create                    (planned)
+│   ├── list                      (planned)
+│   ├── add-rule                  (planned)
+│   └── remove-rule               (planned)
 │
 ├── volume                        Volume management (planned)
-│   ├── create
-│   ├── list
-│   ├── attach
-│   ├── detach
-│   ├── delete
-│   └── snapshot
+│   ├── create                    (planned)
+│   ├── list                      (planned)
+│   ├── attach                    (planned)
+│   ├── detach                    (planned)
+│   ├── delete                    (planned)
+│   └── snapshot                  (planned)
 │
 ├── user                          User management (planned)
-│   ├── create
-│   ├── list
-│   └── disable
+│   ├── create                    (planned)
+│   ├── list                      (planned)
+│   └── disable                   (planned)
 │
 ├── iam                           Role assignment (planned)
-│   ├── assign
-│   ├── list
-│   └── revoke
+│   ├── assign                    (planned)
+│   ├── list                      (planned)
+│   └── revoke                    (planned)
 │
 ├── apikey                        API key management (planned)
-│   ├── create
-│   ├── list
-│   ├── rotate
-│   └── delete
+│   ├── create                    (planned)
+│   ├── list                      (planned)
+│   ├── rotate                    (planned)
+│   └── delete                    (planned)
 │
 ├── login                         Authenticate (planned)
 └── logout                        Clear session (planned)
@@ -141,6 +153,7 @@ Each CLI namespace maps to an architectural layer, a source of truth, and a dire
 | `fabric` | Fabric | Local state (redb) | `layers/fabric/src/cli/` | Implemented |
 | `state` | State | Local state databases | `layers/state/src/cli/` | Implemented |
 | `update` | — | GitHub releases | `bin/syfrah/src/update.rs` | Implemented |
+| `completions` | — | — | `bin/syfrah/src/main.rs` | Implemented |
 | `forge` | Forge (per-node) | Local reality (observed) | — | Planned |
 | `org`, `project`, `env` | Organization | Raft (desired) | — | Planned |
 | `vm` | Compute | Raft (desired) | — | Planned |
@@ -509,12 +522,20 @@ layers/fabric/src/cli/
 ├── leave.rs             syfrah fabric leave
 ├── status.rs            syfrah fabric status
 ├── events.rs            syfrah fabric events
+├── audit.rs             syfrah fabric audit
 ├── peers.rs             syfrah fabric peers
+├── peers_remove.rs      syfrah fabric peers remove
+├── peers_update.rs      syfrah fabric peers update
 ├── token.rs             syfrah fabric token
 ├── rotate.rs            syfrah fabric rotate
 ├── diagnose.rs          syfrah fabric diagnose
+├── reload.rs            syfrah fabric reload
+├── topology.rs          syfrah fabric topology
+├── metrics.rs           syfrah fabric metrics
+├── hosts.rs             syfrah fabric hosts
 ├── service.rs           syfrah fabric service {install,uninstall,status}
-└── peering.rs           syfrah fabric peering {start,stop,list,accept,reject}
+├── peering.rs           syfrah fabric peering {start,stop,list,watch,accept,reject}
+└── zone.rs              syfrah fabric zone {drain,undrain,status}
 
 layers/state/src/cli/
 ├── mod.rs               StateCommand enum + dispatch

@@ -31,6 +31,10 @@ Open-source control plane to transform dedicated servers into a programmable clo
 - `wg.rs` — WireGuard interface management
 - `cli/` — CLI commands for `syfrah fabric ...`
 
+## CLI
+Only `syfrah fabric`, `syfrah state`, and `syfrah update` commands are currently implemented.
+All other namespaces (`forge`, `org`, `vm`, `vpc`, etc.) are planned. See `handbook/cli.md` for the full command tree.
+
 ## Conventions
 - serde Serialize/Deserialize on all public types
 - thiserror for library errors, anyhow for binaries

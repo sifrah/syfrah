@@ -33,6 +33,7 @@ WireGuard interface settings.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
+| `interface_name` | string | `"syfrah0"` | WireGuard interface name. The default `syfrah0` is hardcoded in `layers/fabric/src/wg.rs` as `DEFAULT_INTERFACE_NAME`. Override this if you need a different interface name (e.g., to avoid conflicts with existing WireGuard interfaces). Must not be empty. |
 | `keepalive_interval` | integer (seconds) | `25` | WireGuard persistent keepalive interval. Keeps NAT mappings alive. |
 
 ### `[peering]`

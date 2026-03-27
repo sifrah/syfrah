@@ -39,7 +39,7 @@ feature branch → PR → merge to main → beta vX.Y.Z-beta.N (pre-release)
 ### How it works
 
 1. **Trigger** -- the `Release` workflow runs on push to `main` (beta) and push to `release/v*` (stable), plus `workflow_dispatch`.
-2. **Loop prevention** -- if the HEAD commit message starts with `release:`, the workflow exits immediately.
+2. **Loop prevention** -- if the HEAD commit message starts with `release:`, the workflow exits immediately. The workflow itself does not create `release:` commits. This prefix is reserved for manual version-bump commits if needed.
 3. **Version calculation** -- the workflow inspects commit messages since the last git tag and determines the base version:
 
    | Commit message contains | Bump | Example |
@@ -47,6 +47,8 @@ feature branch → PR → merge to main → beta vX.Y.Z-beta.N (pre-release)
    | `BREAKING` or `breaking:` | Major (X.0.0) | `0.2.0 -> 1.0.0` |
    | `[Feature]` or `feat:` | Minor (0.X.0) | `0.2.0 -> 0.3.0` |
    | Anything else | Patch (0.0.X) | `0.2.0 -> 0.2.1` |
+
+   The commit message scanner is **case-insensitive** for all patterns (`grep -iE`). For example, `feat:`, `Feat:`, and `FEAT:` all trigger a minor bump. Similarly, `Fix some bug` and `fix some bug` are both treated as patch bumps.
 
    This convention relies on contributors following [Conventional Commits](https://www.conventionalcommits.org/). If nobody writes `feat:` or `breaking:`, every release is a patch bump. This is intentional — patch is the safe default. For important version bumps, the maintainer cutting the release should verify the computed version makes sense before pushing.
 

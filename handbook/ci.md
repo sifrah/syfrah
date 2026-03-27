@@ -110,6 +110,10 @@ Some tests require root privileges or WireGuard kernel support. These are marked
 sudo cargo test -- --ignored
 ```
 
+## E2E tests
+
+End-to-end tests (multi-node mesh scenarios) are not yet part of the CI pipeline. They are run manually before cutting a stable release. E2E test coverage and strategy are tracked separately; when a dedicated testing handbook page is created, it will be linked here.
+
 ## Branch protection
 
 The `main` branch is protected by a GitHub ruleset named **main-protection**. The ruleset enforces:
