@@ -112,7 +112,7 @@ impl ChClient {
 
         let mut builder = Request::builder()
             .method(method)
-            .uri(format!("http://localhost{path}"))
+            .uri(format!("http://localhost/api/v1{path}"))
             .header("Host", "localhost");
 
         if body.is_some() {
