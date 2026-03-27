@@ -84,6 +84,12 @@ pub enum ConfigError {
     #[error("kernel path is required but not provided")]
     MissingKernel,
 
+    #[error("empty volume path at index {index}")]
+    EmptyVolumePath { index: usize },
+
+    #[error("empty TAP device name")]
+    EmptyTapName,
+
     #[error("conflicting settings: {detail}")]
     ConflictingSettings { detail: String },
 }
