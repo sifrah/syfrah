@@ -1,0 +1,1047 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use tracing::{debug, error, info, warn};
+
+use crate::client::ChClient;
+use crate::config::{map, resolve, validate};
+use crate::error::{ComputeError, ProcessError};
+use crate::phase::VmPhase;
+use crate::preflight::run_preflight;
+use crate::runtime::{ReconnectSource, VmRuntimeState};
+use crate::types::VmSpec;
+
+// ---------------------------------------------------------------------------
+// RuntimeDir (#475)
+// ---------------------------------------------------------------------------
+
+/// Manages the per-VM runtime directory at `/run/syfrah/vms/{id}/`.
+///
+/// Contains all artifacts needed for process management and reconnect:
+/// `api.sock`, `pid`, `meta.json`, `ch-version`, `stdout.log`.
+pub struct RuntimeDir {
+    base: PathBuf,
+}
+
+impl RuntimeDir {
+    /// Create a new runtime directory for a VM.
+    ///
+    /// Creates `{base_dir}/{vm_id}/` with 0o700 permissions.
+    pub fn create(base_dir: &Path, vm_id: &str) -> Result<Self, ProcessError> {
+        let base = base_dir.join(vm_id);
+        fs::create_dir_all(&base).map_err(|e| ProcessError::SpawnFailed {
+            reason: format!("failed to create runtime dir {}: {e}", base.display()),
+        })?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&base, fs::Permissions::from_mode(0o700)).map_err(|e| {
+                ProcessError::SpawnFailed {
+                    reason: format!("failed to set permissions on {}: {e}", base.display()),
+                }
+            })?;
+        }
+
+        Ok(Self { base })
+    }
+
+    /// Wrap an existing runtime directory path.
+    pub fn from_existing(path: PathBuf) -> Self {
+        Self { base: path }
+    }
+
+    /// Path to the Cloud Hypervisor API socket.
+    pub fn socket_path(&self) -> PathBuf {
+        self.base.join("api.sock")
+    }
+
+    /// Path to the PID file.
+    pub fn pid_path(&self) -> PathBuf {
+        self.base.join("pid")
+    }
+
+    /// Path to the metadata file.
+    pub fn meta_path(&self) -> PathBuf {
+        self.base.join("meta.json")
+    }
+
+    /// Path to the CH version file.
+    pub fn ch_version_path(&self) -> PathBuf {
+        self.base.join("ch-version")
+    }
+
+    /// Path to the stdout/stderr log file.
+    pub fn log_path(&self) -> PathBuf {
+        self.base.join("stdout.log")
+    }
+
+    /// The runtime directory itself.
+    pub fn path(&self) -> &Path {
+        &self.base
+    }
+
+    /// Write meta.json atomically (write to .tmp, then rename).
+    pub fn write_meta(&self, meta: &VmMeta) -> Result<(), ProcessError> {
+        let tmp_path = self.base.join(".meta.json.tmp");
+        let final_path = self.meta_path();
+
+        let json = serde_json::to_string_pretty(meta).map_err(|e| ProcessError::SpawnFailed {
+            reason: format!("failed to serialize meta.json: {e}"),
+        })?;
+
+        fs::write(&tmp_path, json).map_err(|e| ProcessError::SpawnFailed {
+            reason: format!("failed to write {}: {e}", tmp_path.display()),
+        })?;
+
+        fs::rename(&tmp_path, &final_path).map_err(|e| ProcessError::SpawnFailed {
+            reason: format!(
+                "failed to rename {} -> {}: {e}",
+                tmp_path.display(),
+                final_path.display()
+            ),
+        })?;
+
+        Ok(())
+    }
+
+    /// Read and parse meta.json.
+    pub fn read_meta(&self) -> Result<VmMeta, ProcessError> {
+        let path = self.meta_path();
+        let data = fs::read_to_string(&path).map_err(|e| ProcessError::SpawnFailed {
+            reason: format!("failed to read {}: {e}", path.display()),
+        })?;
+        serde_json::from_str(&data).map_err(|e| ProcessError::SpawnFailed {
+            reason: format!("failed to parse {}: {e}", path.display()),
+        })
+    }
+
+    /// Write the PID file.
+    pub fn write_pid(&self, pid: u32) -> Result<(), ProcessError> {
+        fs::write(self.pid_path(), pid.to_string()).map_err(|e| ProcessError::SpawnFailed {
+            reason: format!("failed to write pid file: {e}"),
+        })
+    }
+
+    /// Read the PID from the PID file.
+    pub fn read_pid(&self) -> Result<u32, ProcessError> {
+        let data = fs::read_to_string(self.pid_path()).map_err(|e| ProcessError::SpawnFailed {
+            reason: format!("failed to read pid file: {e}"),
+        })?;
+        data.trim().parse().map_err(|e| ProcessError::SpawnFailed {
+            reason: format!("invalid pid file content: {e}"),
+        })
+    }
+
+    /// Write the CH version file.
+    pub fn write_ch_version(&self, version: &str) -> Result<(), ProcessError> {
+        fs::write(self.ch_version_path(), version).map_err(|e| ProcessError::SpawnFailed {
+            reason: format!("failed to write ch-version file: {e}"),
+        })
+    }
+
+    /// Remove the entire runtime directory recursively.
+    pub fn cleanup(&self) -> Result<(), ProcessError> {
+        if self.base.exists() {
+            fs::remove_dir_all(&self.base).map_err(|e| ProcessError::SpawnFailed {
+                reason: format!("failed to remove runtime dir {}: {e}", self.base.display()),
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Check whether the runtime directory exists.
+    pub fn exists(&self) -> bool {
+        self.base.exists()
+    }
+}
+
+/// Metadata stored in meta.json for reconnect after daemon restart.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct VmMeta {
+    pub vm_id: String,
+    pub created_at: String,
+    pub socket_path: String,
+    pub pid: u32,
+    pub ch_binary: String,
+    pub ch_version: String,
+    pub spec_hash: String,
+}
+
+/// Scan a base directory for runtime dirs that contain meta.json.
+///
+/// Returns a `RuntimeDir` for each subdirectory that has a valid meta.json.
+pub fn scan_runtime_dirs(base: &Path) -> Vec<RuntimeDir> {
+    let entries = match fs::read_dir(base) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut dirs = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() && path.join("meta.json").exists() {
+            dirs.push(RuntimeDir::from_existing(path));
+        }
+    }
+    dirs
+}
+
+// ---------------------------------------------------------------------------
+// PID helpers
+// ---------------------------------------------------------------------------
+
+/// Check whether a process with the given PID is alive.
+fn is_pid_alive(pid: u32) -> bool {
+    // SAFETY: kill with signal 0 only checks process existence, no signal is sent.
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+/// Poll every 200ms until the PID exits or timeout is reached.
+/// Returns `true` if the process exited within the timeout.
+async fn wait_for_pid_exit(pid: u32, timeout: Duration) -> bool {
+    let poll_interval = Duration::from_millis(200);
+    let start = tokio::time::Instant::now();
+
+    loop {
+        if !is_pid_alive(pid) {
+            return true;
+        }
+        if start.elapsed() >= timeout {
+            return false;
+        }
+        tokio::time::sleep(poll_interval).await;
+    }
+}
+
+/// Get the current time as an ISO 8601 string (UTC).
+fn now_iso8601() -> String {
+    // Use a simple approach: seconds since epoch formatted as ISO 8601.
+    let duration = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = duration.as_secs();
+    // Simple UTC timestamp without external crate
+    let days = secs / 86400;
+    let time_secs = secs % 86400;
+    let hours = time_secs / 3600;
+    let minutes = (time_secs % 3600) / 60;
+    let seconds = time_secs % 60;
+
+    // Calculate year/month/day from days since epoch (1970-01-01)
+    let (year, month, day) = days_to_ymd(days);
+    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
+}
+
+/// Convert days since 1970-01-01 to (year, month, day).
+fn days_to_ymd(days: u64) -> (u64, u64, u64) {
+    // Algorithm based on Howard Hinnant's civil_from_days
+    let z = days as i64 + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+    (year as u64, m, d)
+}
+
+/// Get the current Unix timestamp.
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+// ---------------------------------------------------------------------------
+// Spawn (#476)
+// ---------------------------------------------------------------------------
+
+/// Spawn a VM through the full pipeline.
+///
+/// Steps:
+/// 1. validate(spec) -> ValidatedSpec
+/// 2. resolve(validated, image_dir, default_kernel) -> ResolvedSpec
+/// 3. map(resolved, socket_path) -> VmConfig JSON
+/// 4. run_preflight(resolved, ch_binary, socket_path)
+/// 5. Create RuntimeDir
+/// 6. Spawn cloud-hypervisor process
+/// 7. Write pid, meta.json, ch-version
+/// 8. Poll ping() until ready (100ms interval, 10s timeout)
+/// 9. client.create(vm_config)
+/// 10. client.boot()
+/// 11. Return VmRuntimeState with phase Running
+///
+/// On ANY failure: cleanup (kill process if spawned, remove runtime dir).
+pub async fn spawn_vm(
+    spec: &VmSpec,
+    ch_binary: &Path,
+    base_dir: &Path,
+    image_dir: &Path,
+    default_kernel: &Path,
+) -> Result<VmRuntimeState, ComputeError> {
+    let vm_id_str = spec.id.0.clone();
+    info!(vm_id = %vm_id_str, "starting VM spawn");
+
+    // Step 1: validate
+    let validated = validate(spec).map_err(|errors| {
+        ComputeError::Config(
+            errors
+                .into_iter()
+                .next()
+                .expect("at least one config error"),
+        )
+    })?;
+
+    // Step 2: resolve
+    let resolved = resolve(&validated, image_dir, default_kernel).map_err(|errors| {
+        ComputeError::Config(
+            errors
+                .into_iter()
+                .next()
+                .expect("at least one config error"),
+        )
+    })?;
+
+    // Compute socket path for preflight and map
+    let runtime_dir_path = base_dir.join(&vm_id_str);
+    let socket_path = runtime_dir_path.join("api.sock");
+
+    // Step 3: map
+    let vm_config = map(&resolved, &socket_path);
+
+    // Step 4: preflight
+    run_preflight(&resolved, ch_binary, &socket_path).map_err(|errors| {
+        ComputeError::Preflight(
+            errors
+                .into_iter()
+                .next()
+                .expect("at least one preflight error"),
+        )
+    })?;
+
+    // Step 5: Create RuntimeDir
+    let runtime_dir = RuntimeDir::create(base_dir, &vm_id_str)?;
+    debug!(vm_id = %vm_id_str, path = %runtime_dir.path().display(), "created runtime dir");
+
+    // From here on, any failure must clean up.
+    let result = spawn_vm_inner(&vm_id_str, ch_binary, &runtime_dir, &vm_config, spec).await;
+
+    match result {
+        Ok(state) => Ok(state),
+        Err(e) => {
+            error!(vm_id = %vm_id_str, error = %e, "spawn failed, cleaning up");
+            // Best-effort cleanup
+            let _ = runtime_dir.cleanup();
+            Err(e)
+        }
+    }
+}
+
+/// Inner spawn logic. Separated so the caller can catch errors and clean up.
+async fn spawn_vm_inner(
+    vm_id_str: &str,
+    ch_binary: &Path,
+    runtime_dir: &RuntimeDir,
+    vm_config: &serde_json::Value,
+    spec: &VmSpec,
+) -> Result<VmRuntimeState, ComputeError> {
+    let socket_path = runtime_dir.socket_path();
+    let log_path = runtime_dir.log_path();
+
+    // Step 6: Spawn cloud-hypervisor process
+    let log_file = fs::File::create(&log_path).map_err(|e| ProcessError::SpawnFailed {
+        reason: format!("failed to create log file {}: {e}", log_path.display()),
+    })?;
+    let stderr_file = log_file
+        .try_clone()
+        .map_err(|e| ProcessError::SpawnFailed {
+            reason: format!("failed to clone log file handle: {e}"),
+        })?;
+
+    let child = std::process::Command::new(ch_binary)
+        .arg("--api-socket")
+        .arg(&socket_path)
+        .stdout(Stdio::from(log_file))
+        .stderr(Stdio::from(stderr_file))
+        .spawn()
+        .map_err(|e| ProcessError::SpawnFailed {
+            reason: format!("failed to exec {}: {e}", ch_binary.display()),
+        })?;
+
+    let pid = child.id();
+    info!(vm_id = %vm_id_str, pid = pid, "spawned cloud-hypervisor process");
+
+    // Get CH version (best-effort, non-blocking)
+    let ch_version = get_ch_version(ch_binary).unwrap_or_else(|| "unknown".to_string());
+
+    // Step 7: Write pid, meta.json, ch-version
+    runtime_dir.write_pid(pid)?;
+    runtime_dir.write_ch_version(&ch_version)?;
+
+    let meta = VmMeta {
+        vm_id: vm_id_str.to_string(),
+        created_at: now_iso8601(),
+        socket_path: socket_path.to_string_lossy().into_owned(),
+        pid,
+        ch_binary: ch_binary.to_string_lossy().into_owned(),
+        ch_version: ch_version.clone(),
+        spec_hash: compute_spec_hash(spec),
+    };
+    runtime_dir.write_meta(&meta)?;
+
+    // Step 8: Poll ping() until ready (100ms interval, 10s timeout)
+    let client = ChClient::new(socket_path.clone());
+    let ping_timeout = Duration::from_secs(10);
+    let ping_interval = Duration::from_millis(100);
+    let ping_start = tokio::time::Instant::now();
+
+    loop {
+        match client.ping().await {
+            Ok(true) => {
+                debug!(vm_id = %vm_id_str, "API is ready");
+                break;
+            }
+            Ok(false) | Err(_) => {
+                if ping_start.elapsed() >= ping_timeout {
+                    // Kill the process before returning error
+                    unsafe {
+                        libc::kill(pid as i32, libc::SIGKILL);
+                    }
+                    return Err(ProcessError::SpawnFailed {
+                        reason: format!(
+                            "API did not become ready within {}s",
+                            ping_timeout.as_secs()
+                        ),
+                    }
+                    .into());
+                }
+                // Check if process is still alive
+                if !is_pid_alive(pid) {
+                    return Err(ProcessError::SpawnFailed {
+                        reason: "cloud-hypervisor process exited before API became ready"
+                            .to_string(),
+                    }
+                    .into());
+                }
+                tokio::time::sleep(ping_interval).await;
+            }
+        }
+    }
+
+    // Step 9: client.create(vm_config)
+    client
+        .create(vm_config.clone())
+        .await
+        .map_err(|e| -> ComputeError {
+            // Kill the process on create failure
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
+            }
+            e.into()
+        })?;
+
+    // Step 10: client.boot()
+    client.boot().await.map_err(|e| -> ComputeError {
+        // Kill the process on boot failure
+        unsafe {
+            libc::kill(pid as i32, libc::SIGKILL);
+        }
+        e.into()
+    })?;
+
+    // Step 11: Return VmRuntimeState with phase Running
+    info!(vm_id = %vm_id_str, pid = pid, "VM is running");
+    Ok(VmRuntimeState {
+        vm_id: spec.id.clone(),
+        pid,
+        socket_path,
+        cgroup_path: None,
+        ch_binary_path: ch_binary.to_path_buf(),
+        ch_binary_version: ch_version,
+        launched_at: now_unix(),
+        last_ping_at: Some(now_unix()),
+        last_error: None,
+        current_phase: VmPhase::Running,
+        reconnect_source: ReconnectSource::FreshSpawn,
+    })
+}
+
+/// Get the Cloud Hypervisor version by running `ch_binary --version`.
+fn get_ch_version(ch_binary: &Path) -> Option<String> {
+    let output = std::process::Command::new(ch_binary)
+        .arg("--version")
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Output is typically "cloud-hypervisor v43.0" — extract the version part
+    stdout.split_whitespace().last().map(|s| s.to_string())
+}
+
+/// Compute a SHA256 hash of the VmSpec JSON for change detection.
+fn compute_spec_hash(spec: &VmSpec) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    // Use a deterministic hash of the JSON representation.
+    // A proper SHA256 would require an extra dependency; this is sufficient
+    // for change detection within the same binary version.
+    let json = serde_json::to_string(spec).unwrap_or_default();
+    let mut hasher = DefaultHasher::new();
+    json.hash(&mut hasher);
+    format!("hash:{:016x}", hasher.finish())
+}
+
+// ---------------------------------------------------------------------------
+// Kill chain (#479)
+// ---------------------------------------------------------------------------
+
+/// Execute the 4-level kill chain to stop a VM.
+///
+/// Levels:
+/// 1. `shutdown_graceful` via CH API (30s timeout, poll PID)
+/// 2. `shutdown_force` via CH API (10s timeout)
+/// 3. SIGTERM on PID (5s timeout)
+/// 4. SIGKILL on PID
+///
+/// The chain is interruptible: if the process dies at any level, remaining
+/// levels are skipped.
+pub async fn kill_vm(
+    state: &mut VmRuntimeState,
+    client: &ChClient,
+    runtime_dir: &RuntimeDir,
+) -> Result<(), ComputeError> {
+    let pid = state.pid;
+    let vm_id_str = state.vm_id.0.clone();
+
+    info!(vm_id = %vm_id_str, pid = pid, "starting kill chain");
+
+    // Transition to Stopping (allow from Running, Starting, or if already Stopping)
+    if state.current_phase != VmPhase::Stopping {
+        state.current_phase = state.current_phase.transition(VmPhase::Stopping)?;
+    }
+
+    // Check if already dead before starting the chain
+    if !is_pid_alive(pid) {
+        debug!(vm_id = %vm_id_str, "process already dead");
+        state.current_phase = state.current_phase.transition(VmPhase::Stopped)?;
+        runtime_dir.cleanup()?;
+        return Ok(());
+    }
+
+    // Level 1: shutdown_graceful (30s timeout)
+    info!(vm_id = %vm_id_str, "kill chain level 1: shutdown_graceful");
+    if let Err(e) = client.shutdown_graceful().await {
+        warn!(vm_id = %vm_id_str, error = %e, "shutdown_graceful failed, continuing kill chain");
+    } else if wait_for_pid_exit(pid, Duration::from_secs(30)).await {
+        info!(vm_id = %vm_id_str, "process exited after graceful shutdown");
+        state.current_phase = state.current_phase.transition(VmPhase::Stopped)?;
+        runtime_dir.cleanup()?;
+        return Ok(());
+    }
+
+    // Level 2: shutdown_force (10s timeout)
+    if !is_pid_alive(pid) {
+        state.current_phase = state.current_phase.transition(VmPhase::Stopped)?;
+        runtime_dir.cleanup()?;
+        return Ok(());
+    }
+    info!(vm_id = %vm_id_str, "kill chain level 2: shutdown_force");
+    if let Err(e) = client.shutdown_force().await {
+        warn!(vm_id = %vm_id_str, error = %e, "shutdown_force failed, continuing kill chain");
+    } else if wait_for_pid_exit(pid, Duration::from_secs(10)).await {
+        info!(vm_id = %vm_id_str, "process exited after forced shutdown");
+        state.current_phase = state.current_phase.transition(VmPhase::Stopped)?;
+        runtime_dir.cleanup()?;
+        return Ok(());
+    }
+
+    // Level 3: SIGTERM (5s timeout)
+    if !is_pid_alive(pid) {
+        state.current_phase = state.current_phase.transition(VmPhase::Stopped)?;
+        runtime_dir.cleanup()?;
+        return Ok(());
+    }
+    info!(vm_id = %vm_id_str, "kill chain level 3: SIGTERM");
+    // SAFETY: Sending SIGTERM to the cloud-hypervisor process we spawned.
+    let term_result = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+    if term_result != 0 {
+        warn!(vm_id = %vm_id_str, "SIGTERM failed (errno), process may already be dead");
+    }
+    if wait_for_pid_exit(pid, Duration::from_secs(5)).await {
+        info!(vm_id = %vm_id_str, "process exited after SIGTERM");
+        state.current_phase = state.current_phase.transition(VmPhase::Stopped)?;
+        runtime_dir.cleanup()?;
+        return Ok(());
+    }
+
+    // Level 4: SIGKILL (unconditional)
+    if !is_pid_alive(pid) {
+        state.current_phase = state.current_phase.transition(VmPhase::Stopped)?;
+        runtime_dir.cleanup()?;
+        return Ok(());
+    }
+    info!(vm_id = %vm_id_str, "kill chain level 4: SIGKILL");
+    // SAFETY: Sending SIGKILL to the cloud-hypervisor process we spawned.
+    unsafe {
+        libc::kill(pid as i32, libc::SIGKILL);
+    }
+
+    // Give a brief moment for the kernel to reap the process
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Verify process is actually dead
+    if is_pid_alive(pid) {
+        error!(vm_id = %vm_id_str, pid = pid, "process still alive after SIGKILL");
+        state.current_phase = state.current_phase.transition(VmPhase::Failed)?;
+        return Err(ProcessError::SignalFailed {
+            signal: "SIGKILL".to_string(),
+            pid,
+        }
+        .into());
+    }
+
+    info!(vm_id = %vm_id_str, "process confirmed dead");
+    state.current_phase = state.current_phase.transition(VmPhase::Stopped)?;
+    runtime_dir.cleanup()?;
+    Ok(())
+}
+
+/// Delete a VM: kill if running, then clean up all artifacts.
+///
+/// - If Running/Starting: run kill chain first
+/// - If Stopped/Failed: skip kill
+/// - Call client.delete() to clean CH internal state
+/// - Cleanup runtime dir
+/// - Transition: -> Deleting -> Deleted
+pub async fn delete_vm(
+    state: &mut VmRuntimeState,
+    client: &ChClient,
+    runtime_dir: &RuntimeDir,
+) -> Result<(), ComputeError> {
+    let vm_id_str = state.vm_id.0.clone();
+    info!(vm_id = %vm_id_str, phase = ?state.current_phase, "deleting VM");
+
+    // If the VM is active, kill it first
+    match state.current_phase {
+        VmPhase::Running | VmPhase::Starting | VmPhase::Provisioning => {
+            // Need to transition through Stopping first
+            if state.current_phase == VmPhase::Running || state.current_phase == VmPhase::Starting {
+                // For Starting, we need to handle the transition: Starting can go to Failed
+                if state.current_phase == VmPhase::Starting {
+                    state.current_phase = state.current_phase.transition(VmPhase::Failed)?;
+                    state.current_phase = state.current_phase.transition(VmPhase::Deleting)?;
+                } else {
+                    // Running -> Stopping -> Stopped -> Deleting
+                    kill_vm(state, client, runtime_dir).await?;
+                    // After kill_vm, phase should be Stopped
+                    state.current_phase = state.current_phase.transition(VmPhase::Deleting)?;
+                }
+            } else {
+                // Provisioning -> Failed -> Deleting
+                state.current_phase = state.current_phase.transition(VmPhase::Failed)?;
+                state.current_phase = state.current_phase.transition(VmPhase::Deleting)?;
+            }
+        }
+        VmPhase::Stopping => {
+            // Already stopping — wait for it, but we can transition Stopped -> Deleting
+            // For simplicity, force kill
+            kill_vm(state, client, runtime_dir).await?;
+            state.current_phase = state.current_phase.transition(VmPhase::Deleting)?;
+        }
+        VmPhase::Stopped | VmPhase::Failed => {
+            state.current_phase = state.current_phase.transition(VmPhase::Deleting)?;
+        }
+        VmPhase::Deleting => {
+            // Already deleting, continue
+        }
+        VmPhase::Deleted => {
+            // Already deleted, no-op
+            return Ok(());
+        }
+        VmPhase::Pending => {
+            // Pending -> can't go to Deleting directly. Go through Failed.
+            // The state machine doesn't allow Pending -> Deleting, so:
+            // Pending -> Provisioning -> Failed -> Deleting
+            // But that doesn't make sense either. For a pending VM that was
+            // never spawned, just clean up.
+            // Force the phase for cleanup purposes.
+            state.current_phase = VmPhase::Deleting;
+        }
+    }
+
+    // Best-effort: tell CH to delete (may fail if process is already gone)
+    if let Err(e) = client.delete().await {
+        debug!(vm_id = %vm_id_str, error = %e, "client.delete() failed (process may be gone)");
+    }
+
+    // Cleanup runtime dir
+    if let Err(e) = runtime_dir.cleanup() {
+        warn!(vm_id = %vm_id_str, error = %e, "runtime dir cleanup failed");
+    }
+
+    // Transition to Deleted
+    if state.current_phase == VmPhase::Deleting {
+        state.current_phase = state.current_phase.transition(VmPhase::Deleted)?;
+    }
+
+    info!(vm_id = %vm_id_str, "VM deleted");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    // -- RuntimeDir tests -----------------------------------------------------
+
+    #[test]
+    fn create_runtime_dir() {
+        let tmp = TempDir::new().unwrap();
+        let dir = RuntimeDir::create(tmp.path(), "vm-test-1").unwrap();
+        assert!(dir.exists());
+        assert!(dir.path().ends_with("vm-test-1"));
+    }
+
+    #[test]
+    fn runtime_dir_paths() {
+        let tmp = TempDir::new().unwrap();
+        let dir = RuntimeDir::create(tmp.path(), "vm-paths").unwrap();
+
+        assert!(dir.socket_path().ends_with("api.sock"));
+        assert!(dir.pid_path().ends_with("pid"));
+        assert!(dir.meta_path().ends_with("meta.json"));
+        assert!(dir.ch_version_path().ends_with("ch-version"));
+        assert!(dir.log_path().ends_with("stdout.log"));
+    }
+
+    #[test]
+    fn write_and_read_meta() {
+        let tmp = TempDir::new().unwrap();
+        let dir = RuntimeDir::create(tmp.path(), "vm-meta").unwrap();
+
+        let meta = VmMeta {
+            vm_id: "vm-meta".to_string(),
+            created_at: "2026-03-27T14:00:00Z".to_string(),
+            socket_path: "/run/syfrah/vms/vm-meta/api.sock".to_string(),
+            pid: 12345,
+            ch_binary: "/usr/local/lib/syfrah/cloud-hypervisor".to_string(),
+            ch_version: "v43.0".to_string(),
+            spec_hash: "hash:abc123".to_string(),
+        };
+
+        dir.write_meta(&meta).unwrap();
+        let read_back = dir.read_meta().unwrap();
+        assert_eq!(meta, read_back);
+    }
+
+    #[test]
+    fn atomic_meta_write_no_tmp_leftover() {
+        let tmp = TempDir::new().unwrap();
+        let dir = RuntimeDir::create(tmp.path(), "vm-atomic").unwrap();
+
+        let meta = VmMeta {
+            vm_id: "vm-atomic".to_string(),
+            created_at: "2026-03-27T14:00:00Z".to_string(),
+            socket_path: "/tmp/api.sock".to_string(),
+            pid: 1,
+            ch_binary: "/bin/true".to_string(),
+            ch_version: "v1.0".to_string(),
+            spec_hash: "hash:0".to_string(),
+        };
+
+        dir.write_meta(&meta).unwrap();
+
+        // .tmp file should not exist after successful write
+        let tmp_path = dir.path().join(".meta.json.tmp");
+        assert!(!tmp_path.exists());
+        // meta.json should exist
+        assert!(dir.meta_path().exists());
+    }
+
+    #[test]
+    fn write_and_read_pid() {
+        let tmp = TempDir::new().unwrap();
+        let dir = RuntimeDir::create(tmp.path(), "vm-pid").unwrap();
+
+        dir.write_pid(42).unwrap();
+        assert_eq!(dir.read_pid().unwrap(), 42);
+    }
+
+    #[test]
+    fn write_ch_version() {
+        let tmp = TempDir::new().unwrap();
+        let dir = RuntimeDir::create(tmp.path(), "vm-ver").unwrap();
+
+        dir.write_ch_version("v43.0").unwrap();
+        let content = fs::read_to_string(dir.ch_version_path()).unwrap();
+        assert_eq!(content, "v43.0");
+    }
+
+    #[test]
+    fn cleanup_removes_dir() {
+        let tmp = TempDir::new().unwrap();
+        let dir = RuntimeDir::create(tmp.path(), "vm-cleanup").unwrap();
+        dir.write_pid(1).unwrap();
+        assert!(dir.exists());
+
+        dir.cleanup().unwrap();
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn cleanup_on_nonexistent_is_ok() {
+        let dir = RuntimeDir::from_existing(PathBuf::from("/nonexistent/vm-ghost"));
+        // Should not error
+        dir.cleanup().unwrap();
+    }
+
+    #[test]
+    fn from_existing() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("vm-existing");
+        fs::create_dir_all(&path).unwrap();
+        let dir = RuntimeDir::from_existing(path.clone());
+        assert!(dir.exists());
+        assert_eq!(dir.path(), path);
+    }
+
+    // -- VmMeta serde ---------------------------------------------------------
+
+    #[test]
+    fn vm_meta_serde_roundtrip() {
+        let meta = VmMeta {
+            vm_id: "vm-serde".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            socket_path: "/tmp/api.sock".to_string(),
+            pid: 9999,
+            ch_binary: "/usr/bin/ch".to_string(),
+            ch_version: "v42.0".to_string(),
+            spec_hash: "hash:deadbeef".to_string(),
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        let back: VmMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(meta, back);
+    }
+
+    // -- scan_runtime_dirs ----------------------------------------------------
+
+    #[test]
+    fn scan_runtime_dirs_finds_dirs_with_meta() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create two valid runtime dirs
+        let dir1 = RuntimeDir::create(tmp.path(), "vm-1").unwrap();
+        let meta = VmMeta {
+            vm_id: "vm-1".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            socket_path: "/tmp/vm-1/api.sock".to_string(),
+            pid: 1,
+            ch_binary: "/bin/true".to_string(),
+            ch_version: "v1".to_string(),
+            spec_hash: "hash:0".to_string(),
+        };
+        dir1.write_meta(&meta).unwrap();
+
+        let dir2 = RuntimeDir::create(tmp.path(), "vm-2").unwrap();
+        let meta2 = VmMeta {
+            vm_id: "vm-2".to_string(),
+            ..meta.clone()
+        };
+        dir2.write_meta(&meta2).unwrap();
+
+        // Create a dir without meta.json (should be excluded)
+        fs::create_dir_all(tmp.path().join("vm-orphan")).unwrap();
+
+        let found = scan_runtime_dirs(tmp.path());
+        assert_eq!(found.len(), 2);
+    }
+
+    #[test]
+    fn scan_runtime_dirs_empty_base() {
+        let tmp = TempDir::new().unwrap();
+        let found = scan_runtime_dirs(tmp.path());
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn scan_runtime_dirs_nonexistent_base() {
+        let found = scan_runtime_dirs(Path::new("/nonexistent/base"));
+        assert!(found.is_empty());
+    }
+
+    // -- is_pid_alive ---------------------------------------------------------
+
+    #[test]
+    fn current_process_is_alive() {
+        let pid = std::process::id();
+        assert!(is_pid_alive(pid));
+    }
+
+    #[test]
+    fn nonexistent_pid_is_not_alive() {
+        // PID 4_000_000 is extremely unlikely to exist
+        assert!(!is_pid_alive(4_000_000));
+    }
+
+    // -- days_to_ymd ----------------------------------------------------------
+
+    #[test]
+    fn days_to_ymd_epoch() {
+        assert_eq!(days_to_ymd(0), (1970, 1, 1));
+    }
+
+    #[test]
+    fn days_to_ymd_known_date() {
+        // 2026-03-27 is day 20539 since epoch
+        // Let's verify a known date: 2000-01-01 = day 10957
+        assert_eq!(days_to_ymd(10957), (2000, 1, 1));
+    }
+
+    // -- compute_spec_hash ----------------------------------------------------
+
+    #[test]
+    fn spec_hash_deterministic() {
+        use crate::types::{GpuMode, VmId, VmSpec};
+        let spec = VmSpec {
+            id: VmId("vm-hash".to_string()),
+            vcpus: 2,
+            memory_mb: 512,
+            image: "test".to_string(),
+            kernel: None,
+            network: None,
+            volumes: vec![],
+            gpu: GpuMode::None,
+        };
+        let h1 = compute_spec_hash(&spec);
+        let h2 = compute_spec_hash(&spec);
+        assert_eq!(h1, h2);
+        assert!(h1.starts_with("hash:"));
+    }
+
+    // -- delete_vm state transitions ------------------------------------------
+
+    #[tokio::test]
+    async fn delete_already_deleted_is_noop() {
+        use crate::types::VmId;
+
+        let tmp = TempDir::new().unwrap();
+        let dir = RuntimeDir::create(tmp.path(), "vm-del").unwrap();
+        let client = ChClient::new(dir.socket_path());
+
+        let mut state = VmRuntimeState {
+            vm_id: VmId("vm-del".to_string()),
+            pid: 4_000_000, // nonexistent
+            socket_path: dir.socket_path(),
+            cgroup_path: None,
+            ch_binary_path: PathBuf::from("/bin/true"),
+            ch_binary_version: "v1".to_string(),
+            launched_at: 0,
+            last_ping_at: None,
+            last_error: None,
+            current_phase: VmPhase::Deleted,
+            reconnect_source: ReconnectSource::FreshSpawn,
+        };
+
+        let result = delete_vm(&mut state, &client, &dir).await;
+        assert!(result.is_ok());
+        assert_eq!(state.current_phase, VmPhase::Deleted);
+    }
+
+    #[tokio::test]
+    async fn delete_stopped_vm_transitions_to_deleted() {
+        use crate::types::VmId;
+
+        let tmp = TempDir::new().unwrap();
+        let dir = RuntimeDir::create(tmp.path(), "vm-stop-del").unwrap();
+        let client = ChClient::new(dir.socket_path());
+
+        let mut state = VmRuntimeState {
+            vm_id: VmId("vm-stop-del".to_string()),
+            pid: 4_000_000,
+            socket_path: dir.socket_path(),
+            cgroup_path: None,
+            ch_binary_path: PathBuf::from("/bin/true"),
+            ch_binary_version: "v1".to_string(),
+            launched_at: 0,
+            last_ping_at: None,
+            last_error: None,
+            current_phase: VmPhase::Stopped,
+            reconnect_source: ReconnectSource::FreshSpawn,
+        };
+
+        let result = delete_vm(&mut state, &client, &dir).await;
+        assert!(result.is_ok());
+        assert_eq!(state.current_phase, VmPhase::Deleted);
+    }
+
+    #[tokio::test]
+    async fn delete_failed_vm_transitions_to_deleted() {
+        use crate::types::VmId;
+
+        let tmp = TempDir::new().unwrap();
+        let dir = RuntimeDir::create(tmp.path(), "vm-fail-del").unwrap();
+        let client = ChClient::new(dir.socket_path());
+
+        let mut state = VmRuntimeState {
+            vm_id: VmId("vm-fail-del".to_string()),
+            pid: 4_000_000,
+            socket_path: dir.socket_path(),
+            cgroup_path: None,
+            ch_binary_path: PathBuf::from("/bin/true"),
+            ch_binary_version: "v1".to_string(),
+            launched_at: 0,
+            last_ping_at: None,
+            last_error: None,
+            current_phase: VmPhase::Failed,
+            reconnect_source: ReconnectSource::FreshSpawn,
+        };
+
+        let result = delete_vm(&mut state, &client, &dir).await;
+        assert!(result.is_ok());
+        assert_eq!(state.current_phase, VmPhase::Deleted);
+    }
+
+    // -- kill_vm on already-dead process --------------------------------------
+
+    #[tokio::test]
+    async fn kill_vm_already_dead_process() {
+        use crate::types::VmId;
+
+        let tmp = TempDir::new().unwrap();
+        let dir = RuntimeDir::create(tmp.path(), "vm-kill-dead").unwrap();
+        let client = ChClient::new(dir.socket_path());
+
+        let mut state = VmRuntimeState {
+            vm_id: VmId("vm-kill-dead".to_string()),
+            pid: 4_000_000, // nonexistent PID
+            socket_path: dir.socket_path(),
+            cgroup_path: None,
+            ch_binary_path: PathBuf::from("/bin/true"),
+            ch_binary_version: "v1".to_string(),
+            launched_at: 0,
+            last_ping_at: None,
+            last_error: None,
+            current_phase: VmPhase::Running,
+            reconnect_source: ReconnectSource::FreshSpawn,
+        };
+
+        let result = kill_vm(&mut state, &client, &dir).await;
+        assert!(result.is_ok());
+        assert_eq!(state.current_phase, VmPhase::Stopped);
+        // Runtime dir should be cleaned up
+        assert!(!dir.exists());
+    }
+}

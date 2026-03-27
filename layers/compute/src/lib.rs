@@ -4,6 +4,8 @@ pub mod error;
 pub mod phase;
 pub mod preflight;
 #[allow(dead_code)]
+pub(crate) mod process;
+#[allow(dead_code)]
 mod runtime;
 #[cfg(test)]
 pub mod test_utils;
