@@ -135,6 +135,27 @@ fn emit_inner(
     details: Option<&str>,
     caller_uid: Option<u32>,
 ) -> std::io::Result<()> {
+    let path = audit_log_path();
+    emit_to_path(
+        &path,
+        event_type,
+        peer_name,
+        peer_endpoint,
+        details,
+        caller_uid,
+    )
+}
+
+/// Write an audit entry to an explicit file path.
+/// Used by tests to avoid relying on `HOME` env var.
+fn emit_to_path(
+    path: &std::path::Path,
+    event_type: AuditEventType,
+    peer_name: Option<&str>,
+    peer_endpoint: Option<&str>,
+    details: Option<&str>,
+    caller_uid: Option<u32>,
+) -> std::io::Result<()> {
     let entry = AuditEntry {
         timestamp: now(),
         event_type: event_type.to_string(),
@@ -144,7 +165,6 @@ fn emit_inner(
         caller_uid,
     };
 
-    let path = audit_log_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
         #[cfg(unix)]
@@ -157,14 +177,14 @@ fn emit_inner(
     // Rotate if the audit log exceeds the configured maximum size.
     let tuning = crate::config::load_tuning().unwrap_or_default();
     let max_bytes = tuning.audit_max_size_mb * 1024 * 1024;
-    rotate_if_needed(&path, max_bytes);
+    rotate_if_needed(path, max_bytes);
 
-    let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
     }
 
     let mut line = serde_json::to_string(&entry).map_err(std::io::Error::other)?;
@@ -176,11 +196,16 @@ fn emit_inner(
 /// Read and parse audit entries from the log file.
 /// Returns entries in chronological order (oldest first).
 pub fn read_entries() -> std::io::Result<Vec<AuditEntry>> {
-    let path = audit_log_path();
+    read_entries_from(&audit_log_path())
+}
+
+/// Read and parse audit entries from an explicit file path.
+/// Used by tests to avoid relying on `HOME` env var.
+fn read_entries_from(path: &std::path::Path) -> std::io::Result<Vec<AuditEntry>> {
     if !path.exists() {
         return Ok(vec![]);
     }
-    let contents = fs::read_to_string(&path)?;
+    let contents = fs::read_to_string(path)?;
     let mut entries = Vec::new();
     for line in contents.lines() {
         let trimmed = line.trim();
@@ -265,22 +290,28 @@ mod tests {
     #[test]
     fn write_and_read_audit_log() {
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("HOME", tmp.path());
+        let log_path = tmp.path().join("audit.log");
 
-        emit(
+        emit_to_path(
+            &log_path,
             AuditEventType::DaemonStarted,
             None,
             None,
             Some("test-start"),
-        );
-        emit(
+            None,
+        )
+        .unwrap();
+        emit_to_path(
+            &log_path,
             AuditEventType::PeerJoinAccepted,
             Some("peer-1"),
             Some("1.2.3.4:51820"),
             None,
-        );
+            None,
+        )
+        .unwrap();
 
-        let entries = read_entries().unwrap();
+        let entries = read_entries_from(&log_path).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].event_type, "daemon.started");
         assert_eq!(entries[0].details.as_deref(), Some("test-start"));
