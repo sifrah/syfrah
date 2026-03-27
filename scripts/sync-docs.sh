@@ -246,10 +246,10 @@ detect_layer_status() {
 # Return the badge string for a layer status
 status_badge() {
     case "$1" in
-        implemented) echo "🟢 Implemented" ;;
-        stub)        echo "🔵 Stub" ;;
-        planned)     echo "⚪ Planned" ;;
-        *)           echo "⚪ Planned" ;;
+        implemented) echo "Implemented" ;;
+        stub)        echo "Stub" ;;
+        planned)     echo "Planned" ;;
+        *)           echo "Planned" ;;
     esac
 }
 

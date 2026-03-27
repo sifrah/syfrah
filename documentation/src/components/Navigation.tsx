@@ -22,16 +22,16 @@ interface NavLink {
   children?: NavLink[]
 }
 
-const pageTypeBadge: Record<string, { emoji: string; label: string }> = {
-  reference: { emoji: '\u{1F4D8}', label: 'Reference' },
-  guide:     { emoji: '\u{1F4D7}', label: 'Guide' },
-  concept:   { emoji: '\u{1F4D9}', label: 'Concept' },
+const pageTypeBadge: Record<string, { label: string; style: string }> = {
+  reference: { label: 'ref', style: 'bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300' },
+  guide:     { label: 'guide', style: 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300' },
+  concept:   { label: 'concept', style: 'bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300' },
 }
 
-const statusBadge: Record<string, { emoji: string; label: string }> = {
-  implemented: { emoji: '\u{1F7E2}', label: 'Implemented' },
-  stub:        { emoji: '\u{1F535}', label: 'Stub' },
-  planned:     { emoji: '\u{26AA}',  label: 'Planned' },
+const statusBadge: Record<string, { label: string; style: string }> = {
+  implemented: { label: 'implemented', style: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300' },
+  stub:        { label: 'stub', style: 'bg-sky-100 text-sky-700 dark:bg-sky-900 dark:text-sky-300' },
+  planned:     { label: 'planned', style: 'bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400' },
 }
 
 interface NavGroup {
@@ -78,13 +78,10 @@ function NavLinkItem({
           : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white',
       )}
     >
-      <span className="truncate">
-        {typeBadge && (
-          <span className="mr-1.5" title={typeBadge.label}>{typeBadge.emoji}</span>
-        )}
+      <span className="truncate flex items-center gap-1.5">
         {children}
         {badge && (
-          <span className="ml-1.5" title={badge.label}>{badge.emoji}</span>
+          <span className={`inline-block rounded px-1 py-0.5 text-[10px] font-medium leading-none ${badge.style}`}>{badge.label}</span>
         )}
       </span>
       {tag && (
