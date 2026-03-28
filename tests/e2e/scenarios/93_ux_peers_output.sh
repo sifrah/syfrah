@@ -18,7 +18,8 @@ init_mesh "e2e-ux-peers-1" "172.20.0.10" "alpha"
 start_peering "e2e-ux-peers-1"
 join_mesh "e2e-ux-peers-2" "172.20.0.10" "172.20.0.11" "bravo"
 
-sleep 5
+wait_for_peer_active "e2e-ux-peers-1" 1 30
+wait_for_peer_active "e2e-ux-peers-2" 1 30
 
 # Test 1: Peers after join — no duplicate entries
 info "Testing: peers no duplicates..."
