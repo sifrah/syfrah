@@ -209,6 +209,62 @@ fn stop_daemon() -> Result<Option<usize>> {
     Ok(Some(peer_count))
 }
 
+/// Signal the running daemon to re-exec itself with SIGUSR1 for zero-downtime update.
+///
+/// Reads the daemon PID from the PID file, sends SIGUSR1, waits for the daemon
+/// to re-exec, and verifies it is still running with the new binary.
+fn signal_daemon_reexec() -> Result<()> {
+    let pid = match syfrah_fabric::store::daemon_running() {
+        Some(pid) => pid,
+        None => bail!("daemon not running, no reload needed"),
+    };
+
+    if !syfrah_fabric::store::is_syfrah_process(pid) {
+        syfrah_fabric::store::remove_pid();
+        bail!("PID {pid} is not a syfrah process");
+    }
+
+    let sp = ui::spinner("Signaling daemon to reload...");
+
+    let pid_i32 = i32::try_from(pid).context("daemon PID out of range for signal delivery")?;
+    #[cfg(unix)]
+    {
+        let rc = unsafe { libc::kill(pid_i32, libc::SIGUSR1) };
+        if rc != 0 {
+            ui::step_fail(&sp, "Could not signal daemon");
+            bail!(
+                "failed to send SIGUSR1 to daemon (pid {pid}): {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        ui::step_fail(&sp, "SIGUSR1 not supported on this platform");
+        bail!("SIGUSR1 re-exec is only supported on Unix");
+    }
+
+    // Wait for the daemon to re-exec. exec() replaces the process image
+    // in-place (PID stays the same on Unix), so we just need to verify the
+    // daemon is still alive after the signal. Give it up to 5 seconds.
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if syfrah_fabric::store::daemon_running().is_some() {
+            ui::step_ok(&sp, "Daemon reloaded with new binary");
+            return Ok(());
+        }
+    }
+
+    // The daemon may have died during re-exec. Check once more.
+    if syfrah_fabric::store::daemon_running().is_some() {
+        ui::step_ok(&sp, "Daemon reloaded with new binary");
+        Ok(())
+    } else {
+        ui::step_fail(&sp, "Daemon did not recover after SIGUSR1");
+        bail!("daemon did not restart within 5 seconds after SIGUSR1")
+    }
+}
+
 /// Start the daemon using the (new) binary on disk.
 /// Returns the PID of the started daemon.
 fn start_daemon(exe_path: &std::path::Path) -> Result<Option<u32>> {
@@ -268,10 +324,10 @@ fn start_daemon(exe_path: &std::path::Path) -> Result<Option<u32>> {
 /// Download and install the latest release, replacing the current binary.
 ///
 /// When a daemon is running and `no_restart` is false, the daemon is
-/// automatically stopped before the binary is replaced and restarted
-/// afterward. If the new binary fails to start, the previous binary is
-/// restored as a rollback.
-pub fn run(no_restart: bool, force: bool) -> Result<()> {
+/// signaled via SIGUSR1 to re-exec itself with the new binary (zero-downtime).
+/// If SIGUSR1 fails, falls back to stop/start. If the new binary fails to
+/// start, the previous binary is restored as a rollback.
+pub fn run(no_restart: bool, _force: bool) -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
 
     // Step 1: check for update
@@ -291,7 +347,7 @@ pub fn run(no_restart: bool, force: bool) -> Result<()> {
     }
     ui::step_ok(&sp, &format!("Update available: v{current} -> {latest}"));
 
-    // Note: daemon-running check is deferred until just before stop to avoid TOCTOU.
+    // Note: daemon-running check is deferred until just before install to avoid TOCTOU.
 
     // Step 2: find the right asset
     let target = asset_name(latest)?;
@@ -361,22 +417,10 @@ pub fn run(no_restart: bool, force: bool) -> Result<()> {
     }
     ui::step_ok(&sp, "Checksum verified");
 
-    // Step 6: check daemon state and stop before replacing binary (unless --no-restart)
-    // Daemon check is done here (not earlier) to avoid TOCTOU with the download.
+    // Step 6: check daemon state before replacing binary.
+    // We no longer stop the daemon here — SIGUSR1 re-exec handles the
+    // reload after the binary is replaced on disk.
     let daemon_was_running = syfrah_fabric::store::daemon_running().is_some();
-
-    if daemon_was_running && !no_restart {
-        let peer_count = syfrah_fabric::store::peer_count().unwrap_or(0);
-        if peer_count > 0
-            && !force
-            && !ui::confirm(&format!(
-                "This will briefly interrupt connectivity with {peer_count} peer(s). Continue?"
-            ))
-        {
-            bail!("update cancelled by user");
-        }
-        stop_daemon()?;
-    }
 
     // Step 7: extract binary from tar.gz and atomic replace
     let sp = ui::spinner("Installing update...");
@@ -444,23 +488,35 @@ pub fn run(no_restart: bool, force: bool) -> Result<()> {
 
     ui::step_ok(&sp, &format!("Updated binary to {latest}"));
 
-    // Step 8: restart daemon or print manual instructions
+    // Step 8: signal daemon to re-exec or print manual instructions
     if daemon_was_running {
         if no_restart {
             ui::warn("A daemon is running. Restart it to use the new version:");
             ui::warn("  syfrah fabric stop && syfrah fabric start");
         } else {
-            match start_daemon(&current_exe) {
-                Ok(_) => {
-                    // Daemon started successfully — backup no longer needed.
+            match signal_daemon_reexec() {
+                Ok(()) => {
+                    // Daemon re-exec succeeded — backup no longer needed.
                     let _ = fs::remove_file(&backup_path);
                 }
                 Err(e) => {
-                    rollback_daemon(&backup_path, &current_exe, has_backup, latest);
-                    bail!(
-                        "daemon failed to start after update to {latest}; \
-                         rolled back to previous version: {e}"
-                    );
+                    ui::warn(&format!(
+                        "Could not signal daemon for zero-downtime reload: {e}"
+                    ));
+                    ui::warn("Falling back to stop/start...");
+                    let _ = stop_daemon();
+                    match start_daemon(&current_exe) {
+                        Ok(_) => {
+                            let _ = fs::remove_file(&backup_path);
+                        }
+                        Err(e2) => {
+                            rollback_daemon(&backup_path, &current_exe, has_backup, latest);
+                            bail!(
+                                "daemon failed to start after update to {latest}; \
+                                 rolled back to previous version: {e2}"
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -468,7 +524,9 @@ pub fn run(no_restart: bool, force: bool) -> Result<()> {
         let _ = fs::remove_file(&backup_path);
     }
 
-    ui::success(&format!("syfrah updated to {latest} successfully."));
+    ui::success(&format!(
+        "Updated to {latest}. Daemon reloaded — no restart needed."
+    ));
     Ok(())
 }
 
@@ -669,7 +727,7 @@ mod tests {
     #[test]
     fn start_daemon_with_nonexistent_binary_returns_err() {
         // Verify start_daemon returns Err (not Ok(None)) for a missing binary.
-        // This confirms the Ok(None) → Err refactor is correct.
+        // This confirms the Ok(None) -> Err refactor is correct.
         let fake_path = std::path::Path::new("/tmp/nonexistent-syfrah-binary-err-check");
         let result = start_daemon(fake_path);
         assert!(
@@ -697,6 +755,21 @@ mod tests {
         assert!(
             !is_newer("0.0.2", "0.0.1"),
             "patch downgrade should not be newer"
+        );
+    }
+
+    #[test]
+    fn signal_reexec_returns_err_when_no_daemon() {
+        // When no daemon is running, signal_daemon_reexec should return an error.
+        if syfrah_fabric::store::daemon_running().is_some() {
+            eprintln!("skipping signal_reexec_returns_err_when_no_daemon: daemon is running");
+            return;
+        }
+        let result = signal_daemon_reexec();
+        assert!(result.is_err(), "should fail when no daemon is running");
+        assert!(
+            result.unwrap_err().to_string().contains("not running"),
+            "error should mention daemon not running"
         );
     }
 

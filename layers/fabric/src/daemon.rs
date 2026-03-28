@@ -1920,7 +1920,18 @@ pub async fn run_daemon(
         ))
     };
 
-    // Wait for a shutdown signal (SIGINT or SIGTERM) or an unexpected task exit.
+    // SIGUSR1 handler: flush state and re-exec for zero-downtime update.
+    #[cfg(unix)]
+    let sigusr1_reexec = async {
+        let mut sig = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1())
+            .expect("failed to register SIGUSR1 handler");
+        sig.recv().await;
+    };
+    #[cfg(not(unix))]
+    let sigusr1_reexec = std::future::pending::<()>();
+
+    // Wait for a shutdown signal (SIGINT, SIGTERM, or SIGUSR1) or an unexpected task exit.
+    let mut reexec_requested = false;
     tokio::select! {
         _ = &mut control_task => {
             warn!("control_task exited unexpectedly");
@@ -1943,6 +1954,10 @@ pub async fn run_daemon(
         }
         _ = terminate => {
             info!("received SIGTERM, shutting down");
+        }
+        _ = sigusr1_reexec => {
+            info!("received SIGUSR1, re-executing with new binary...");
+            reexec_requested = true;
         }
     }
 
@@ -1980,6 +1995,30 @@ pub async fn run_daemon(
     // Flush any debounced JSON state so the on-disk export is up-to-date.
     let _ = store::flush_json();
     let _ = std::fs::remove_file(store::control_socket_path());
+
+    if reexec_requested {
+        // Re-exec: replace this process with the (potentially updated) binary.
+        // WireGuard interface stays up (kernel-managed). PID file is kept so
+        // the new process can overwrite it. We skip teardown_interface and
+        // remove_pid intentionally.
+        info!("flushed state, re-executing daemon...");
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            let exe = std::env::current_exe().expect("failed to determine current executable");
+            let args: Vec<String> = std::env::args().collect();
+            // exec() replaces this process — it does not return on success.
+            let err = std::process::Command::new(&exe).args(&args[1..]).exec();
+            // If we get here, exec() failed.
+            error!("re-exec failed: {err}");
+            // Fall through to normal shutdown so systemd can restart us.
+        }
+        #[cfg(not(unix))]
+        {
+            error!("re-exec is not supported on this platform");
+        }
+    }
+
     wg::teardown_interface()?;
     store::remove_pid();
     events::emit(
