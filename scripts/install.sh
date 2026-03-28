@@ -108,9 +108,9 @@ TARGET="${ARCH}-${OS}"
 if [ "$CHANNEL" = "beta" ]; then
   start_spinner "Fetching latest beta release version..."
   # Beta releases are pre-releases — /releases/latest ignores them.
-  # List all releases and pick the first pre-release (most recent).
+  # List all releases, find tags containing "beta" (most recent first).
   VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=20" \
-    | grep -A 2 '"prerelease": true' | grep '"tag_name"' | head -1 \
+    | grep '"tag_name"' | grep 'beta' | head -1 \
     | sed 's/.*"tag_name": *"//;s/".*//')" || true
   if [ -z "$VERSION" ]; then
     stop_spinner "No beta release found" fail
