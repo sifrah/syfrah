@@ -315,7 +315,7 @@ mod tests {
             images: vec![sample_catalog_entry(
                 "test-image",
                 &sha,
-                &format!("{base_url}/images/test.raw"),
+                "images/test.raw",
             )],
         };
 
@@ -339,7 +339,7 @@ mod tests {
             images: vec![sample_catalog_entry(
                 "bad-image",
                 "wrong_sha_value",
-                &format!("{base_url}/images/bad.raw"),
+                "images/bad.raw",
             )],
         };
 
@@ -408,7 +408,7 @@ mod tests {
         let mut entry = sample_catalog_entry(
             "gzip-image",
             &sha,
-            &format!("{base_url}/images/gzip.raw.gz"),
+            "images/gzip.raw.gz",
         );
         entry.compression = Some("gzip".to_string());
 
@@ -439,7 +439,7 @@ mod tests {
             images: vec![sample_catalog_entry(
                 "missing",
                 "sha",
-                &format!("{base_url}/images/nonexistent.raw"),
+                "images/nonexistent.raw",
             )],
         };
 
@@ -463,7 +463,7 @@ mod tests {
             images: vec![sample_catalog_entry(
                 "meta-test",
                 &sha,
-                &format!("{base_url}/images/meta.raw"),
+                "images/meta.raw",
             )],
         };
 
