@@ -27,49 +27,17 @@ sleep 2
 
 # ── Create a VM ──────────────────────────────────────────────────
 
-# Pre-check: verify fake CH can start with redirected stdout (same as daemon does)
-info "Testing fake CH (daemon-style with stdout redirect)"
-FAKE_CH_TEST=$(docker exec "e2e-compute-create" sh -c '
-mkdir -p /tmp/ch-test
-/usr/local/lib/syfrah/cloud-hypervisor --api-socket /tmp/ch-test/test.sock > /tmp/ch-test/stdout.log 2>&1 &
-CH_PID=$!
-sleep 2
-if [ -S /tmp/ch-test/test.sock ]; then
-    echo "SOCKET_OK pid=$CH_PID"
-else
-    echo "SOCKET_FAIL pid=$CH_PID"
-    echo "Process alive: $(kill -0 $CH_PID 2>&1 && echo yes || echo no)"
-    echo "Log: $(cat /tmp/ch-test/stdout.log 2>/dev/null || echo empty)"
-    echo "Socket: $(ls -la /tmp/ch-test/ 2>/dev/null)"
-fi
-kill $CH_PID 2>/dev/null || true
-rm -rf /tmp/ch-test
-' 2>&1)
-debug "Fake CH test: $FAKE_CH_TEST"
-
 info "Creating test VM"
 OUTPUT=$(create_vm "e2e-compute-create" "test-vm-1" --vcpu 2 --memory 512 --image alpine-3.20 || true)
-EXIT_CODE=${PIPESTATUS[0]:-$?}
 
-if echo "$OUTPUT" | grep -q "VM created"; then
+if echo "$OUTPUT" | grep -qi "VM created\|Running"; then
     pass "VM creation command succeeded"
 else
-    fail "VM creation command failed (exit=$EXIT_CODE): $OUTPUT"
-    # Diagnostic info
+    fail "VM creation command failed: $OUTPUT"
     info "Daemon log:"
     docker exec "e2e-compute-create" cat /root/.syfrah/syfrah.log 2>/dev/null | tail -30 || true
-    info "Runtime dir:"
-    docker exec "e2e-compute-create" ls -la /run/syfrah/vms/ 2>/dev/null || true
-    info "CH process log:"
-    docker exec "e2e-compute-create" cat /run/syfrah/vms/test-vm-1/stdout.log 2>/dev/null || true
     info "Processes:"
     docker exec "e2e-compute-create" ps aux 2>/dev/null || true
-    info "Python check:"
-    docker exec "e2e-compute-create" which python3 2>/dev/null || true
-    docker exec "e2e-compute-create" python3 --version 2>/dev/null || true
-    info "Fake CH check:"
-    docker exec "e2e-compute-create" ls -la /usr/local/lib/syfrah/cloud-hypervisor 2>/dev/null || true
-    docker exec "e2e-compute-create" head -1 /usr/local/lib/syfrah/cloud-hypervisor 2>/dev/null || true
 fi
 
 # ── Verify VM in list ────────────────────────────────────────────

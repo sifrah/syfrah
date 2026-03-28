@@ -26,8 +26,12 @@ COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/syfrah /usr/lo
 # The Python script simulates the CH API socket so that the compute layer
 # can be tested end-to-end without KVM.
 RUN apt-get update && apt-get install -y python3 && rm -rf /var/lib/apt/lists/*
-COPY tests/e2e/fake-cloud-hypervisor.py /usr/local/lib/syfrah/cloud-hypervisor
-RUN chmod +x /usr/local/lib/syfrah/cloud-hypervisor
+COPY tests/e2e/fake-cloud-hypervisor.py /usr/local/lib/syfrah/fake-ch.py
+# Use a shell wrapper instead of direct shebang to work around musl static
+# binary exec compatibility issues with shebang scripts.
+RUN printf '#!/bin/sh\nexec /usr/bin/python3 /usr/local/lib/syfrah/fake-ch.py "$@"\n' \
+    > /usr/local/lib/syfrah/cloud-hypervisor && \
+    chmod +x /usr/local/lib/syfrah/cloud-hypervisor
 
 # Create stub kernel and image files for compute preflight checks.
 # These are never actually booted — the fake-cloud-hypervisor.py handles
