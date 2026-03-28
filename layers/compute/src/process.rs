@@ -298,11 +298,12 @@ fn now_unix() -> u64 {
 // Spawn (#476)
 // ---------------------------------------------------------------------------
 
-/// Map the Rust `std::env::consts::ARCH` to the image metadata arch convention.
+/// Map the Rust `std::env::consts::ARCH` to the image catalog arch convention.
+/// Rust uses "x86_64" / "aarch64", catalog uses "amd64" / "arm64".
 fn node_arch() -> &'static str {
     match std::env::consts::ARCH {
-        "x86_64" => "x86_64",
-        "aarch64" => "aarch64",
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
         other => other,
     }
 }
