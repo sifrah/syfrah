@@ -241,6 +241,13 @@ if [ -f "${TMPDIR}/${KERNEL_BIN}" ]; then
   fi
 fi
 
+# --- Create data directories ------------------------------------------------
+
+mkdir -p /opt/syfrah/images
+mkdir -p /opt/syfrah/instances
+# Note: /run/syfrah/vms (VM runtime state) lives on tmpfs and is recreated on
+# boot by the syfrah daemon (VmManager::new). No need to create it here.
+
 # --- Verify -----------------------------------------------------------------
 
 EXPECTED_VERSION="${VERSION#v}"
