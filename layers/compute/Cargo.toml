@@ -5,14 +5,17 @@ edition.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+async-trait = "0.1"
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }
+dirs = "6"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 libc = "0.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
+syfrah-api = { path = "../api" }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

@@ -196,7 +196,13 @@ async fn handle_request(
     use http_body_util::BodyExt;
 
     let method = req.method().clone();
-    let path = req.uri().path().to_string();
+    let raw_path = req.uri().path().to_string();
+    // Strip the /api/v1 prefix so routes can be registered with short paths
+    // (e.g., "/vmm.ping" instead of "/api/v1/vmm.ping").
+    let path = raw_path
+        .strip_prefix("/api/v1")
+        .unwrap_or(&raw_path)
+        .to_string();
     let key = (method.to_string(), path.clone());
 
     // Capture request body.

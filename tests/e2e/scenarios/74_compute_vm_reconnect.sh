@@ -15,12 +15,6 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 
-# SKIP: Compute CLI is not yet connected to the daemon.
-# These scenarios will be enabled once the control socket integration is complete.
-echo "SKIP: compute CLI not yet integrated with daemon"
-cleanup 2>/dev/null || true
-exit 0
-
 echo "── Compute: VM Reconnect after Daemon Restart ──"
 
 create_network
@@ -63,10 +57,7 @@ fi
 
 info "Restarting syfrah daemon"
 docker exec -d "e2e-compute-reconn" \
-    syfrah fabric init \
-    --name "$E2E_MESH" \
-    --node-name "compute-reconn" \
-    --endpoint "172.20.0.10:51820"
+    syfrah fabric start
 
 wait_daemon "e2e-compute-reconn"
 sleep 3

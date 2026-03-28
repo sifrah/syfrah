@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -175,6 +177,12 @@ pub struct VmMeta {
     pub ch_binary: String,
     pub ch_version: String,
     pub spec_hash: String,
+    /// Number of virtual CPUs (persisted for reconnect).
+    #[serde(default)]
+    pub vcpus: u32,
+    /// Memory in megabytes (persisted for reconnect).
+    #[serde(default)]
+    pub memory_mb: u32,
 }
 
 /// Scan a base directory for runtime dirs that contain meta.json.
@@ -201,7 +209,16 @@ pub fn scan_runtime_dirs(base: &Path) -> Vec<RuntimeDir> {
 // ---------------------------------------------------------------------------
 
 /// Check whether a process with the given PID is alive.
+///
+/// First attempts `waitpid(WNOHANG)` to reap zombie children (the CH process
+/// is our direct child but its `Child` handle was forgotten to avoid pidfd
+/// issues). Without this, zombies appear alive to `kill(pid, 0)`.
 fn is_pid_alive(pid: u32) -> bool {
+    // SAFETY: waitpid with WNOHANG is non-blocking and only reaps our own children.
+    unsafe {
+        let mut status: libc::c_int = 0;
+        libc::waitpid(pid as i32, &mut status, libc::WNOHANG);
+    }
     // SAFETY: kill with signal 0 only checks process existence, no signal is sent.
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
@@ -344,7 +361,13 @@ pub async fn spawn_vm(
     match result {
         Ok(state) => Ok(state),
         Err(e) => {
+            // Capture the CH process log before cleanup for diagnostics.
+            let log_contents = fs::read_to_string(runtime_dir.log_path()).unwrap_or_default();
+            if !log_contents.is_empty() {
+                error!(vm_id = %vm_id_str, log = %log_contents, "CH process log");
+            }
             error!(vm_id = %vm_id_str, error = %e, "spawn failed, cleaning up");
+            debug!(vm_id = %vm_id_str, path = %runtime_dir.path().display(), "SocketRemoved: cleaning up runtime dir");
             // Best-effort cleanup
             let _ = runtime_dir.cleanup();
             Err(e)
@@ -363,6 +386,10 @@ async fn spawn_vm_inner(
     let socket_path = runtime_dir.socket_path();
     let log_path = runtime_dir.log_path();
 
+    // Get CH version BEFORE spawning to avoid running two instances concurrently.
+    // This is best-effort — failure is not fatal.
+    let ch_version = get_ch_version(ch_binary).unwrap_or_else(|| "unknown".to_string());
+
     // Step 6: Spawn cloud-hypervisor process
     let log_file = fs::File::create(&log_path).map_err(|e| ProcessError::SpawnFailed {
         reason: format!("failed to create log file {}: {e}", log_path.display()),
@@ -373,22 +400,33 @@ async fn spawn_vm_inner(
             reason: format!("failed to clone log file handle: {e}"),
         })?;
 
-    let child = std::process::Command::new(ch_binary)
-        .arg("--api-socket")
+    // SAFETY: pre_exec runs after fork but before exec in the child process.
+    // We call setsid() to create a new session so the CH process is not
+    // affected by signals sent to the daemon's process group.
+    let mut cmd = std::process::Command::new(ch_binary);
+    cmd.arg("--api-socket")
         .arg(&socket_path)
+        .stdin(Stdio::null())
         .stdout(Stdio::from(log_file))
-        .stderr(Stdio::from(stderr_file))
-        .spawn()
-        .map_err(|e| ProcessError::SpawnFailed {
-            reason: format!("failed to exec {}: {e}", ch_binary.display()),
-        })?;
+        .stderr(Stdio::from(stderr_file));
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let child = cmd.spawn().map_err(|e| ProcessError::SpawnFailed {
+        reason: format!("failed to exec {}: {e}", ch_binary.display()),
+    })?;
 
     let pid = child.id();
     // Internal event: Spawned
     info!(vm_id = %vm_id_str, pid = pid, "Spawned: cloud-hypervisor process started");
 
-    // Get CH version (best-effort, non-blocking)
-    let ch_version = get_ch_version(ch_binary).unwrap_or_else(|| "unknown".to_string());
+    // Leak the Child handle to prevent its Drop from closing the pidfd,
+    // which on some kernel/musl configurations may signal the child.
+    // We manage the process lifecycle via PID from this point forward.
+    std::mem::forget(child);
 
     // Step 7: Write pid, meta.json, ch-version
     runtime_dir.write_pid(pid)?;
@@ -402,6 +440,8 @@ async fn spawn_vm_inner(
         ch_binary: ch_binary.to_string_lossy().into_owned(),
         ch_version: ch_version.clone(),
         spec_hash: compute_spec_hash(spec),
+        vcpus: spec.vcpus,
+        memory_mb: spec.memory_mb,
     };
     runtime_dir.write_meta(&meta)?;
 
@@ -479,6 +519,8 @@ async fn spawn_vm_inner(
         cgroup_path: None,
         ch_binary_path: ch_binary.to_path_buf(),
         ch_binary_version: ch_version,
+        vcpus: spec.vcpus,
+        memory_mb: spec.memory_mb,
         launched_at: now_unix(),
         last_ping_at: Some(now_unix()),
         last_error: None,
@@ -1006,6 +1048,8 @@ pub async fn reconnect(base_dir: &Path, event_tx: broadcast::Sender<VmEvent>) ->
             cgroup_path: None,
             ch_binary_path: PathBuf::from(&meta.ch_binary),
             ch_binary_version: meta.ch_version,
+            vcpus: meta.vcpus,
+            memory_mb: meta.memory_mb,
             launched_at: now_unix(),
             last_ping_at: Some(now_unix()),
             last_error: None,
@@ -1139,6 +1183,8 @@ mod tests {
             ch_binary: "/usr/local/lib/syfrah/cloud-hypervisor".to_string(),
             ch_version: "v43.0".to_string(),
             spec_hash: "hash:abc123".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
         };
 
         dir.write_meta(&meta).unwrap();
@@ -1159,6 +1205,8 @@ mod tests {
             ch_binary: "/bin/true".to_string(),
             ch_version: "v1.0".to_string(),
             spec_hash: "hash:0".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
         };
 
         dir.write_meta(&meta).unwrap();
@@ -1229,6 +1277,8 @@ mod tests {
             ch_binary: "/usr/bin/ch".to_string(),
             ch_version: "v42.0".to_string(),
             spec_hash: "hash:deadbeef".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
         };
         let json = serde_json::to_string(&meta).unwrap();
         let back: VmMeta = serde_json::from_str(&json).unwrap();
@@ -1251,6 +1301,8 @@ mod tests {
             ch_binary: "/bin/true".to_string(),
             ch_version: "v1".to_string(),
             spec_hash: "hash:0".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
         };
         dir1.write_meta(&meta).unwrap();
 
@@ -1347,6 +1399,8 @@ mod tests {
             cgroup_path: None,
             ch_binary_path: PathBuf::from("/bin/true"),
             ch_binary_version: "v1".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
             launched_at: 0,
             last_ping_at: None,
             last_error: None,
@@ -1374,6 +1428,8 @@ mod tests {
             cgroup_path: None,
             ch_binary_path: PathBuf::from("/bin/true"),
             ch_binary_version: "v1".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
             launched_at: 0,
             last_ping_at: None,
             last_error: None,
@@ -1401,6 +1457,8 @@ mod tests {
             cgroup_path: None,
             ch_binary_path: PathBuf::from("/bin/true"),
             ch_binary_version: "v1".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
             launched_at: 0,
             last_ping_at: None,
             last_error: None,
@@ -1430,6 +1488,8 @@ mod tests {
             cgroup_path: None,
             ch_binary_path: PathBuf::from("/bin/true"),
             ch_binary_version: "v1".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
             launched_at: 0,
             last_ping_at: None,
             last_error: None,
@@ -1460,6 +1520,8 @@ mod tests {
             ch_binary: "/bin/true".to_string(),
             ch_version: "v1".to_string(),
             spec_hash: "hash:0".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
         };
         dir1.write_meta(&meta).unwrap();
 
@@ -1493,6 +1555,8 @@ mod tests {
             ch_binary: "/bin/true".to_string(),
             ch_version: "v1".to_string(),
             spec_hash: "hash:0".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
         };
         dir.write_meta(&meta).unwrap();
 
@@ -1535,6 +1599,8 @@ mod tests {
             ch_binary: "/bin/true".to_string(),
             ch_version: "v1".to_string(),
             spec_hash: "hash:0".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
         };
         dir.write_meta(&meta).unwrap();
 
@@ -1623,6 +1689,8 @@ mod tests {
             cgroup_path: None,
             ch_binary_path: PathBuf::from("/bin/true"),
             ch_binary_version: "v1".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
             launched_at: 0,
             last_ping_at: None,
             last_error: None,
@@ -1718,6 +1786,8 @@ mod tests {
             ch_binary: "/bin/true".to_string(),
             ch_version: "v1".to_string(),
             spec_hash: "hash:aaa".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
         };
         dir.write_meta(&meta1).unwrap();
 
@@ -1752,6 +1822,8 @@ mod tests {
             cgroup_path: None,
             ch_binary_path: PathBuf::from("/bin/true"),
             ch_binary_version: "v1".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
             launched_at: 0,
             last_ping_at: None,
             last_error: None,
@@ -1782,6 +1854,8 @@ mod tests {
             ch_binary: "/bin/true".to_string(),
             ch_version: "v1".to_string(),
             spec_hash: "hash:0".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
         };
         dir.write_meta(&meta).unwrap();
         assert!(dir.meta_path().exists());
@@ -1795,6 +1869,8 @@ mod tests {
             cgroup_path: None,
             ch_binary_path: PathBuf::from("/bin/true"),
             ch_binary_version: "v1".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
             launched_at: 0,
             last_ping_at: None,
             last_error: None,
@@ -1831,6 +1907,8 @@ mod tests {
             ch_binary: "/bin/true".to_string(),
             ch_version: "v1".to_string(),
             spec_hash: "hash:0".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
         };
         dir1.write_meta(&meta1).unwrap();
 
@@ -1903,6 +1981,8 @@ mod tests {
             cgroup_path: None,
             ch_binary_path: PathBuf::from("/bin/true"),
             ch_binary_version: "v1".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
             launched_at: 0,
             last_ping_at: None,
             last_error: None,

@@ -572,6 +572,8 @@ mod tests {
             ch_binary: "/bin/true".to_string(),
             ch_version: "v1".to_string(),
             spec_hash: "hash:0".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
         };
         dir.write_meta(&meta).unwrap();
 

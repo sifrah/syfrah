@@ -111,7 +111,7 @@ init_mesh() {
     local node_name="${3:-$container}"
 
     debug "init_mesh: $container at $ip as $node_name"
-    docker exec -d "$container" \
+    docker exec -d -e RUST_LOG=info,syfrah_compute=debug "$container" \
         syfrah fabric init \
         --name "$E2E_MESH" \
         --node-name "$node_name" \
@@ -533,6 +533,65 @@ assert_consistent_peer_count() {
     else
         fail "$container: peer count mismatch (peers=$peers_count, status=$status_count)"
     fi
+}
+
+# ── Compute helpers ────────────────────────────────────────────
+
+create_vm() {
+    local node="$1" name="$2"; shift 2
+    docker exec "$node" syfrah compute vm create --name "$name" "$@" 2>&1
+}
+
+list_vms() {
+    docker exec "$1" syfrah compute vm list --json 2>&1
+}
+
+get_vm() {
+    docker exec "$1" syfrah compute vm get "$2" --json 2>&1
+}
+
+stop_vm() {
+    local node="$1" id="$2"; shift 2
+    docker exec "$node" syfrah compute vm stop "$id" "$@" 2>&1
+}
+
+delete_vm() {
+    docker exec "$1" syfrah compute vm delete "$2" --yes 2>&1
+}
+
+assert_vm_phase() {
+    local node="$1" id="$2" expected="$3"
+    local phase
+    phase=$(get_vm "$node" "$id" | jq -r '.phase // empty')
+    if [ "$phase" = "$expected" ]; then
+        pass "VM $id phase is $expected"
+    else
+        fail "VM $id phase is '$phase', expected '$expected'"
+    fi
+}
+
+assert_vm_count() {
+    local node="$1" expected="$2"
+    local count
+    count=$(list_vms "$node" | jq 'length')
+    if [ "$count" = "$expected" ]; then
+        pass "VM count is $expected"
+    else
+        fail "VM count is $count, expected $expected"
+    fi
+}
+
+wait_for_vm_phase() {
+    local node="$1" id="$2" phase="$3" timeout="${4:-30}"
+    local elapsed=0
+    while [ $elapsed -lt "$timeout" ]; do
+        local current
+        current=$(get_vm "$node" "$id" | jq -r '.phase // empty')
+        [ "$current" = "$phase" ] && return 0
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    fail "VM $id did not reach phase $phase within ${timeout}s (current: $current)"
 }
 
 # ── Cleanup ───────────────────────────────────────────────────

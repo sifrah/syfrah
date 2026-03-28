@@ -16,12 +16,6 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 
-# SKIP: Compute CLI is not yet connected to the daemon.
-# These scenarios will be enabled once the control socket integration is complete.
-echo "SKIP: compute CLI not yet integrated with daemon"
-cleanup 2>/dev/null || true
-exit 0
-
 echo "── Compute: VM Error Paths ──"
 
 create_network
@@ -33,8 +27,8 @@ sleep 2
 # ── Invalid spec: vcpus=0 ───────────────────────────────────────
 
 info "Creating VM with vcpus=0 (should fail)"
-OUTPUT=$(create_vm "e2e-compute-errors" "bad-vm" --vcpu 0 --memory 256 --image alpine-3.20 2>&1)
-EXIT_CODE=$?
+EXIT_CODE=0
+OUTPUT=$(create_vm "e2e-compute-errors" "bad-vm" --vcpu 0 --memory 256 --image alpine-3.20 2>&1) || EXIT_CODE=$?
 
 if [ $EXIT_CODE -ne 0 ]; then
     pass "VM creation with vcpus=0 failed as expected"
@@ -45,8 +39,8 @@ fi
 # ── Stop non-existent VM ────────────────────────────────────────
 
 info "Stopping non-existent VM (should fail)"
-OUTPUT=$(stop_vm "e2e-compute-errors" "ghost-vm" 2>&1)
-EXIT_CODE=$?
+EXIT_CODE=0
+OUTPUT=$(stop_vm "e2e-compute-errors" "ghost-vm" 2>&1) || EXIT_CODE=$?
 
 if [ $EXIT_CODE -ne 0 ]; then
     pass "Stopping non-existent VM failed as expected"
@@ -62,8 +56,8 @@ fi
 # ── Delete non-existent VM ──────────────────────────────────────
 
 info "Deleting non-existent VM"
-OUTPUT=$(delete_vm "e2e-compute-errors" "ghost-vm" 2>&1)
-EXIT_CODE=$?
+EXIT_CODE=0
+OUTPUT=$(delete_vm "e2e-compute-errors" "ghost-vm" 2>&1) || EXIT_CODE=$?
 
 # Delete of non-existent may be idempotent (success) or return not-found
 if [ $EXIT_CODE -eq 0 ]; then
@@ -80,8 +74,8 @@ info "Creating VM, then creating duplicate"
 create_vm "e2e-compute-errors" "dup-vm" --vcpu 1 --memory 256 --image alpine-3.20
 sleep 3
 
-OUTPUT=$(create_vm "e2e-compute-errors" "dup-vm" --vcpu 1 --memory 256 --image alpine-3.20 2>&1)
-EXIT_CODE=$?
+EXIT_CODE=0
+OUTPUT=$(create_vm "e2e-compute-errors" "dup-vm" --vcpu 1 --memory 256 --image alpine-3.20 2>&1) || EXIT_CODE=$?
 
 if [ $EXIT_CODE -ne 0 ]; then
     pass "Duplicate VM creation failed as expected"

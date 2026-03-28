@@ -26,6 +26,7 @@ pub mod binary;
 pub mod cli;
 pub mod client;
 pub mod config;
+pub mod control;
 pub mod error;
 pub mod events;
 pub mod handler;
@@ -43,6 +44,7 @@ pub mod types;
 // -- Public re-exports for forge consumption ----------------------------------
 
 pub use binary::VersionReport;
+pub use control::{ComputeLayerHandler, ComputeRequest, ComputeResponse};
 pub use error::{
     ClientError, ComputeError, ConcurrencyError, ConfigError, PreflightError, ProcessError,
     TransitionError,

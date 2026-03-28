@@ -333,7 +333,7 @@ Compute has two E2E test suites:
 
 ### Docker E2E (CI — no KVM required)
 
-Shell-script scenarios in `tests/e2e/scenarios/70_compute_*.sh` that use a fake Cloud Hypervisor (`tests/e2e/fake-cloud-hypervisor.py`) to test the full syfrah binary end-to-end inside Docker containers. These run in CI alongside the fabric and UX E2E tests.
+Shell-script scenarios in `tests/e2e/scenarios/70_compute_*.sh` that use a fake Cloud Hypervisor (`tests/e2e/fake-ch/`) to test the full syfrah binary end-to-end inside Docker containers. These run in CI alongside the fabric and UX E2E tests.
 
 ```bash
 ./tests/e2e/run.sh compute          # run compute scenarios (70-78)

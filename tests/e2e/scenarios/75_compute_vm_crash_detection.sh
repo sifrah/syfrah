@@ -15,12 +15,6 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 
-# SKIP: Compute CLI is not yet connected to the daemon.
-# These scenarios will be enabled once the control socket integration is complete.
-echo "SKIP: compute CLI not yet integrated with daemon"
-cleanup 2>/dev/null || true
-exit 0
-
 echo "── Compute: VM Crash Detection ──"
 
 create_network
