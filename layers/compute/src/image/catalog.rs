@@ -368,8 +368,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cache_path = tmp.path().join("catalog.json");
 
-        let result =
-            fetch_catalog("file:///etc/passwd", &cache_path, PullPolicy::Always).await;
+        let result = fetch_catalog("file:///etc/passwd", &cache_path, PullPolicy::Always).await;
         assert!(matches!(result, Err(ImageError::CatalogFetchFailed { .. })));
         let err = result.unwrap_err().to_string();
         assert!(err.contains("only https:// and http://"));
@@ -384,8 +383,7 @@ mod tests {
 
         // PullPolicy::Never should still work even with a bad URL since it
         // only reads from cache and skips URL validation
-        let result =
-            fetch_catalog("file:///etc/passwd", &cache_path, PullPolicy::Never).await;
+        let result = fetch_catalog("file:///etc/passwd", &cache_path, PullPolicy::Never).await;
         assert!(result.is_ok());
     }
 

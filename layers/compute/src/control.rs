@@ -273,14 +273,14 @@ async fn handle_compute_request(mgr: &VmManager, req: ComputeRequest) -> Compute
         ComputeRequest::ImagePull { name } => match fetch_catalog_for(mgr).await {
             Ok(catalog) => {
                 match crate::image::pull::pull(mgr.image_store(), &name, &catalog).await {
-                    Ok(meta) => ComputeResponse::ImageMeta(
-                        serde_json::to_value(meta).unwrap_or_default(),
-                    ),
+                    Ok(meta) => {
+                        ComputeResponse::ImageMeta(serde_json::to_value(meta).unwrap_or_default())
+                    }
                     Err(e) => ComputeResponse::Error(e.to_string()),
                 }
             }
             Err(e) => ComputeResponse::Error(e.to_string()),
-        }
+        },
         ComputeRequest::ImageImport { path, name, arch } => {
             match crate::image::import::import(mgr.image_store(), &path, &name, &arch) {
                 Ok(meta) => {
@@ -308,7 +308,7 @@ async fn handle_compute_request(mgr: &VmManager, req: ComputeRequest) -> Compute
                 ComputeResponse::ImageCatalog(serde_json::to_value(catalog).unwrap_or_default())
             }
             Err(e) => ComputeResponse::Error(e.to_string()),
-        }
+        },
     }
 }
 
