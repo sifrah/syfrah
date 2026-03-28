@@ -65,7 +65,7 @@ sleep 3
 # ── Verify VM recovered ─────────────────────────────────────────
 
 LIST_OUTPUT=$(list_vms "e2e-compute-reconn")
-if echo "$LIST_OUTPUT" | jq -e '.[] | select(.name == "test-vm-rc")' >/dev/null 2>&1; then
+if echo "$LIST_OUTPUT" | jq -e '.[] | select(.id == "test-vm-rc")' >/dev/null 2>&1; then
     pass "VM test-vm-rc recovered after daemon restart"
 else
     fail "VM test-vm-rc not found after daemon restart: $LIST_OUTPUT"

@@ -52,7 +52,7 @@ assert_vm_phase "e2e-compute-crash" "test-vm-crash" "Failed"
 # ── Verify failed VM in list ────────────────────────────────────
 
 LIST_OUTPUT=$(list_vms "e2e-compute-crash")
-if echo "$LIST_OUTPUT" | jq -e '.[] | select(.name == "test-vm-crash")' >/dev/null 2>&1; then
+if echo "$LIST_OUTPUT" | jq -e '.[] | select(.id == "test-vm-crash")' >/dev/null 2>&1; then
     pass "Failed VM still visible in list"
 else
     fail "Failed VM not in list"
