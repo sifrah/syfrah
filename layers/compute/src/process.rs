@@ -408,10 +408,10 @@ async fn spawn_vm_inner(
     // Internal event: Spawned
     info!(vm_id = %vm_id_str, pid = pid, "Spawned: cloud-hypervisor process started");
 
-    // Drop the Child handle without waiting. We manage the process via PID.
-    // The process will become a zombie when it exits; we clean up via kill+waitpid
-    // in the error/cleanup path.
-    drop(child);
+    // Leak the Child handle to prevent its Drop from closing the pidfd,
+    // which on some kernel/musl configurations may signal the child.
+    // We manage the process lifecycle via PID from this point forward.
+    std::mem::forget(child);
 
     // Step 7: Write pid, meta.json, ch-version
     runtime_dir.write_pid(pid)?;
