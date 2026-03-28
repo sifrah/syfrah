@@ -194,9 +194,13 @@ async fn handle_compute_request(mgr: &VmManager, req: ComputeRequest) -> Compute
                 Err(e) => ComputeResponse::Error(e.to_string()),
             }
         }
-        ComputeRequest::StopVm { id, force: _ } => {
-            // force flag is handled at the kill_vm level (already uses kill chain)
-            match mgr.shutdown_vm(&id).await {
+        ComputeRequest::StopVm { id, force } => {
+            let result = if force {
+                mgr.shutdown_vm_force(&id).await
+            } else {
+                mgr.shutdown_vm(&id).await
+            };
+            match result {
                 Ok(()) => match mgr.info(&id).await {
                     Ok(status) => ComputeResponse::Vm(vm_status_to_json(&status)),
                     Err(_) => ComputeResponse::Ok,

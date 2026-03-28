@@ -192,7 +192,18 @@ async fn run_import(path: PathBuf, name: String, arch: String) -> anyhow::Result
     }
 }
 
-async fn run_delete(name: String, _yes: bool) -> anyhow::Result<()> {
+async fn run_delete(name: String, yes: bool) -> anyhow::Result<()> {
+    if !yes {
+        eprint!("Delete image {name}? This cannot be undone. [y/N] ");
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        let answer = answer.trim();
+        if answer != "y" && answer != "Y" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
     let req = ComputeRequest::ImageDelete { name: name.clone() };
     let resp = send_compute_request(&control_socket_path(), &req)
         .await

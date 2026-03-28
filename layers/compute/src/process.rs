@@ -759,10 +759,29 @@ pub async fn kill_vm(
     client: &ChClient,
     runtime_dir: &RuntimeDir,
 ) -> Result<(), ComputeError> {
+    kill_vm_inner(state, client, runtime_dir, false).await
+}
+
+/// Like [`kill_vm`] but skips level 1 (graceful shutdown), starting directly
+/// from `shutdown_force`.
+pub async fn kill_vm_force(
+    state: &mut VmRuntimeState,
+    client: &ChClient,
+    runtime_dir: &RuntimeDir,
+) -> Result<(), ComputeError> {
+    kill_vm_inner(state, client, runtime_dir, true).await
+}
+
+async fn kill_vm_inner(
+    state: &mut VmRuntimeState,
+    client: &ChClient,
+    runtime_dir: &RuntimeDir,
+    force: bool,
+) -> Result<(), ComputeError> {
     let pid = state.pid;
     let vm_id_str = state.vm_id.0.clone();
 
-    info!(vm_id = %vm_id_str, pid = pid, "starting kill chain");
+    info!(vm_id = %vm_id_str, pid = pid, force = force, "starting kill chain");
 
     // Transition to Stopping (allow from Running, Starting, or if already Stopping)
     if state.current_phase != VmPhase::Stopping {
@@ -777,15 +796,17 @@ pub async fn kill_vm(
         return Ok(());
     }
 
-    // Level 1: shutdown_graceful (30s timeout)
-    info!(vm_id = %vm_id_str, "kill chain level 1: shutdown_graceful");
-    if let Err(e) = client.shutdown_graceful().await {
-        warn!(vm_id = %vm_id_str, error = %e, "shutdown_graceful failed, continuing kill chain");
-    } else if wait_for_pid_exit(pid, Duration::from_secs(30)).await {
-        info!(vm_id = %vm_id_str, "process exited after graceful shutdown");
-        state.current_phase = state.current_phase.transition(VmPhase::Stopped)?;
-        runtime_dir.cleanup()?;
-        return Ok(());
+    // Level 1: shutdown_graceful (30s timeout) -- skipped when force=true
+    if !force {
+        info!(vm_id = %vm_id_str, "kill chain level 1: shutdown_graceful");
+        if let Err(e) = client.shutdown_graceful().await {
+            warn!(vm_id = %vm_id_str, error = %e, "shutdown_graceful failed, continuing kill chain");
+        } else if wait_for_pid_exit(pid, Duration::from_secs(30)).await {
+            info!(vm_id = %vm_id_str, "process exited after graceful shutdown");
+            state.current_phase = state.current_phase.transition(VmPhase::Stopped)?;
+            runtime_dir.cleanup()?;
+            return Ok(());
+        }
     }
 
     // Level 2: shutdown_force (10s timeout)

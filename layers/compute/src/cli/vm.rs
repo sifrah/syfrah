@@ -346,7 +346,18 @@ async fn run_stop(id: String, force: bool) -> anyhow::Result<()> {
     }
 }
 
-async fn run_delete(id: String, _yes: bool) -> anyhow::Result<()> {
+async fn run_delete(id: String, yes: bool) -> anyhow::Result<()> {
+    if !yes {
+        eprint!("Delete VM {id}? This cannot be undone. [y/N] ");
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        let answer = answer.trim();
+        if answer != "y" && answer != "Y" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
     let req = ComputeRequest::DeleteVm {
         id: id.clone(),
         retain_disk: false,

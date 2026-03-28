@@ -323,6 +323,26 @@ impl VmManager {
         Ok(())
     }
 
+    /// Force-stop a running VM, skipping the graceful shutdown level.
+    pub async fn shutdown_vm_force(&self, id: &str) -> Result<(), ComputeError> {
+        let vm_arc = self.get_vm(id).await?;
+        let mut guard = vm_arc.lock().await;
+
+        let runtime_dir = RuntimeDir::from_existing(self.config.base_dir.join(id));
+        let client = ChClient::new(guard.socket_path.clone());
+
+        process::kill_vm_force(&mut guard, &client, &runtime_dir).await?;
+
+        events::emit(
+            &self.event_tx,
+            VmEvent::Stopped {
+                vm_id: VmId(id.to_string()),
+            },
+        );
+
+        Ok(())
+    }
+
     /// Delete a VM: stop if running, clean up all artifacts, remove from map.
     ///
     /// Acquires the VM's mutex, calls `process::delete_vm`, removes the entry
