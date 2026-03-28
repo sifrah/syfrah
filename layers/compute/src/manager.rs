@@ -572,15 +572,12 @@ impl VmManager {
 
     /// Look up a VM by ID, returning its `Arc<Mutex<VmRuntimeState>>`.
     ///
-    /// Returns `ProcessError::PidNotFound`-style error if the VM is unknown.
+    /// Returns `ComputeError::VmNotFound` if the VM is unknown.
     async fn get_vm(&self, id: &str) -> Result<Arc<Mutex<VmRuntimeState>>, ComputeError> {
         let map = self.vms.read().await;
-        map.get(id).cloned().ok_or_else(|| {
-            ProcessError::SpawnFailed {
-                reason: format!("VM {id} not found"),
-            }
-            .into()
-        })
+        map.get(id)
+            .cloned()
+            .ok_or_else(|| ComputeError::VmNotFound { id: id.to_string() })
     }
 }
 
