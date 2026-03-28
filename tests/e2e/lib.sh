@@ -535,6 +535,68 @@ assert_consistent_peer_count() {
     fi
 }
 
+# ── Catalog config ───────────────────────────────────────────
+
+SYFRAH_CATALOG_URL="${SYFRAH_CATALOG_URL:-https://github.com/sacha-ops/syfrah-images/releases/latest/download/catalog.json}"
+SYFRAH_IMAGE_DIR="/opt/syfrah/images"
+SYFRAH_KERNEL_PATH="/opt/syfrah/vmlinux"
+SYFRAH_CATALOG_PATH="/opt/syfrah/catalog.json"
+
+# ── Image helpers ────────────────────────────────────────────
+
+# List images via CLI. Args: <container> [--json]
+list_images() {
+    local node="$1"; shift
+    docker exec "$node" syfrah compute image list "$@" 2>&1
+}
+
+# Inspect an image via CLI. Args: <container> <name>
+inspect_image() {
+    docker exec "$1" syfrah compute image inspect "$2" 2>&1
+}
+
+# Import a raw image via CLI. Args: <container> <path> <name>
+import_image() {
+    docker exec "$1" syfrah compute image import "$2" --name "$3" 2>&1
+}
+
+# Delete an image via CLI. Args: <container> <name>
+delete_image() {
+    docker exec "$1" syfrah compute image delete "$2" --yes 2>&1
+}
+
+# Assert image exists in the local store. Args: <container> <name>
+assert_image_exists() {
+    local node="$1" name="$2"
+    if docker exec "$node" test -f "${SYFRAH_IMAGE_DIR}/${name}.raw" 2>/dev/null; then
+        pass "$node has image $name"
+    else
+        fail "$node missing image $name"
+    fi
+}
+
+# Assert image does NOT exist. Args: <container> <name>
+assert_image_gone() {
+    local node="$1" name="$2"
+    if docker exec "$node" test -f "${SYFRAH_IMAGE_DIR}/${name}.raw" 2>/dev/null; then
+        fail "$node still has image $name"
+    else
+        pass "$node image $name removed"
+    fi
+}
+
+# Assert image count in list output. Args: <container> <expected>
+assert_image_count() {
+    local node="$1" expected="$2"
+    local count
+    count=$(list_images "$node" --json | jq 'length' 2>/dev/null || echo 0)
+    if [ "$count" = "$expected" ]; then
+        pass "Image count is $expected"
+    else
+        fail "Image count is $count, expected $expected"
+    fi
+}
+
 # ── Compute helpers ────────────────────────────────────────────
 
 create_vm() {
