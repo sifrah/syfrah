@@ -32,6 +32,12 @@ pub enum VmCommand {
         /// TAP device name for networking
         #[arg(long)]
         tap: Option<String>,
+        /// Path to SSH public key file to inject via cloud-init
+        #[arg(long)]
+        ssh_key: Option<PathBuf>,
+        /// Disk size in MB (0 = use image default)
+        #[arg(long)]
+        disk_size: Option<u32>,
     },
     /// List all virtual machines
     List {
@@ -96,7 +102,9 @@ pub async fn run(cmd: VmCommand) -> anyhow::Result<()> {
             image,
             gpu,
             tap,
-        } => run_create(name, vcpu, memory, image, gpu, tap).await,
+            ssh_key,
+            disk_size,
+        } => run_create(name, vcpu, memory, image, gpu, tap, ssh_key, disk_size).await,
         VmCommand::List { json } => run_list(json).await,
         VmCommand::Get { id, json } => run_get(id, json).await,
         VmCommand::Start { id } => run_start(id).await,
@@ -122,6 +130,29 @@ fn control_socket_path() -> PathBuf {
 // Handlers
 // ---------------------------------------------------------------------------
 
+/// Read and validate an SSH key file, returning the trimmed content.
+pub(crate) fn read_ssh_key(path: &std::path::Path) -> anyhow::Result<String> {
+    if !path.exists() {
+        anyhow::bail!("SSH key file not found: {}", path.display());
+    }
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("failed to read SSH key file: {e}"))?;
+    let trimmed = content.trim_end().to_string();
+    if trimmed.is_empty() {
+        anyhow::bail!("SSH key file is empty: {}", path.display());
+    }
+    Ok(trimmed)
+}
+
+/// Convert disk_size: 0 means use image default (None).
+pub(crate) fn normalize_disk_size(disk_size: Option<u32>) -> Option<u32> {
+    match disk_size {
+        Some(0) => None,
+        other => other,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn run_create(
     name: String,
     vcpus: u32,
@@ -129,7 +160,15 @@ async fn run_create(
     image: String,
     gpu: Option<String>,
     tap: Option<String>,
+    ssh_key_path: Option<PathBuf>,
+    disk_size: Option<u32>,
 ) -> anyhow::Result<()> {
+    let ssh_key = match ssh_key_path {
+        Some(ref path) => Some(read_ssh_key(path)?),
+        None => None,
+    };
+    let disk_size_mb = normalize_disk_size(disk_size);
+
     let req = ComputeRequest::CreateVm {
         name,
         vcpus,
@@ -137,6 +176,8 @@ async fn run_create(
         image,
         gpu_bdf: gpu,
         tap,
+        ssh_key: ssh_key.clone(),
+        disk_size_mb,
     };
     let resp = send_compute_request(&control_socket_path(), &req)
         .await
@@ -144,9 +185,24 @@ async fn run_create(
 
     match resp {
         ComputeResponse::Vm(v) => {
-            let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("?");
-            let phase = v.get("phase").and_then(|p| p.as_str()).unwrap_or("?");
-            println!("VM created: {name} (phase: {phase})");
+            let vm_name = v.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+            let vm_image = v.get("image").and_then(|i| i.as_str()).unwrap_or("?");
+            let vm_vcpus = v.get("vcpus").and_then(|c| c.as_u64()).unwrap_or(0);
+            let vm_memory = v.get("memory").and_then(|m| m.as_u64()).unwrap_or(0);
+            println!("VM {vm_name} created ({vm_image}, {vm_vcpus} vCPU, {vm_memory} MB)");
+            if ssh_key.is_some() {
+                let mesh_ip = v
+                    .get("mesh_ipv6")
+                    .and_then(|ip| ip.as_str())
+                    .unwrap_or("<mesh-ipv6>");
+                let user = v
+                    .get("default_username")
+                    .and_then(|u| u.as_str())
+                    .unwrap_or("ubuntu");
+                println!("SSH: ssh {user}@{mesh_ip}");
+            } else {
+                println!("Note: no SSH key provided — configure access manually");
+            }
             Ok(())
         }
         ComputeResponse::Error(msg) => {
@@ -398,6 +454,8 @@ mod tests {
                 image,
                 gpu,
                 tap,
+                ssh_key,
+                disk_size,
             } => {
                 assert_eq!(name, "test-vm");
                 assert_eq!(vcpu, 2); // default
@@ -405,6 +463,8 @@ mod tests {
                 assert_eq!(image, "ubuntu-24.04");
                 assert!(gpu.is_none());
                 assert!(tap.is_none());
+                assert!(ssh_key.is_none());
+                assert!(disk_size.is_none());
             }
             other => panic!("expected Create, got {other:?}"),
         }
@@ -435,6 +495,8 @@ mod tests {
                 image,
                 gpu,
                 tap,
+                ssh_key,
+                disk_size,
             } => {
                 assert_eq!(name, "gpu-vm");
                 assert_eq!(vcpu, 8);
@@ -442,6 +504,8 @@ mod tests {
                 assert_eq!(image, "ubuntu-24.04");
                 assert_eq!(gpu.as_deref(), Some("0000:01:00.0"));
                 assert_eq!(tap.as_deref(), Some("tap0"));
+                assert!(ssh_key.is_none());
+                assert!(disk_size.is_none());
             }
             other => panic!("expected Create, got {other:?}"),
         }
@@ -591,6 +655,91 @@ mod tests {
                 assert_eq!(memory, Some(16384));
             }
             other => panic!("expected Resize, got {other:?}"),
+        }
+    }
+
+    // -- SSH key tests --------------------------------------------------------
+
+    #[test]
+    fn ssh_key_valid_file() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), "ssh-ed25519 AAAA... user@host\n").unwrap();
+        let result = read_ssh_key(tmp.path());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "ssh-ed25519 AAAA... user@host");
+    }
+
+    #[test]
+    fn ssh_key_missing_file() {
+        let result = read_ssh_key(std::path::Path::new("/nonexistent/key.pub"));
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("SSH key file not found"));
+    }
+
+    #[test]
+    fn ssh_key_empty_file() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), "").unwrap();
+        let result = read_ssh_key(tmp.path());
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("SSH key file is empty"));
+    }
+
+    #[test]
+    fn ssh_key_trailing_newline_trimmed() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), "ssh-rsa AAAA...\n\n\n").unwrap();
+        let result = read_ssh_key(tmp.path());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "ssh-rsa AAAA...");
+    }
+
+    // -- Disk size tests ------------------------------------------------------
+
+    #[test]
+    fn disk_size_4096() {
+        assert_eq!(normalize_disk_size(Some(4096)), Some(4096));
+    }
+
+    #[test]
+    fn disk_size_zero_becomes_none() {
+        assert_eq!(normalize_disk_size(Some(0)), None);
+    }
+
+    #[test]
+    fn disk_size_none_stays_none() {
+        assert_eq!(normalize_disk_size(None), None);
+    }
+
+    // -- Parse with ssh-key and disk-size flags -------------------------------
+
+    #[test]
+    fn parse_create_with_ssh_key_and_disk_size() {
+        let cmd = parse(&[
+            "create",
+            "--name",
+            "web-1",
+            "--image",
+            "ubuntu-24.10",
+            "--ssh-key",
+            "/tmp/id_ed25519.pub",
+            "--disk-size",
+            "8192",
+        ]);
+        match cmd {
+            VmCommand::Create {
+                name,
+                ssh_key,
+                disk_size,
+                ..
+            } => {
+                assert_eq!(name, "web-1");
+                assert_eq!(ssh_key, Some(PathBuf::from("/tmp/id_ed25519.pub")));
+                assert_eq!(disk_size, Some(8192));
+            }
+            other => panic!("expected Create, got {other:?}"),
         }
     }
 }
