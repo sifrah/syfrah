@@ -28,6 +28,7 @@ pub mod cli;
 pub mod client;
 pub mod config;
 pub mod control;
+pub mod disk;
 pub mod error;
 pub mod events;
 pub mod handler;
