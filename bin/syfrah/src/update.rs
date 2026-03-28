@@ -489,6 +489,7 @@ pub fn run(no_restart: bool, _force: bool) -> Result<()> {
     ui::step_ok(&sp, &format!("Updated binary to {latest}"));
 
     // Step 8: signal daemon to re-exec or print manual instructions
+    let mut used_fallback = false;
     if daemon_was_running {
         if no_restart {
             ui::warn("A daemon is running. Restart it to use the new version:");
@@ -504,6 +505,7 @@ pub fn run(no_restart: bool, _force: bool) -> Result<()> {
                         "Could not signal daemon for zero-downtime reload: {e}"
                     ));
                     ui::warn("Falling back to stop/start...");
+                    used_fallback = true;
                     let _ = stop_daemon();
                     match start_daemon(&current_exe) {
                         Ok(_) => {
@@ -524,9 +526,17 @@ pub fn run(no_restart: bool, _force: bool) -> Result<()> {
         let _ = fs::remove_file(&backup_path);
     }
 
-    ui::success(&format!(
-        "Updated to {latest}. Daemon reloaded — no restart needed."
-    ));
+    if !daemon_was_running || no_restart {
+        ui::success(&format!("Updated to {latest}."));
+    } else if used_fallback {
+        ui::success(&format!(
+            "Updated to {latest}. Daemon restarted (fallback stop/start)."
+        ));
+    } else {
+        ui::success(&format!(
+            "Updated to {latest}. Daemon reloaded — no restart needed."
+        ));
+    }
     Ok(())
 }
 

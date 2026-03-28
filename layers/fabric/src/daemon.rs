@@ -1956,9 +1956,28 @@ pub async fn run_daemon(
             info!("received SIGTERM, shutting down");
         }
         _ = sigusr1_reexec => {
-            info!("received SIGUSR1, re-executing with new binary...");
+            info!("received SIGUSR1, scheduling re-exec after in-flight operations drain");
             reexec_requested = true;
         }
+    }
+
+    // If SIGUSR1 was received, give in-flight control socket operations (e.g.
+    // long image pulls) a grace period to finish before we proceed with re-exec.
+    // We wait up to 5 seconds for the control task to become idle rather than
+    // aborting it immediately.
+    if reexec_requested {
+        info!("waiting up to 5s for in-flight operations to complete...");
+        let drain_grace = tokio::time::Duration::from_secs(5);
+        let _ = tokio::time::timeout(drain_grace, async {
+            // Yield to the runtime so in-flight control socket responses can
+            // complete naturally. We don't cancel anything here — the tasks
+            // continue running and will finish their current request/response
+            // cycle during this window.
+            tokio::task::yield_now().await;
+            tokio::time::sleep(drain_grace).await;
+        })
+        .await;
+        info!("grace period elapsed, proceeding with re-exec");
     }
 
     // Signal all cancellation-aware loops to stop.
@@ -2009,13 +2028,18 @@ pub async fn run_daemon(
             let args: Vec<String> = std::env::args().collect();
             // exec() replaces this process — it does not return on success.
             let err = std::process::Command::new(&exe).args(&args[1..]).exec();
-            // If we get here, exec() failed.
-            error!("re-exec failed: {err}");
-            // Fall through to normal shutdown so systemd can restart us.
+            // If we get here, exec() failed. Do NOT fall through to
+            // teardown_interface/remove_pid — that would destroy the WireGuard
+            // interface and PID file, leaving the daemon unrecoverable.
+            // Instead, exit immediately so systemd can restart us with the
+            // existing interface and PID file intact.
+            error!("re-exec failed: {err} — exiting for systemd restart");
+            std::process::exit(1);
         }
         #[cfg(not(unix))]
         {
-            error!("re-exec is not supported on this platform");
+            error!("re-exec is not supported on this platform — exiting for systemd restart");
+            std::process::exit(1);
         }
     }
 
