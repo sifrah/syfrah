@@ -254,6 +254,34 @@ impl VmManager {
         self.config.pull_policy.clone()
     }
 
+    /// Run health checks against KVM, CH binary, and kernel availability.
+    ///
+    /// Returns `("healthy", [])` if everything is OK, or `("degraded", warnings)`
+    /// if one or more prerequisites are missing.
+    pub fn health_check(&self) -> (&'static str, Vec<String>) {
+        let mut warnings = Vec::new();
+
+        if !Path::new("/dev/kvm").exists() {
+            warnings.push("KVM not available — VMs cannot boot".to_string());
+        }
+
+        if !self.ch_binary.exists() {
+            warnings.push("cloud-hypervisor binary not found".to_string());
+        }
+
+        if !self.config.kernel_path.exists() {
+            warnings.push("kernel not found".to_string());
+        }
+
+        let status = if warnings.is_empty() {
+            "healthy"
+        } else {
+            "degraded"
+        };
+
+        (status, warnings)
+    }
+
     // -- Lifecycle operations -------------------------------------------------
 
     /// Create and boot a new VM.

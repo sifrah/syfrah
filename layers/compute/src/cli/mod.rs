@@ -68,6 +68,16 @@ async fn run_status(json: bool) -> anyhow::Result<()> {
                 println!("  Status:      {status}");
                 println!("  Total VMs:   {total}");
                 println!("  Running VMs: {running}");
+                if let Some(warnings) = v.get("warnings").and_then(|w| w.as_array()) {
+                    if !warnings.is_empty() {
+                        println!("  Warnings:");
+                        for w in warnings {
+                            if let Some(msg) = w.as_str() {
+                                println!("    - {msg}");
+                            }
+                        }
+                    }
+                }
             }
             Ok(())
         }
