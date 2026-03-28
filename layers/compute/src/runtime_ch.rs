@@ -213,10 +213,17 @@ pub fn select_runtime(
         return Ok(Box::new(ChRuntime::new(ch_binary, base_dir, kernel_path)));
     }
 
-    // KVM not available — container runtime not yet implemented.
-    // For backward compatibility, still create ChRuntime (it will fail at
-    // preflight when trying to actually create a VM without KVM).
-    info!("runtime auto-selection: /dev/kvm not present, using cloud-hypervisor (will require KVM at VM creation time)");
+    // KVM not available — try container runtime (crun + gVisor).
+    if crate::runtime_container::container_binaries_available() {
+        info!("runtime auto-selection: /dev/kvm not present, crun+runsc found, using container (gVisor)");
+        let container_rt = crate::runtime_container::ContainerRuntime::new(base_dir)?;
+        return Ok(Box::new(container_rt));
+    }
+
+    // Neither KVM nor crun+gVisor available — fall back to ChRuntime.
+    // It will fail at VM creation time if KVM is truly absent, but this
+    // allows construction of VmManager (and handler tests) to succeed.
+    info!("runtime auto-selection: /dev/kvm not present, crun+runsc not found, falling back to cloud-hypervisor (will require KVM at VM creation time)");
     Ok(Box::new(ChRuntime::new(ch_binary, base_dir, kernel_path)))
 }
 
@@ -280,14 +287,23 @@ mod tests {
     }
 
     #[test]
-    fn select_runtime_returns_ch_runtime() {
-        // select_runtime always returns ChRuntime (even without KVM, for backward compat)
+    fn select_runtime_returns_runtime() {
+        // select_runtime returns ChRuntime if /dev/kvm exists, ContainerRuntime
+        // if crun+runsc exist, or falls back to ChRuntime otherwise.
         let result = select_runtime(
             PathBuf::from("/bin/true"),
             PathBuf::from("/tmp/vms"),
             PathBuf::from("/tmp/vmlinux"),
         );
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().name(), "cloud-hypervisor");
+        let rt = result.unwrap();
+        if Path::new("/dev/kvm").exists() {
+            assert_eq!(rt.name(), "cloud-hypervisor");
+        } else if crate::runtime_container::container_binaries_available() {
+            assert_eq!(rt.name(), "container (gVisor)");
+        } else {
+            // Fallback to cloud-hypervisor even without KVM.
+            assert_eq!(rt.name(), "cloud-hypervisor");
+        }
     }
 }
