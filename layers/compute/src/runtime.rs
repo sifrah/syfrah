@@ -63,6 +63,7 @@ impl VmRuntimeState {
             phase: self.current_phase,
             vcpus: self.vcpus,
             memory_mb: self.memory_mb,
+            image: self.image_name.clone(),
             created_at: Some(self.launched_at),
             uptime_secs,
         }

@@ -37,10 +37,10 @@ pub enum ComputeError {
 /// them together as `Vec<PreflightError>`.
 #[derive(Debug, thiserror::Error)]
 pub enum PreflightError {
-    #[error("cloud-hypervisor binary not found")]
+    #[error("cloud-hypervisor binary not found (checked /usr/local/lib/syfrah/ and $PATH) — reinstall syfrah or set compute.ch_binary in config")]
     ChBinaryNotFound,
 
-    #[error("/dev/kvm is not available")]
+    #[error("/dev/kvm is not available — enable virtualization in BIOS and run `modprobe kvm_intel` (or `kvm_amd`)")]
     KvmNotAvailable,
 
     #[error("kernel image not found")]
@@ -157,7 +157,8 @@ mod tests {
     #[test]
     fn preflight_ch_binary_not_found_display() {
         let e = PreflightError::ChBinaryNotFound;
-        assert_eq!(e.to_string(), "cloud-hypervisor binary not found");
+        assert!(e.to_string().contains("cloud-hypervisor binary not found"));
+        assert!(e.to_string().contains("reinstall syfrah"));
     }
 
     #[test]

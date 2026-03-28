@@ -796,7 +796,7 @@ async fn kill_vm_inner(
         return Ok(());
     }
 
-    // Level 1: shutdown_graceful (30s timeout) -- skipped when force=true
+    // Level 1: shutdown_graceful (30s timeout) — skipped when force=true
     if !force {
         info!(vm_id = %vm_id_str, "kill chain level 1: shutdown_graceful");
         if let Err(e) = client.shutdown_graceful().await {

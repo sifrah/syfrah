@@ -99,6 +99,9 @@ pub struct VmStatus {
     pub vcpus: u32,
     /// Memory allocation in megabytes.
     pub memory_mb: u32,
+    /// Image name used to create this VM.
+    #[serde(default)]
+    pub image: Option<String>,
     /// Unix timestamp of when the VM was created.
     pub created_at: Option<u64>,
     /// Seconds the VM has been running. `None` if not in the `Running` phase.
@@ -269,6 +272,7 @@ mod tests {
             phase: VmPhase::Running,
             vcpus: 2,
             memory_mb: 4096,
+            image: Some("ubuntu-24.04".to_string()),
             created_at: Some(1700000000),
             uptime_secs: Some(3600),
         };

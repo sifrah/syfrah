@@ -621,6 +621,7 @@ mod tests {
             phase: crate::phase::VmPhase::Running,
             vcpus: 4,
             memory_mb: 8192,
+            image: Some("ubuntu-24.04".to_string()),
             created_at: Some(1700000000),
             uptime_secs: Some(3600),
         };
@@ -640,6 +641,7 @@ mod tests {
             phase: crate::phase::VmPhase::Pending,
             vcpus: 1,
             memory_mb: 512,
+            image: None,
             created_at: None,
             uptime_secs: None,
         };
