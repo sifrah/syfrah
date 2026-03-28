@@ -181,7 +181,11 @@ async fn run_create(
     };
     let resp = send_compute_request(&control_socket_path(), &req)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"
+            )
+        })?;
 
     match resp {
         ComputeResponse::Vm(v) => {
@@ -218,7 +222,11 @@ async fn run_list(json: bool) -> anyhow::Result<()> {
     let req = ComputeRequest::ListVms;
     let resp = send_compute_request(&control_socket_path(), &req)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"
+            )
+        })?;
 
     match resp {
         ComputeResponse::VmList(vms) => {
@@ -264,7 +272,11 @@ async fn run_get(id: String, json: bool) -> anyhow::Result<()> {
     let req = ComputeRequest::GetVm { id };
     let resp = send_compute_request(&control_socket_path(), &req)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"
+            )
+        })?;
 
     match resp {
         ComputeResponse::Vm(v) => {
@@ -304,7 +316,11 @@ async fn run_start(id: String) -> anyhow::Result<()> {
     let req = ComputeRequest::StartVm { id: id.clone() };
     let resp = send_compute_request(&control_socket_path(), &req)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"
+            )
+        })?;
 
     match resp {
         ComputeResponse::Vm(v) => {
@@ -328,7 +344,11 @@ async fn run_stop(id: String, force: bool) -> anyhow::Result<()> {
     };
     let resp = send_compute_request(&control_socket_path(), &req)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"
+            )
+        })?;
 
     match resp {
         ComputeResponse::Vm(v) => {
@@ -367,7 +387,11 @@ async fn run_delete(id: String, yes: bool) -> anyhow::Result<()> {
     };
     let resp = send_compute_request(&control_socket_path(), &req)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"
+            )
+        })?;
 
     match resp {
         ComputeResponse::Ok => {
@@ -387,7 +411,11 @@ async fn run_reboot(id: String) -> anyhow::Result<()> {
     let req = ComputeRequest::RebootVm { id: id.clone() };
     let resp = send_compute_request(&control_socket_path(), &req)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"
+            )
+        })?;
 
     match resp {
         ComputeResponse::Vm(v) => {
@@ -412,7 +440,11 @@ async fn run_resize(id: String, vcpus: Option<u32>, memory: Option<u32>) -> anyh
     };
     let resp = send_compute_request(&control_socket_path(), &req)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"
+            )
+        })?;
 
     match resp {
         ComputeResponse::Vm(v) => {

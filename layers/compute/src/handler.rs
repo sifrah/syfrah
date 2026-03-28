@@ -280,10 +280,7 @@ async fn delete_vm(State(mgr): State<SharedManager>, Path(id): Path<String>) -> 
     }
 }
 
-async fn start_vm(
-    State(_mgr): State<SharedManager>,
-    Path(_id): Path<String>,
-) -> impl IntoResponse {
+async fn start_vm(State(_mgr): State<SharedManager>, Path(_id): Path<String>) -> impl IntoResponse {
     (
         StatusCode::NOT_IMPLEMENTED,
         Json(serde_json::json!({"error": "start is not yet implemented"})),
