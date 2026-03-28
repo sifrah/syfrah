@@ -6,6 +6,7 @@
 //! available.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -155,6 +156,123 @@ fn resolve_binary(name: &str) -> Result<PathBuf, ComputeError> {
 /// offered as a fallback when KVM is absent.
 pub fn container_binaries_available() -> bool {
     resolve_binary("crun").is_ok() && resolve_binary("runsc").is_ok()
+}
+
+// ---------------------------------------------------------------------------
+// Auto-download fallback
+// ---------------------------------------------------------------------------
+
+/// crun version used for auto-download.
+const CRUN_VERSION: &str = "1.18.2";
+
+/// URL template for downloading crun static binaries.
+/// `{version}` and `{arch}` are substituted at runtime.
+fn crun_download_url() -> String {
+    let arch = if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "amd64"
+    };
+    format!(
+        "https://github.com/containers/crun/releases/download/{}/crun-{}-linux-{}",
+        CRUN_VERSION, CRUN_VERSION, arch
+    )
+}
+
+/// URL for downloading runsc (gVisor) static binary.
+fn runsc_download_url() -> String {
+    let arch = if cfg!(target_arch = "aarch64") {
+        "aarch64"
+    } else {
+        "x86_64"
+    };
+    format!(
+        "https://storage.googleapis.com/gvisor/releases/release/latest/{}/runsc",
+        arch
+    )
+}
+
+/// Ensure crun and runsc are available, downloading them if necessary.
+///
+/// This mirrors the `ensure_kernel` pattern in `boot.rs`. If a binary is
+/// missing from the standard paths, it is downloaded to `/usr/local/bin/`.
+pub async fn ensure_container_binaries() -> Result<(), ComputeError> {
+    for (name, url_fn) in [
+        ("crun", crun_download_url as fn() -> String),
+        ("runsc", runsc_download_url),
+    ] {
+        if resolve_binary(name).is_ok() {
+            continue;
+        }
+
+        let url = url_fn();
+        let dest = PathBuf::from(format!("/usr/local/bin/{name}"));
+        warn!("{name} not found, downloading from {url}...");
+
+        let dest_clone = dest.clone();
+        let name_owned = name.to_string();
+        tokio::task::spawn_blocking(move || download_binary(&url, &dest_clone, &name_owned))
+            .await
+            .map_err(|e| ProcessError::SpawnFailed {
+                reason: format!("{name} download task panicked: {e}"),
+            })??;
+
+        info!("{name} downloaded and installed to {}", dest.display());
+    }
+    Ok(())
+}
+
+/// Download a binary from `url` to `dest` and make it executable.
+fn download_binary(url: &str, dest: &Path, name: &str) -> Result<(), ComputeError> {
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|e| ProcessError::SpawnFailed {
+            reason: format!("failed to build HTTP client for {name}: {e}"),
+        })?;
+
+    let response = client
+        .get(url)
+        .send()
+        .map_err(|e| ProcessError::SpawnFailed {
+            reason: format!("failed to download {name} from {url}: {e}"),
+        })?;
+
+    if !response.status().is_success() {
+        return Err(ProcessError::SpawnFailed {
+            reason: format!(
+                "failed to download {name} from {url}: HTTP {}",
+                response.status()
+            ),
+        }
+        .into());
+    }
+
+    let bytes = response.bytes().map_err(|e| ProcessError::SpawnFailed {
+        reason: format!("failed to read {name} response body: {e}"),
+    })?;
+
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| ProcessError::SpawnFailed {
+            reason: format!("failed to create directory {}: {e}", parent.display()),
+        })?;
+    }
+
+    std::fs::write(dest, &bytes).map_err(|e| ProcessError::SpawnFailed {
+        reason: format!("failed to write {name} to {}: {e}", dest.display()),
+    })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(dest, perms).map_err(|e| ProcessError::SpawnFailed {
+            reason: format!("failed to set permissions on {}: {e}", dest.display()),
+        })?;
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

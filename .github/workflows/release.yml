@@ -232,6 +232,39 @@ jobs:
           cp /tmp/vmlinux "target/${{ matrix.target }}/release/vmlinux"
           echo "Kernel downloaded and validated successfully"
 
+      - name: Download crun static binary (Linux only)
+        if: contains(matrix.target, 'linux')
+        run: |
+          set -euo pipefail
+          CRUN_VERSION="1.18.2"
+
+          if [[ "${{ matrix.target }}" == aarch64-* ]]; then
+            CRUN_ARCH="arm64"
+          else
+            CRUN_ARCH="amd64"
+          fi
+
+          CRUN_URL="https://github.com/containers/crun/releases/download/${CRUN_VERSION}/crun-${CRUN_VERSION}-linux-${CRUN_ARCH}"
+          echo "Downloading crun from ${CRUN_URL}"
+          curl -fsSL -o "target/${{ matrix.target }}/release/crun" "${CRUN_URL}"
+          chmod +x "target/${{ matrix.target }}/release/crun"
+
+      - name: Download runsc / gVisor (Linux only)
+        if: contains(matrix.target, 'linux')
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ matrix.target }}" == aarch64-* ]]; then
+            RUNSC_ARCH="aarch64"
+          else
+            RUNSC_ARCH="x86_64"
+          fi
+
+          RUNSC_URL="https://storage.googleapis.com/gvisor/releases/release/latest/${RUNSC_ARCH}/runsc"
+          echo "Downloading runsc from ${RUNSC_URL}"
+          curl -fsSL -o "target/${{ matrix.target }}/release/runsc" "${RUNSC_URL}"
+          chmod +x "target/${{ matrix.target }}/release/runsc"
+
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
@@ -240,6 +273,8 @@ jobs:
             target/${{ matrix.target }}/release/syfrah
             target/${{ matrix.target }}/release/cloud-hypervisor
             target/${{ matrix.target }}/release/vmlinux
+            target/${{ matrix.target }}/release/crun
+            target/${{ matrix.target }}/release/runsc
 
   # ── Create release ────────────────────────────────────────
   release:
@@ -265,12 +300,20 @@ jobs:
             archive="syfrah-v${VERSION}-${target}.tar.gz"
             chmod +x "${target_dir}syfrah"
 
-            # Include cloud-hypervisor and vmlinux in tarball for Linux targets
+            # Include cloud-hypervisor, vmlinux, crun, and runsc in tarball for Linux targets
             if [ -f "${target_dir}cloud-hypervisor" ]; then
               chmod +x "${target_dir}cloud-hypervisor"
               TARBALL_FILES="syfrah cloud-hypervisor"
               if [ -f "${target_dir}vmlinux" ]; then
                 TARBALL_FILES="${TARBALL_FILES} vmlinux"
+              fi
+              if [ -f "${target_dir}crun" ]; then
+                chmod +x "${target_dir}crun"
+                TARBALL_FILES="${TARBALL_FILES} crun"
+              fi
+              if [ -f "${target_dir}runsc" ]; then
+                chmod +x "${target_dir}runsc"
+                TARBALL_FILES="${TARBALL_FILES} runsc"
               fi
               tar czf "release/${archive}" -C "$target_dir" ${TARBALL_FILES}
             else
