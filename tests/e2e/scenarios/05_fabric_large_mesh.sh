@@ -44,10 +44,13 @@ fi
 
 # Spot check connectivity (node-1 ↔ node-5)
 ipv6_5=$(get_mesh_ipv6 "e2e-large-5")
-assert_can_ping "e2e-large-1" "$ipv6_5"
-
 ipv6_1=$(get_mesh_ipv6 "e2e-large-1")
-assert_can_ping "e2e-large-5" "$ipv6_1"
+if [ -n "$ipv6_5" ] && [ -n "$ipv6_1" ]; then
+    assert_can_ping "e2e-large-1" "$ipv6_5"
+    assert_can_ping "e2e-large-5" "$ipv6_1"
+else
+    fail "could not get mesh IPv6 (ipv6_1=$ipv6_1, ipv6_5=$ipv6_5)"
+fi
 
 cleanup
 summary

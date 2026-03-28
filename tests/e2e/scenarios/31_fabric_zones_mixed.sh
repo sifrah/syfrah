@@ -36,8 +36,10 @@ wait_for_convergence "e2e-zmix-" 3 2 30 || true
 assert_peer_count "e2e-zmix-1" 2
 
 # Verify node-2 has custom region
-r2=$(docker exec "e2e-zmix-2" syfrah fabric status 2>&1 | grep "Region:" | awk '{print $2}')
-if [ "$r2" = "custom-dc" ]; then
+r2=$(docker exec "e2e-zmix-2" syfrah fabric status 2>&1 | grep "Region:" | awk '{print $2}' || echo "")
+if [ -z "$r2" ]; then
+    fail "could not extract region for e2e-zmix-2"
+elif [ "$r2" = "custom-dc" ]; then
     pass "node-2 custom region preserved in mesh"
 else
     fail "node-2 region: $r2 (expected custom-dc)"
@@ -45,7 +47,11 @@ fi
 
 # Verify connectivity works regardless of different regions
 ipv6_2=$(get_mesh_ipv6 "e2e-zmix-2")
-assert_can_ping "e2e-zmix-1" "$ipv6_2"
+if [ -n "$ipv6_2" ]; then
+    assert_can_ping "e2e-zmix-1" "$ipv6_2"
+else
+    fail "could not get mesh IPv6 for e2e-zmix-2"
+fi
 
 cleanup
 summary

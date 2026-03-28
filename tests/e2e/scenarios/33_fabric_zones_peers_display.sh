@@ -25,7 +25,8 @@ start_peering "e2e-zdisp-1"
 
 join_mesh "e2e-zdisp-2" "172.20.0.10" "172.20.0.11" "node-2"
 
-sleep 3
+# Wait for peer convergence instead of fixed sleep
+wait_for_peer_active "e2e-zdisp-1" 1 30
 
 # Check peers output has REGION and ZONE column headers
 output=$(docker exec "e2e-zdisp-1" syfrah fabric peers 2>&1)

@@ -31,12 +31,13 @@ for i in $(seq 2 5); do
     join_mesh "e2e-z5-$i" "172.20.0.10" "172.20.0.$((9+i))" "node-$i"
 done
 
-sleep 5
+# Wait for peer convergence instead of fixed sleep
+wait_for_peer_active "e2e-z5-1" 4 30
 
 # Collect all zones
 zones=()
 for i in $(seq 1 5); do
-    z=$(docker exec "e2e-z5-$i" syfrah fabric status 2>&1 | grep -i "Zone:" | awk '{print $NF}')
+    z=$(docker exec "e2e-z5-$i" syfrah fabric status 2>&1 | grep -i "Zone:" | awk '{print $NF}' || echo "")
     zones+=("$z")
     info "node-$i zone: $z"
 done
@@ -51,8 +52,10 @@ fi
 
 # Check all share default region
 for i in $(seq 1 5); do
-    r=$(docker exec "e2e-z5-$i" syfrah fabric status 2>&1 | grep "Region:" | awk '{print $2}')
-    if [ "$r" = "default" ]; then
+    r=$(docker exec "e2e-z5-$i" syfrah fabric status 2>&1 | grep "Region:" | awk '{print $2}' || echo "")
+    if [ -z "$r" ]; then
+        fail "node-$i: could not extract region"
+    elif [ "$r" = "default" ]; then
         pass "node-$i region: default"
     else
         fail "node-$i region: $r (expected default)"

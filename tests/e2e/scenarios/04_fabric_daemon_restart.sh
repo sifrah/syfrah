@@ -20,7 +20,8 @@ init_mesh "e2e-restart-1" "172.20.0.10" "node-1"
 start_peering "e2e-restart-1"
 join_mesh "e2e-restart-2" "172.20.0.10" "172.20.0.11" "node-2"
 
-sleep 3
+# Wait for peer convergence instead of fixed sleep
+wait_for_peer_active "e2e-restart-1" 1 30
 
 assert_peer_count "e2e-restart-1" 1
 
@@ -52,7 +53,11 @@ assert_daemon_running "e2e-restart-2"
 # Verify connectivity is restored
 sleep 2
 ipv6_1=$(get_mesh_ipv6 "e2e-restart-1")
-assert_can_ping "e2e-restart-2" "$ipv6_1"
+if [ -n "$ipv6_1" ]; then
+    assert_can_ping "e2e-restart-2" "$ipv6_1"
+else
+    fail "could not get mesh IPv6 for e2e-restart-1"
+fi
 
 cleanup
 summary

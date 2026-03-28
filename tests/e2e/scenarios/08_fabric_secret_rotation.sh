@@ -18,7 +18,8 @@ start_peering "e2e-rot-1"
 join_mesh "e2e-rot-2" "172.20.0.10" "172.20.0.11" "node-2"
 join_mesh "e2e-rot-3" "172.20.0.10" "172.20.0.12" "node-3"
 
-sleep 3
+# Wait for peer convergence instead of fixed sleep
+wait_for_peer_active "e2e-rot-1" 2 30
 assert_peer_count "e2e-rot-1" 2
 
 # Record original secret
@@ -64,7 +65,8 @@ sleep 1
 join_mesh "e2e-rot-2" "172.20.0.10" "172.20.0.11" "node-2"
 join_mesh "e2e-rot-3" "172.20.0.10" "172.20.0.12" "node-3"
 
-sleep 5
+# Wait for peer convergence instead of fixed sleep
+wait_for_peer_active "e2e-rot-1" 2 30
 
 # Verify mesh reformed with new secret
 assert_peer_count "e2e-rot-1" 2

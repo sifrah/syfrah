@@ -58,7 +58,8 @@ fi
 
 # Check leader memory after storm
 RSS_KB=$(docker exec "e2e-storm-1" bash -c "cat /proc/$LEADER_PID/status 2>/dev/null | grep VmRSS | awk '{print \$2}'" || echo "0")
-if [ -n "$RSS_KB" ] && [ "$RSS_KB" -gt 0 ]; then
+RSS_KB=${RSS_KB:-0}
+if [ -n "$RSS_KB" ] && [ "$RSS_KB" -gt 0 ] 2>/dev/null; then
     RSS_MB=$((RSS_KB / 1024))
     if [ "$RSS_MB" -lt 80 ]; then
         pass "leader RSS after storm: ${RSS_MB}MB"
@@ -74,7 +75,11 @@ assert_daemon_running "e2e-storm-1"
 
 # Connectivity check
 ipv6_last=$(get_mesh_ipv6 "e2e-storm-$NODE_COUNT")
-assert_can_ping "e2e-storm-1" "$ipv6_last"
+if [ -n "$ipv6_last" ]; then
+    assert_can_ping "e2e-storm-1" "$ipv6_last"
+else
+    fail "could not get mesh IPv6 for e2e-storm-$NODE_COUNT"
+fi
 
 cleanup
 summary

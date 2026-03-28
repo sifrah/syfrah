@@ -44,7 +44,8 @@ fi
 # Memory check on the init node
 info "Checking leader memory..."
 RSS_KB=$(docker exec "e2e-max-1" bash -c 'cat /proc/$(cat /root/.syfrah/daemon.pid)/status 2>/dev/null | grep VmRSS | awk "{print \$2}"' || echo "0")
-if [ -n "$RSS_KB" ] && [ "$RSS_KB" -gt 0 ]; then
+RSS_KB=${RSS_KB:-0}
+if [ -n "$RSS_KB" ] && [ "$RSS_KB" -gt 0 ] 2>/dev/null; then
     RSS_MB=$((RSS_KB / 1024))
     if [ "$RSS_MB" -lt 100 ]; then
         pass "leader RSS: ${RSS_MB}MB (under 100MB)"
@@ -57,6 +58,7 @@ fi
 
 # State file sanity
 STATE_SIZE=$(docker exec "e2e-max-1" wc -c /root/.syfrah/state.json 2>/dev/null | awk '{print $1}' || echo "0")
+STATE_SIZE=${STATE_SIZE:-0}
 if [ "$STATE_SIZE" -lt 51200 ]; then
     pass "state.json size: ${STATE_SIZE} bytes (under 50KB)"
 else
@@ -65,7 +67,11 @@ fi
 
 # Spot check connectivity
 ipv6_last=$(get_mesh_ipv6 "e2e-max-$NODE_COUNT")
-assert_can_ping "e2e-max-1" "$ipv6_last"
+if [ -n "$ipv6_last" ]; then
+    assert_can_ping "e2e-max-1" "$ipv6_last"
+else
+    fail "could not get mesh IPv6 for e2e-max-$NODE_COUNT"
+fi
 
 cleanup
 summary

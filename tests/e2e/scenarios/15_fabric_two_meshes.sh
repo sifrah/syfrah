@@ -52,7 +52,9 @@ docker exec -d "e2e-beta-2" \
     --pin "2222"
 wait_daemon "e2e-beta-2"
 
-sleep 3
+# Wait for peer convergence instead of fixed sleep
+wait_for_peer_active "e2e-alpha-1" 1 30
+wait_for_peer_active "e2e-beta-1" 1 30
 
 # Each mesh sees 1 peer (its own partner)
 assert_peer_count "e2e-alpha-1" 1
@@ -60,15 +62,22 @@ assert_peer_count "e2e-beta-1" 1
 
 # Alpha nodes can reach each other
 alpha2_ipv6=$(get_mesh_ipv6 "e2e-alpha-2")
-assert_can_ping "e2e-alpha-1" "$alpha2_ipv6"
+if [ -n "$alpha2_ipv6" ]; then
+    assert_can_ping "e2e-alpha-1" "$alpha2_ipv6"
+else
+    fail "could not get mesh IPv6 for e2e-alpha-2"
+fi
 
 # Beta nodes can reach each other
 beta2_ipv6=$(get_mesh_ipv6 "e2e-beta-2")
-assert_can_ping "e2e-beta-1" "$beta2_ipv6"
-
-# Cross-mesh: Alpha cannot reach Beta
-# (different WG keys, different mesh prefixes, no shared peers)
-assert_cannot_ping "e2e-alpha-1" "$beta2_ipv6"
+if [ -n "$beta2_ipv6" ]; then
+    assert_can_ping "e2e-beta-1" "$beta2_ipv6"
+    # Cross-mesh: Alpha cannot reach Beta
+    # (different WG keys, different mesh prefixes, no shared peers)
+    assert_cannot_ping "e2e-alpha-1" "$beta2_ipv6"
+else
+    fail "could not get mesh IPv6 for e2e-beta-2"
+fi
 
 # Different secrets
 alpha_secret=$(get_state_field "e2e-alpha-1" ".mesh_secret")

@@ -21,7 +21,8 @@ start_peering "e2e-leave-1"
 join_mesh "e2e-leave-2" "172.20.0.10" "172.20.0.11" "node-2"
 join_mesh "e2e-leave-3" "172.20.0.10" "172.20.0.12" "node-3"
 
-sleep 3
+# Wait for peer convergence instead of fixed sleep
+wait_for_peer_active "e2e-leave-1" 2 30
 
 # All 3 nodes connected
 assert_peer_count "e2e-leave-1" 2
@@ -39,7 +40,11 @@ assert_interface_exists "e2e-leave-2"
 
 # Connectivity between remaining nodes
 ipv6_2=$(get_mesh_ipv6 "e2e-leave-2")
-assert_can_ping "e2e-leave-1" "$ipv6_2"
+if [ -n "$ipv6_2" ]; then
+    assert_can_ping "e2e-leave-1" "$ipv6_2"
+else
+    fail "could not get mesh IPv6 for e2e-leave-2"
+fi
 
 cleanup
 summary

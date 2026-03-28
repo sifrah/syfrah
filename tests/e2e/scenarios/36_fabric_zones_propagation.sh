@@ -38,7 +38,8 @@ wait_daemon "e2e-zprop-2"
 # Node-3 default
 join_mesh "e2e-zprop-3" "172.20.0.10" "172.20.0.12" "node-3"
 
-sleep 5
+# Wait for peer convergence instead of fixed sleep
+wait_for_peer_active "e2e-zprop-3" 2 30
 
 # Node-3 should see node-1 and node-2 with their regions in peers list
 peers_output=$(docker exec "e2e-zprop-3" syfrah fabric peers 2>&1)
