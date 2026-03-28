@@ -369,6 +369,10 @@ async fn spawn_vm_inner(
     let socket_path = runtime_dir.socket_path();
     let log_path = runtime_dir.log_path();
 
+    // Get CH version BEFORE spawning to avoid running two instances concurrently.
+    // This is best-effort — failure is not fatal.
+    let ch_version = get_ch_version(ch_binary).unwrap_or_else(|| "unknown".to_string());
+
     // Step 6: Spawn cloud-hypervisor process
     let log_file = fs::File::create(&log_path).map_err(|e| ProcessError::SpawnFailed {
         reason: format!("failed to create log file {}: {e}", log_path.display()),
@@ -395,7 +399,7 @@ async fn spawn_vm_inner(
 
     // Brief wait to let the child process initialize. If it exits immediately
     // (e.g., bad binary), detect it early rather than waiting the full ping timeout.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
     if let Some(exit_status) = child.try_wait().map_err(|e| ProcessError::SpawnFailed {
         reason: format!("failed to check child status: {e}"),
     })? {
@@ -408,9 +412,6 @@ async fn spawn_vm_inner(
     }
     // Prevent Child::drop from interfering — we manage the process via PID.
     std::mem::forget(child);
-
-    // Get CH version (best-effort, non-blocking)
-    let ch_version = get_ch_version(ch_binary).unwrap_or_else(|| "unknown".to_string());
 
     // Step 7: Write pid, meta.json, ch-version
     runtime_dir.write_pid(pid)?;
