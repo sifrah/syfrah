@@ -12,7 +12,7 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use tokio::net::UnixListener;
-use tokio::sync::Notify;
+use tokio::sync::watch;
 
 // ---------------------------------------------------------------------------
 // VM state (good enough for testing)
@@ -95,6 +95,14 @@ fn handle(
             (StatusCode::NO_CONTENT, None, true)
         }
 
+        // vm.power-button is the forced shutdown variant (ACPI power button)
+        (&Method::PUT, "/api/v1/vm.power-button") => {
+            let mut s = state.lock().unwrap();
+            s.booted = false;
+            s.paused = false;
+            (StatusCode::NO_CONTENT, None, true)
+        }
+
         (&Method::PUT, "/api/v1/vm.delete") => {
             let mut s = state.lock().unwrap();
             s.created = false;
@@ -169,22 +177,27 @@ async fn main() {
     let listener = UnixListener::bind(&socket_path).expect("failed to bind unix socket");
 
     let state = Arc::new(Mutex::new(VmState::new()));
-    let shutdown = Arc::new(Notify::new());
+    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+    let shutdown_tx = Arc::new(shutdown_tx);
     let socket_path_clone = socket_path.clone();
 
     // SIGTERM handler
-    let shutdown_sig = shutdown.clone();
+    let shutdown_sig = shutdown_tx.clone();
     tokio::spawn(async move {
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .expect("failed to register SIGTERM handler")
             .recv()
             .await;
-        shutdown_sig.notify_waiters();
+        let _ = shutdown_sig.send(true);
     });
 
     loop {
         tokio::select! {
-            _ = shutdown.notified() => break,
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    break;
+                }
+            }
             result = listener.accept() => {
                 let (stream, _) = match result {
                     Ok(v) => v,
@@ -192,22 +205,21 @@ async fn main() {
                 };
 
                 let state = Arc::clone(&state);
-                let shutdown = Arc::clone(&shutdown);
+                let shutdown_tx = Arc::clone(&shutdown_tx);
 
                 tokio::spawn(async move {
                     let state = state;
-                    let shutdown = shutdown;
+                    let shutdown_tx = shutdown_tx;
                     let service = service_fn(move |req: Request<hyper::body::Incoming>| {
                         let state = Arc::clone(&state);
-                        let shutdown = Arc::clone(&shutdown);
+                        let shutdown_tx = Arc::clone(&shutdown_tx);
                         async move {
                             let (status, body, should_exit) =
                                 handle(req.method(), req.uri().path(), &state);
                             if should_exit {
-                                let shutdown = shutdown.clone();
                                 tokio::spawn(async move {
                                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                                    shutdown.notify_waiters();
+                                    let _ = shutdown_tx.send(true);
                                 });
                             }
                             Ok::<_, hyper::Error>(build_response(status, body))

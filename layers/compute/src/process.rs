@@ -209,7 +209,16 @@ pub fn scan_runtime_dirs(base: &Path) -> Vec<RuntimeDir> {
 // ---------------------------------------------------------------------------
 
 /// Check whether a process with the given PID is alive.
+///
+/// First attempts `waitpid(WNOHANG)` to reap zombie children (the CH process
+/// is our direct child but its `Child` handle was forgotten to avoid pidfd
+/// issues). Without this, zombies appear alive to `kill(pid, 0)`.
 fn is_pid_alive(pid: u32) -> bool {
+    // SAFETY: waitpid with WNOHANG is non-blocking and only reaps our own children.
+    unsafe {
+        let mut status: libc::c_int = 0;
+        libc::waitpid(pid as i32, &mut status, libc::WNOHANG);
+    }
     // SAFETY: kill with signal 0 only checks process existence, no signal is sent.
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
