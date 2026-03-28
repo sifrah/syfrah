@@ -5,6 +5,14 @@ set -eu
 REPO="sifrah/syfrah"
 BIN="syfrah"
 INSTALL_DIR="/usr/local/bin"
+CHANNEL="stable"
+
+# Parse arguments
+for arg in "$@"; do
+  case "$arg" in
+    --beta) CHANNEL="beta" ;;
+  esac
+done
 
 # --- UX helpers -----------------------------------------------------------
 
@@ -95,18 +103,30 @@ esac
 
 TARGET="${ARCH}-${OS}"
 
-# --- Fetch latest release tag ----------------------------------------------
+# --- Fetch release tag -----------------------------------------------------
 
-start_spinner "Fetching latest release version..."
-VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-  | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//')" || true
-
-if [ -z "$VERSION" ]; then
-  stop_spinner "Could not determine latest release version" fail
-  exit 1
+if [ "$CHANNEL" = "beta" ]; then
+  start_spinner "Fetching latest beta release version..."
+  # Beta releases are pre-releases — /releases/latest ignores them.
+  # List all releases and pick the first pre-release (most recent).
+  VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=20" \
+    | grep -A 2 '"prerelease": true' | grep '"tag_name"' | head -1 \
+    | sed 's/.*"tag_name": *"//;s/".*//')" || true
+  if [ -z "$VERSION" ]; then
+    stop_spinner "No beta release found" fail
+    exit 1
+  fi
+  stop_spinner "Latest beta: ${VERSION}"
+else
+  start_spinner "Fetching latest stable release version..."
+  VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+    | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//')" || true
+  if [ -z "$VERSION" ]; then
+    stop_spinner "Could not determine latest release version" fail
+    exit 1
+  fi
+  stop_spinner "Latest version: ${VERSION}"
 fi
-
-stop_spinner "Latest version: ${VERSION}"
 
 # --- Download archive -------------------------------------------------------
 
