@@ -50,13 +50,14 @@ create_network
 start_node "e2e-cold-1" "172.20.0.10"
 init_mesh "e2e-cold-1" "172.20.0.10" "cold-node"
 
-# Clear pre-installed images to simulate cold start
-docker exec "e2e-cold-1" rm -rf /opt/syfrah/images/*.raw
-docker exec "e2e-cold-1" rm -f /opt/syfrah/images/images.json
-docker exec "e2e-cold-1" rm -f /opt/syfrah/images/catalog.json
-# Restart daemon so it reloads the now-empty store
+# Stop daemon FIRST so it can't write anything back while we clean
 docker exec "e2e-cold-1" syfrah fabric stop 2>/dev/null || true
 sleep 1
+# Clear pre-installed images to simulate cold start
+docker exec "e2e-cold-1" sh -c 'rm -f /opt/syfrah/images/*.raw /opt/syfrah/images/*.raw.tmp /opt/syfrah/images/images.json /opt/syfrah/images/catalog.json /opt/syfrah/images/.lock'
+# Verify the directory is actually empty (minus dotfiles)
+docker exec "e2e-cold-1" sh -c 'ls /opt/syfrah/images/ 2>/dev/null || true'
+# Restart daemon so it reloads the now-empty store
 docker exec -d "e2e-cold-1" syfrah fabric start
 wait_daemon "e2e-cold-1" 30
 
