@@ -114,12 +114,11 @@ impl ComputeLayerHandler {
 /// Convert a VmStatus to a JSON value suitable for CLI output.
 fn vm_status_to_json(s: &crate::types::VmStatus) -> serde_json::Value {
     serde_json::json!({
-        "name": s.vm_id.0,
         "id": s.vm_id.0,
         "phase": format!("{:?}", s.phase),
         "vcpus": s.vcpus,
-        "memory": s.memory_mb,
         "memory_mb": s.memory_mb,
+        "image": s.image.as_deref().unwrap_or(""),
         "created_at": s.created_at,
         "uptime_secs": s.uptime_secs,
     })
@@ -194,9 +193,13 @@ async fn handle_compute_request(mgr: &VmManager, req: ComputeRequest) -> Compute
                 Err(e) => ComputeResponse::Error(e.to_string()),
             }
         }
-        ComputeRequest::StopVm { id, force: _ } => {
-            // force flag is handled at the kill_vm level (already uses kill chain)
-            match mgr.shutdown_vm(&id).await {
+        ComputeRequest::StopVm { id, force } => {
+            let result = if force {
+                mgr.shutdown_vm_force(&id).await
+            } else {
+                mgr.shutdown_vm(&id).await
+            };
+            match result {
                 Ok(()) => match mgr.info(&id).await {
                     Ok(status) => ComputeResponse::Vm(vm_status_to_json(&status)),
                     Err(_) => ComputeResponse::Ok,

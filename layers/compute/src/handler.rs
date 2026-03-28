@@ -280,18 +280,11 @@ async fn delete_vm(State(mgr): State<SharedManager>, Path(id): Path<String>) -> 
     }
 }
 
-async fn start_vm(State(mgr): State<SharedManager>, Path(id): Path<String>) -> impl IntoResponse {
-    // StartVm returns the current VM status. Since VmManager doesn't have a
-    // separate "start" (create_vm boots), we return the current info. If the
-    // VM is stopped, a proper start would need to re-create it, but that is
-    // beyond MVP scope. For now, return the current state.
-    match mgr.info(&id).await {
-        Ok(status) => (StatusCode::OK, Json(vm_status_to_response(&status))).into_response(),
-        Err(e) => {
-            let (status, json) = error_response(e);
-            (status, json).into_response()
-        }
-    }
+async fn start_vm(State(_mgr): State<SharedManager>, Path(_id): Path<String>) -> impl IntoResponse {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(serde_json::json!({"error": "start is not yet implemented"})),
+    )
 }
 
 async fn stop_vm(State(mgr): State<SharedManager>, Path(id): Path<String>) -> impl IntoResponse {
@@ -318,27 +311,24 @@ async fn stop_vm(State(mgr): State<SharedManager>, Path(id): Path<String>) -> im
     }
 }
 
-async fn reboot_vm(State(mgr): State<SharedManager>, Path(id): Path<String>) -> impl IntoResponse {
-    // Reboot = stop + start. MVP: just return current info since VmManager
-    // does not yet expose a reboot operation.
-    match mgr.info(&id).await {
-        Ok(status) => (StatusCode::OK, Json(vm_status_to_response(&status))).into_response(),
-        Err(e) => {
-            let (status, json) = error_response(e);
-            (status, json).into_response()
-        }
-    }
+async fn reboot_vm(
+    State(_mgr): State<SharedManager>,
+    Path(_id): Path<String>,
+) -> impl IntoResponse {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(serde_json::json!({"error": "reboot is not yet implemented"})),
+    )
 }
 
-async fn resize_vm(State(mgr): State<SharedManager>, Path(id): Path<String>) -> impl IntoResponse {
-    // Resize is not yet implemented in VmManager. Return current info for now.
-    match mgr.info(&id).await {
-        Ok(status) => (StatusCode::OK, Json(vm_status_to_response(&status))).into_response(),
-        Err(e) => {
-            let (status, json) = error_response(e);
-            (status, json).into_response()
-        }
-    }
+async fn resize_vm(
+    State(_mgr): State<SharedManager>,
+    Path(_id): Path<String>,
+) -> impl IntoResponse {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(serde_json::json!({"error": "resize is not yet implemented"})),
+    )
 }
 
 async fn get_status(State(mgr): State<SharedManager>) -> impl IntoResponse {
@@ -476,13 +466,13 @@ mod tests {
     // -- POST /v1/compute/vms/:id/start ----------------------------------------
 
     #[tokio::test]
-    async fn start_vm_not_found_returns_404() {
+    async fn start_vm_not_implemented_returns_501() {
         let tmp = tempfile::TempDir::new().unwrap();
         let mgr = make_test_manager(tmp.path());
         let app = test_router(mgr);
         let (status, _) =
             send_request(app, "POST", "/v1/compute/vms/nonexistent/start", None).await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
     }
 
     // -- POST /v1/compute/vms/:id/stop -----------------------------------------
@@ -499,19 +489,19 @@ mod tests {
     // -- POST /v1/compute/vms/:id/reboot ---------------------------------------
 
     #[tokio::test]
-    async fn reboot_vm_not_found_returns_404() {
+    async fn reboot_vm_not_implemented_returns_501() {
         let tmp = tempfile::TempDir::new().unwrap();
         let mgr = make_test_manager(tmp.path());
         let app = test_router(mgr);
         let (status, _) =
             send_request(app, "POST", "/v1/compute/vms/nonexistent/reboot", None).await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
     }
 
     // -- POST /v1/compute/vms/:id/resize ---------------------------------------
 
     #[tokio::test]
-    async fn resize_vm_not_found_returns_404() {
+    async fn resize_vm_not_implemented_returns_501() {
         let tmp = tempfile::TempDir::new().unwrap();
         let mgr = make_test_manager(tmp.path());
         let app = test_router(mgr);
@@ -522,7 +512,7 @@ mod tests {
             Some(r#"{"vcpus": 4}"#),
         )
         .await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
     }
 
     // -- POST /v1/compute/vms (create) — bad request ---------------------------
@@ -631,6 +621,7 @@ mod tests {
             phase: crate::phase::VmPhase::Running,
             vcpus: 4,
             memory_mb: 8192,
+            image: Some("ubuntu-24.04".to_string()),
             created_at: Some(1700000000),
             uptime_secs: Some(3600),
         };
@@ -650,6 +641,7 @@ mod tests {
             phase: crate::phase::VmPhase::Pending,
             vcpus: 1,
             memory_mb: 512,
+            image: None,
             created_at: None,
             uptime_secs: None,
         };

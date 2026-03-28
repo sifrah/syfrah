@@ -48,7 +48,11 @@ pub enum ImageCommand {
         yes: bool,
     },
     /// Show remote image catalog
-    Catalog,
+    Catalog {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Execute an image subcommand.
@@ -59,7 +63,7 @@ pub async fn run(cmd: ImageCommand) -> anyhow::Result<()> {
         ImageCommand::Pull { name } => run_pull(name).await,
         ImageCommand::Import { path, name, arch } => run_import(path, name, arch).await,
         ImageCommand::Delete { name, yes } => run_delete(name, yes).await,
-        ImageCommand::Catalog => run_catalog().await,
+        ImageCommand::Catalog { json } => run_catalog(json).await,
     }
 }
 
@@ -82,7 +86,11 @@ async fn run_list(json: bool) -> anyhow::Result<()> {
     let req = ComputeRequest::ImageList;
     let resp = send_compute_request(&control_socket_path(), &req)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"
+            )
+        })?;
 
     match resp {
         ComputeResponse::ImageList(images) => {
@@ -129,7 +137,11 @@ async fn run_inspect(name: String) -> anyhow::Result<()> {
     let req = ComputeRequest::ImageInspect { name };
     let resp = send_compute_request(&control_socket_path(), &req)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"
+            )
+        })?;
 
     match resp {
         ComputeResponse::ImageMeta(v) => {
@@ -150,7 +162,11 @@ async fn run_pull(name: String) -> anyhow::Result<()> {
     let req = ComputeRequest::ImagePull { name: name.clone() };
     let resp = send_compute_request(&control_socket_path(), &req)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"
+            )
+        })?;
 
     match resp {
         ComputeResponse::ImageMeta(_) => {
@@ -174,7 +190,11 @@ async fn run_import(path: PathBuf, name: String, arch: String) -> anyhow::Result
     };
     let resp = send_compute_request(&control_socket_path(), &req)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"
+            )
+        })?;
 
     match resp {
         ComputeResponse::ImageMeta(v) => {
@@ -192,11 +212,26 @@ async fn run_import(path: PathBuf, name: String, arch: String) -> anyhow::Result
     }
 }
 
-async fn run_delete(name: String, _yes: bool) -> anyhow::Result<()> {
+async fn run_delete(name: String, yes: bool) -> anyhow::Result<()> {
+    if !yes {
+        eprint!("Delete image {name}? This cannot be undone. [y/N] ");
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        let answer = answer.trim();
+        if answer != "y" && answer != "Y" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
     let req = ComputeRequest::ImageDelete { name: name.clone() };
     let resp = send_compute_request(&control_socket_path(), &req)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"
+            )
+        })?;
 
     match resp {
         ComputeResponse::Ok => {
@@ -212,14 +247,22 @@ async fn run_delete(name: String, _yes: bool) -> anyhow::Result<()> {
     }
 }
 
-async fn run_catalog() -> anyhow::Result<()> {
+async fn run_catalog(json: bool) -> anyhow::Result<()> {
     let req = ComputeRequest::ImageCatalog;
     let resp = send_compute_request(&control_socket_path(), &req)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"
+            )
+        })?;
 
     match resp {
         ComputeResponse::ImageCatalog(v) => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+                return Ok(());
+            }
             let images = v.get("images").and_then(|i| i.as_array());
             match images {
                 Some(images) => {
@@ -367,6 +410,12 @@ mod tests {
     #[test]
     fn parse_catalog() {
         let cmd = parse(&["catalog"]);
-        assert!(matches!(cmd, ImageCommand::Catalog));
+        assert!(matches!(cmd, ImageCommand::Catalog { json: false }));
+    }
+
+    #[test]
+    fn parse_catalog_json() {
+        let cmd = parse(&["catalog", "--json"]);
+        assert!(matches!(cmd, ImageCommand::Catalog { json: true }));
     }
 }

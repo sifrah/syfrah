@@ -383,7 +383,7 @@ syfrah compute vm create --name web-1 --image ubuntu-24.10 \
 
 # With GPU passthrough
 syfrah compute vm create --name gpu-1 --image ubuntu-24.10 \
-    --vcpu 8 --memory 32768 --gpu-bdf 0000:01:00.0
+    --vcpu 8 --memory 32768 --gpu 0000:01:00.0
 ```
 
 ---
