@@ -18,7 +18,8 @@ start_peering "e2e-zdef-1"
 join_mesh "e2e-zdef-2" "172.20.0.10" "172.20.0.11" "node-2"
 join_mesh "e2e-zdef-3" "172.20.0.10" "172.20.0.12" "node-3"
 
-sleep 3
+# Wait for peer convergence instead of fixed sleep
+wait_for_peer_active "e2e-zdef-1" 2 30
 
 # Node-1 should have default region and zone-1
 status1=$(docker exec "e2e-zdef-1" syfrah fabric status 2>&1)

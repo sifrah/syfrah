@@ -212,6 +212,10 @@ assert_interface_exists() {
 assert_can_ping() {
     local from="$1"
     local ipv6="$2"
+    if [ -z "$ipv6" ]; then
+        fail "$from cannot ping (empty IPv6 address)"
+        return
+    fi
     if docker exec "$from" ping -6 -c 1 -W 3 "$ipv6" >/dev/null 2>&1; then
         pass "$from can ping $ipv6"
     else
@@ -220,8 +224,21 @@ assert_can_ping() {
 }
 
 # Get the mesh IPv6 of a container. Args: <container>
+# Retries up to 5 times (1s apart) if the result is empty.
 get_mesh_ipv6() {
-    docker exec "$1" syfrah fabric status 2>&1 | grep "Mesh IPv6" | awk '{print $NF}'
+    local container="$1"
+    local ipv6=""
+    for _attempt in $(seq 1 5); do
+        ipv6=$(docker exec "$container" syfrah fabric status 2>&1 | grep "Mesh IPv6" | awk '{print $NF}' || echo "")
+        if [ -n "$ipv6" ]; then
+            echo "$ipv6"
+            return 0
+        fi
+        sleep 1
+    done
+    echo ""
+    fail "get_mesh_ipv6: could not get mesh IPv6 for $container after 5 attempts"
+    return 1
 }
 
 # Assert syfrah0 interface does NOT exist. Args: <container>
@@ -273,6 +290,10 @@ unblock_traffic() {
 assert_cannot_ping() {
     local from="$1"
     local ipv6="$2"
+    if [ -z "$ipv6" ]; then
+        fail "$from assert_cannot_ping called with empty IPv6 address"
+        return
+    fi
     if ! docker exec "$from" ping -6 -c 1 -W 2 "$ipv6" >/dev/null 2>&1; then
         pass "$from cannot ping $ipv6 (expected)"
     else
@@ -347,6 +368,26 @@ wait_for_convergence() {
             fi
         done
         if [ "$all_ok" = true ]; then
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
+# Wait for a single container to see at least min_count active peers.
+# Args: <container> <min_count> <timeout>
+wait_for_peer_active() {
+    local container="$1"
+    local min_count="$2"
+    local timeout="${3:-30}"
+    local deadline=$(($(date +%s) + timeout))
+
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        local actual
+        actual=$(docker exec "$container" syfrah fabric peers 2>&1 | grep -c "active" || echo "0")
+        actual=$(echo "$actual" | tr -d '[:space:]')
+        if [ "$actual" -ge "$min_count" ] 2>/dev/null; then
             return 0
         fi
         sleep 2
@@ -511,8 +552,12 @@ assert_command_suggests() {
 assert_consistent_region() {
     local container="$1"
     local status_region peers_region
-    status_region=$(docker exec "$container" syfrah fabric status 2>&1 | grep -i region | awk '{print $2}')
-    peers_region=$(docker exec "$container" syfrah fabric peers 2>&1 | tail -n +3 | head -1 | awk '{print $2}')
+    status_region=$(docker exec "$container" syfrah fabric status 2>&1 | grep -i region | awk '{print $2}' || echo "")
+    peers_region=$(docker exec "$container" syfrah fabric peers 2>&1 | tail -n +3 | head -1 | awk '{print $2}' || echo "")
+    if [ -z "$status_region" ] && [ -z "$peers_region" ]; then
+        fail "$container: could not extract region from status or peers"
+        return
+    fi
     if [ "$status_region" = "$peers_region" ]; then
         pass "$container: region consistent (status=peers=$status_region)"
     else
@@ -525,9 +570,9 @@ assert_consistent_region() {
 assert_consistent_peer_count() {
     local container="$1"
     local status_count peers_count
-    peers_count=$(docker exec "$container" syfrah fabric peers 2>&1 | tail -n +3 | grep -c "active\|unreach" || echo 0)
+    peers_count=$(docker exec "$container" syfrah fabric peers 2>&1 | tail -n +3 | grep -c "active\|unreach" || echo "0")
     # status should show same number
-    status_count=$(docker exec "$container" syfrah fabric status 2>&1 | grep -i "peer" | grep -oE "[0-9]+" | head -1)
+    status_count=$(docker exec "$container" syfrah fabric status 2>&1 | grep -i "peer" | grep -oE "[0-9]+" | head -1 || echo "0")
     if [ "$peers_count" = "$status_count" ]; then
         pass "$container: peer count consistent ($peers_count)"
     else

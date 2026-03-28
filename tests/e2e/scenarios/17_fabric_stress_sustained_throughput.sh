@@ -16,14 +16,18 @@ init_mesh "e2e-stp-1" "172.20.0.10" "node-1"
 start_peering "e2e-stp-1"
 join_mesh "e2e-stp-2" "172.20.0.10" "172.20.0.11" "node-2"
 
-sleep 3
+# Wait for peer convergence instead of fixed sleep
+wait_for_peer_active "e2e-stp-1" 1 30
 
 ipv6_2=$(get_mesh_ipv6 "e2e-stp-2")
+if [ -z "$ipv6_2" ]; then
+    fail "could not get mesh IPv6 for e2e-stp-2"
+fi
 
 # Transfer 1: 100MB bulk transfer
 info "Transfer 1: 100MB bulk..."
 docker exec -d "e2e-stp-2" bash -c "ncat -6 -l '$ipv6_2' 9999 > /tmp/received"
-sleep 1
+sleep 2
 
 START_TIME=$(date +%s)
 docker exec "e2e-stp-1" bash -c \
@@ -42,7 +46,8 @@ else
 fi
 
 # Verify received size
-RECEIVED=$(docker exec "e2e-stp-2" wc -c /tmp/received 2>/dev/null | awk '{print $1}')
+RECEIVED=$(docker exec "e2e-stp-2" wc -c /tmp/received 2>/dev/null | awk '{print $1}' || echo "0")
+RECEIVED=${RECEIVED:-0}
 EXPECTED=$((100 * 1024 * 1024))
 if [ "$RECEIVED" = "$EXPECTED" ]; then
     pass "receiver got all 100MB ($RECEIVED bytes)"

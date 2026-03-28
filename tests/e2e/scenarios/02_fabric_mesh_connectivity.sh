@@ -26,12 +26,16 @@ ipv6_1=$(get_mesh_ipv6 "e2e-ping-1")
 ipv6_2=$(get_mesh_ipv6 "e2e-ping-2")
 ipv6_3=$(get_mesh_ipv6 "e2e-ping-3")
 
-assert_can_ping "e2e-ping-1" "$ipv6_2"
-assert_can_ping "e2e-ping-1" "$ipv6_3"
-assert_can_ping "e2e-ping-2" "$ipv6_1"
-assert_can_ping "e2e-ping-2" "$ipv6_3"
-assert_can_ping "e2e-ping-3" "$ipv6_1"
-assert_can_ping "e2e-ping-3" "$ipv6_2"
+if [ -z "$ipv6_1" ] || [ -z "$ipv6_2" ] || [ -z "$ipv6_3" ]; then
+    fail "could not get mesh IPv6 (ipv6_1=$ipv6_1, ipv6_2=$ipv6_2, ipv6_3=$ipv6_3)"
+else
+    assert_can_ping "e2e-ping-1" "$ipv6_2"
+    assert_can_ping "e2e-ping-1" "$ipv6_3"
+    assert_can_ping "e2e-ping-2" "$ipv6_1"
+    assert_can_ping "e2e-ping-2" "$ipv6_3"
+    assert_can_ping "e2e-ping-3" "$ipv6_1"
+    assert_can_ping "e2e-ping-3" "$ipv6_2"
+fi
 
 cleanup
 summary

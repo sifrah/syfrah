@@ -58,7 +58,11 @@ assert_interface_exists "e2e-pid-1"
 # Connectivity restored — wait for peer to converge after restart
 wait_for_convergence "e2e-pid-" 2 1 30 || true
 ipv6_2=$(get_mesh_ipv6 "e2e-pid-2")
-assert_can_ping "e2e-pid-1" "$ipv6_2"
+if [ -n "$ipv6_2" ]; then
+    assert_can_ping "e2e-pid-1" "$ipv6_2"
+else
+    fail "could not get mesh IPv6 for e2e-pid-2"
+fi
 
 cleanup
 summary

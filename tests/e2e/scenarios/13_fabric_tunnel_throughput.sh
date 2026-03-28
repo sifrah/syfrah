@@ -15,14 +15,18 @@ init_mesh "e2e-tp-1" "172.20.0.10" "node-1"
 start_peering "e2e-tp-1"
 join_mesh "e2e-tp-2" "172.20.0.10" "172.20.0.11" "node-2"
 
-sleep 3
+# Wait for peer convergence instead of fixed sleep
+wait_for_peer_active "e2e-tp-1" 1 30
 
 ipv6_2=$(get_mesh_ipv6 "e2e-tp-2")
+if [ -z "$ipv6_2" ]; then
+    fail "could not get mesh IPv6 for e2e-tp-2"
+fi
 
 # Start receiver on node-2 (listen on mesh IPv6, port 9999)
 info "Starting receiver on node-2..."
 docker exec -d "e2e-tp-2" bash -c "ncat -6 -l '$ipv6_2' 9999 > /dev/null"
-sleep 1
+sleep 2
 
 # Send 20MB through the WireGuard tunnel
 info "Sending 20MB through WireGuard tunnel..."
@@ -44,7 +48,7 @@ fi
 
 # Also verify ping latency
 info "Measuring ping latency..."
-avg_ms=$(docker exec "e2e-tp-1" ping -6 -c 5 -q "$ipv6_2" 2>&1 | grep "avg" | awk -F'/' '{print $5}')
+avg_ms=$(docker exec "e2e-tp-1" ping -6 -c 5 -q "$ipv6_2" 2>&1 | grep "avg" | awk -F'/' '{print $5}' || echo "")
 if [ -n "$avg_ms" ]; then
     pass "average RTT: ${avg_ms}ms"
 else

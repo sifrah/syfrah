@@ -39,7 +39,8 @@ for cycle in $(seq 1 $CYCLES); do
         --pin "$E2E_PIN"
     wait_daemon "e2e-churn-3" 20 || true
 
-    sleep 3
+    # Wait for peer convergence instead of fixed sleep
+    wait_for_peer_active "e2e-churn-1" 2 20 || true
 
     info "Cycle $cycle/$CYCLES: leaving..."
 
@@ -65,7 +66,8 @@ docker exec -d "e2e-churn-2" \
     --pin "$E2E_PIN"
 wait_daemon "e2e-churn-2" 20
 
-sleep 3
+# Wait for peer convergence instead of fixed sleep
+wait_for_peer_active "e2e-churn-1" 1 30
 
 # Stable node still alive
 assert_daemon_running "e2e-churn-1"
@@ -75,7 +77,11 @@ assert_interface_exists "e2e-churn-2"
 
 # Connectivity
 ipv6_2=$(get_mesh_ipv6 "e2e-churn-2")
-assert_can_ping "e2e-churn-1" "$ipv6_2"
+if [ -n "$ipv6_2" ]; then
+    assert_can_ping "e2e-churn-1" "$ipv6_2"
+else
+    fail "could not get mesh IPv6 for e2e-churn-2"
+fi
 
 # No zombie syfrah processes on churning nodes
 zombie_count=$(docker exec "e2e-churn-2" pgrep -c -f syfrah 2>/dev/null || echo "0")

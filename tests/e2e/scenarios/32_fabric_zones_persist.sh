@@ -21,8 +21,10 @@ docker exec -d "e2e-zper-1" \
 wait_daemon "e2e-zper-1"
 
 # Verify zone is set
-z_before=$(docker exec "e2e-zper-1" syfrah fabric status 2>&1 | grep -i "Zone:" | awk '{print $NF}')
-if [ "$z_before" = "my-region-zone-42" ]; then
+z_before=$(docker exec "e2e-zper-1" syfrah fabric status 2>&1 | grep -i "Zone:" | awk '{print $NF}' || echo "")
+if [ -z "$z_before" ]; then
+    fail "could not extract zone before restart"
+elif [ "$z_before" = "my-region-zone-42" ]; then
     pass "zone set before restart: $z_before"
 else
     fail "zone before restart: $z_before"
@@ -36,8 +38,10 @@ docker exec -d "e2e-zper-1" syfrah fabric start
 wait_daemon "e2e-zper-1"
 
 # Verify zone survived restart
-z_after=$(docker exec "e2e-zper-1" syfrah fabric status 2>&1 | grep -i "Zone:" | awk '{print $NF}')
-if [ "$z_after" = "my-region-zone-42" ]; then
+z_after=$(docker exec "e2e-zper-1" syfrah fabric status 2>&1 | grep -i "Zone:" | awk '{print $NF}' || echo "")
+if [ -z "$z_after" ]; then
+    fail "could not extract zone after restart"
+elif [ "$z_after" = "my-region-zone-42" ]; then
     pass "zone preserved after restart: $z_after"
 else
     fail "zone after restart: $z_after (expected my-region-zone-42)"

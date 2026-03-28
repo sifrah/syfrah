@@ -18,7 +18,8 @@ start_peering "e2e-rekey-1"
 join_mesh "e2e-rekey-2" "172.20.0.10" "172.20.0.11" "node-2"
 join_mesh "e2e-rekey-3" "172.20.0.10" "172.20.0.12" "node-3"
 
-sleep 3
+# Wait for peer convergence instead of fixed sleep
+wait_for_peer_active "e2e-rekey-1" 2 30
 assert_peer_count "e2e-rekey-1" 2
 
 # Record node-3's original WG key
@@ -49,8 +50,12 @@ sleep 5
 # Verify connectivity with new key
 ipv6_3=$(get_mesh_ipv6 "e2e-rekey-3")
 ipv6_1=$(get_mesh_ipv6 "e2e-rekey-1")
-assert_can_ping "e2e-rekey-1" "$ipv6_3"
-assert_can_ping "e2e-rekey-3" "$ipv6_1"
+if [ -n "$ipv6_3" ] && [ -n "$ipv6_1" ]; then
+    assert_can_ping "e2e-rekey-1" "$ipv6_3"
+    assert_can_ping "e2e-rekey-3" "$ipv6_1"
+else
+    fail "could not get mesh IPv6 (ipv6_1=$ipv6_1, ipv6_3=$ipv6_3)"
+fi
 
 cleanup
 summary

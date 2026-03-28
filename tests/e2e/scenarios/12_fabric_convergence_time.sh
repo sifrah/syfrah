@@ -43,7 +43,11 @@ fi
 
 # Spot check connectivity
 ipv6_10=$(get_mesh_ipv6 "e2e-conv-10")
-assert_can_ping "e2e-conv-1" "$ipv6_10"
+if [ -n "$ipv6_10" ]; then
+    assert_can_ping "e2e-conv-1" "$ipv6_10"
+else
+    fail "could not get mesh IPv6 for e2e-conv-10"
+fi
 
 cleanup
 summary

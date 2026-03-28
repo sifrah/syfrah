@@ -20,7 +20,8 @@ for i in $(seq 2 6); do
     sleep 1
 done
 
-sleep 5
+# Wait for peer convergence instead of fixed sleep
+wait_for_peer_active "e2e-down-1" 5 30
 assert_peer_count "e2e-down-1" 5
 
 # Kill nodes 4, 5, 6 abruptly
@@ -42,9 +43,13 @@ assert_daemon_running "e2e-down-3"
 # Remaining nodes can still talk to each other
 ipv6_2=$(get_mesh_ipv6 "e2e-down-2")
 ipv6_3=$(get_mesh_ipv6 "e2e-down-3")
-assert_can_ping "e2e-down-1" "$ipv6_2"
-assert_can_ping "e2e-down-1" "$ipv6_3"
-assert_can_ping "e2e-down-2" "$ipv6_3"
+if [ -n "$ipv6_2" ] && [ -n "$ipv6_3" ]; then
+    assert_can_ping "e2e-down-1" "$ipv6_2"
+    assert_can_ping "e2e-down-1" "$ipv6_3"
+    assert_can_ping "e2e-down-2" "$ipv6_3"
+else
+    fail "could not get mesh IPv6 (ipv6_2=$ipv6_2, ipv6_3=$ipv6_3)"
+fi
 
 # State files still valid
 assert_state_exists "e2e-down-1"

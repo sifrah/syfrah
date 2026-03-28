@@ -64,13 +64,21 @@ fi
 # Full connectivity spot check (first <-> last)
 ipv6_first=$(get_mesh_ipv6 "e2e-flood-1")
 ipv6_last=$(get_mesh_ipv6 "e2e-flood-$NODE_COUNT")
-assert_can_ping "e2e-flood-1" "$ipv6_last"
-assert_can_ping "e2e-flood-$NODE_COUNT" "$ipv6_first"
+if [ -n "$ipv6_first" ] && [ -n "$ipv6_last" ]; then
+    assert_can_ping "e2e-flood-1" "$ipv6_last"
+    assert_can_ping "e2e-flood-$NODE_COUNT" "$ipv6_first"
+else
+    fail "could not get mesh IPv6 (ipv6_first=$ipv6_first, ipv6_last=$ipv6_last)"
+fi
 
 # Mid-mesh connectivity (node-6 <-> node-7)
 ipv6_6=$(get_mesh_ipv6 "e2e-flood-6")
 ipv6_7=$(get_mesh_ipv6 "e2e-flood-7")
-assert_can_ping "e2e-flood-6" "$ipv6_7"
+if [ -n "$ipv6_6" ] && [ -n "$ipv6_7" ]; then
+    assert_can_ping "e2e-flood-6" "$ipv6_7"
+else
+    fail "could not get mesh IPv6 for mid-mesh check"
+fi
 
 TOTAL_TIME=$(($(date +%s) - START_TIME))
 info "Total test time: ${TOTAL_TIME}s (join: ${JOIN_TIME}s, converge: ${CONVERGE_TIME}s)"
