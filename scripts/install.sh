@@ -2,7 +2,7 @@
 # Install script for syfrah — downloads the latest release binary.
 set -eu
 
-REPO="sifrah/syfrah"
+REPO="sacha-ops/syfrah"
 BIN="syfrah"
 INSTALL_DIR="/usr/local/bin"
 CHANNEL="stable"

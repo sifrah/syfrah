@@ -1,7 +1,7 @@
 # Syfrah
 
-[![CI](https://github.com/sifrah/syfrah/actions/workflows/ci.yml/badge.svg)](https://github.com/sifrah/syfrah/actions/workflows/ci.yml)
-[![E2E Tests](https://github.com/sifrah/syfrah/actions/workflows/e2e.yml/badge.svg)](https://github.com/sifrah/syfrah/actions/workflows/e2e.yml)
+[![CI](https://github.com/sacha-ops/syfrah/actions/workflows/ci.yml/badge.svg)](https://github.com/sacha-ops/syfrah/actions/workflows/ci.yml)
+[![E2E Tests](https://github.com/sacha-ops/syfrah/actions/workflows/e2e.yml/badge.svg)](https://github.com/sacha-ops/syfrah/actions/workflows/e2e.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 An open-source WireGuard mesh networking tool for dedicated servers.
@@ -36,7 +36,7 @@ The long-term vision is to grow Syfrah into a full control plane that orchestrat
 ### Pre-compiled binary (Linux / macOS)
 
 ```bash
-curl -fsSL https://github.com/sifrah/syfrah/releases/latest/download/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/sacha-ops/syfrah/main/scripts/install.sh | sh
 ```
 
 ### From crates.io
@@ -48,7 +48,7 @@ cargo install syfrah
 ### From source
 
 ```bash
-git clone https://github.com/sifrah/syfrah.git
+git clone https://github.com/sacha-ops/syfrah.git
 cd syfrah
 cargo build --release
 # Binary is at target/release/syfrah
@@ -61,7 +61,7 @@ Requires Rust stable (version pinned in [rust-toolchain.toml](rust-toolchain.tom
 To install the latest beta (built from `main`, pre-release, may contain breaking changes):
 
 ```bash
-curl -fsSL https://github.com/sifrah/syfrah/releases/latest/download/install.sh | sh -s -- --beta
+curl -fsSL https://raw.githubusercontent.com/sacha-ops/syfrah/main/scripts/install.sh | sh -s -- --beta
 syfrah --version   # verify the installed version
 ```
 
