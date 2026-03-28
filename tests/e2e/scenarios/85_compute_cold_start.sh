@@ -101,8 +101,8 @@ fi
 
 # Step 5: Create a VM with the pulled image (KVM-aware)
 info "Step 5: Create VM with pulled image"
-CREATE_OUTPUT=$(docker exec "$node" syfrah compute vm create --name cold-test --image alpine-3.20 --vcpus 1 --memory 256 2>&1)
-CREATE_RC=$?
+CREATE_OUTPUT=$(docker exec "$node" syfrah compute vm create --name cold-test --image alpine-3.20 --vcpus 1 --memory 256 2>&1) || CREATE_RC=$?
+CREATE_RC=${CREATE_RC:-0}
 
 if docker exec "$node" test -e /dev/kvm 2>/dev/null; then
     # KVM available — VM should reach Running

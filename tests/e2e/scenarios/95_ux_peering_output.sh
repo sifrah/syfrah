@@ -24,7 +24,7 @@ start_peering "e2e-ux-peer-1"
 # in E2E we verify via the join side that PIN-based peering works
 join_mesh "e2e-ux-peer-2" "172.20.0.10" "172.20.0.11" "peer-node-2"
 
-sleep 3
+wait_for_peer_active "e2e-ux-peer-1" 1 30
 
 # Test 2: Verify peering resulted in working mesh
 info "Testing: peering resulted in connected mesh..."
