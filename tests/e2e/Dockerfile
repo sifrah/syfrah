@@ -25,9 +25,23 @@ COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/syfrah /usr/lo
 # Install fake cloud-hypervisor for compute E2E scenarios.
 # The Python script simulates the CH API socket so that the compute layer
 # can be tested end-to-end without KVM.
-RUN apt-get update && apt-get install -y python3 && rm -rf /var/lib/apt/lists/*
-COPY tests/e2e/fake-cloud-hypervisor.py /usr/local/lib/syfrah/cloud-hypervisor
-RUN chmod +x /usr/local/lib/syfrah/cloud-hypervisor
+# Install Python for the fake cloud-hypervisor and gcc for compiling the wrapper.
+RUN apt-get update && apt-get install -y python3 gcc && rm -rf /var/lib/apt/lists/*
+COPY tests/e2e/fake-cloud-hypervisor.py /usr/local/lib/syfrah/fake-ch.py
+
+# Build a minimal C wrapper that execs the Python script.
+# This avoids issues with shebang handling from musl static binaries.
+RUN echo '#include <unistd.h>\n\
+int main(int argc, char *argv[]) {\n\
+    char *args[64] = {"/usr/bin/python3", "/usr/local/lib/syfrah/fake-ch.py"};\n\
+    int i;\n\
+    for (i = 1; i < argc && i < 62; i++) args[i+1] = argv[i];\n\
+    args[i+1] = 0;\n\
+    execv("/usr/bin/python3", args);\n\
+    return 1;\n\
+}' > /tmp/ch-wrapper.c && \
+    gcc -o /usr/local/lib/syfrah/cloud-hypervisor /tmp/ch-wrapper.c && \
+    rm /tmp/ch-wrapper.c
 
 # Create stub kernel and image files for compute preflight checks.
 # These are never actually booted — the fake-cloud-hypervisor.py handles
