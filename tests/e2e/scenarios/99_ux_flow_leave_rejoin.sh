@@ -18,7 +18,8 @@ init_mesh "e2e-flow-lr-1" "172.20.0.10" "lr-server-1"
 start_peering "e2e-flow-lr-1"
 join_mesh "e2e-flow-lr-2" "172.20.0.10" "172.20.0.11" "lr-server-2"
 
-sleep 5
+wait_for_peer_active "e2e-flow-lr-1" 1 30
+wait_for_peer_active "e2e-flow-lr-2" 1 30
 assert_peer_count "e2e-flow-lr-1" 1
 assert_peer_count "e2e-flow-lr-2" 1
 
@@ -42,7 +43,8 @@ info "Step 3: Server 2 rejoins..."
 start_peering "e2e-flow-lr-1"
 join_mesh "e2e-flow-lr-2" "172.20.0.10" "172.20.0.11" "lr-server-2"
 
-sleep 5
+wait_for_peer_active "e2e-flow-lr-1" 1 30
+wait_for_peer_active "e2e-flow-lr-2" 1 30
 
 # Step 4: Both nodes see each other after rejoin
 info "Step 4: Peers visible after rejoin..."

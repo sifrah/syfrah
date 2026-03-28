@@ -21,7 +21,7 @@ join_mesh "e2e-flow-churn-2" "172.20.0.10" "172.20.0.11" "churn-srv-2"
 sleep 3
 join_mesh "e2e-flow-churn-3" "172.20.0.10" "172.20.0.12" "churn-srv-3"
 
-sleep 5
+wait_for_peer_active "e2e-flow-churn-1" 2 30
 
 info "Verifying initial mesh..."
 if wait_for_convergence "e2e-flow-churn-" 3 2 60; then
@@ -34,12 +34,12 @@ fi
 for round in 1 2 3; do
     info "Churn round $round: server-3 leaves..."
     docker exec "e2e-flow-churn-3" syfrah fabric leave --yes 2>&1 || true
-    sleep 3
+    sleep 2
 
     info "Churn round $round: server-3 rejoins..."
     start_peering "e2e-flow-churn-1"
     join_mesh "e2e-flow-churn-3" "172.20.0.10" "172.20.0.12" "churn-srv-3"
-    sleep 5
+    wait_for_peer_active "e2e-flow-churn-3" 1 30
 
     # Quick check: node 3 sees at least 1 peer after rejoin
     actual=$(docker exec "e2e-flow-churn-3" syfrah fabric peers 2>&1 | grep -c "active" || echo "0")

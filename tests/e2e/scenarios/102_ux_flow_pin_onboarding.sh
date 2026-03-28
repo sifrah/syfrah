@@ -33,7 +33,8 @@ echo "$output_join" | grep -qi "joined\|approved\|accepted" || fail "PIN join: n
 pass "PIN join: automatic approval (no interaction)"
 
 wait_daemon "e2e-flow-pin-2" 30
-sleep 5
+wait_for_peer_active "e2e-flow-pin-1" 1 30
+wait_for_peer_active "e2e-flow-pin-2" 1 30
 
 # Step 4: Both nodes see each other
 info "Step 4: Verify mesh formed..."
