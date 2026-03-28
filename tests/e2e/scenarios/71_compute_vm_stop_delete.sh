@@ -60,7 +60,7 @@ sleep 2
 # ── Verify VM gone from list ────────────────────────────────────
 
 LIST_OUTPUT=$(list_vms "e2e-compute-stopdel")
-if echo "$LIST_OUTPUT" | jq -e '.[] | select(.name == "test-vm-sd")' >/dev/null 2>&1; then
+if echo "$LIST_OUTPUT" | jq -e '.[] | select(.id == "test-vm-sd")' >/dev/null 2>&1; then
     fail "VM test-vm-sd still in list after delete"
 else
     pass "VM test-vm-sd removed from list"
