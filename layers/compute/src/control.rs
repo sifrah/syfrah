@@ -140,6 +140,19 @@ impl LayerHandler for ComputeLayerHandler {
     }
 }
 
+/// Fetch the image catalog using the manager's configured URL, cache path, and pull policy.
+///
+/// Extracted as a helper to avoid duplicating the fetch_catalog call between
+/// ImagePull and ImageCatalog handlers.
+async fn fetch_catalog_for(
+    mgr: &VmManager,
+) -> Result<crate::image::types::ImageCatalog, crate::image::error::ImageError> {
+    let catalog_url = mgr.catalog_url().to_string();
+    let cache_path = mgr.cache_path().to_path_buf();
+    let pull_policy = mgr.pull_policy();
+    crate::image::catalog::fetch_catalog(&catalog_url, &cache_path, pull_policy).await
+}
+
 async fn handle_compute_request(mgr: &VmManager, req: ComputeRequest) -> ComputeResponse {
     match req {
         ComputeRequest::CreateVm {
@@ -257,22 +270,16 @@ async fn handle_compute_request(mgr: &VmManager, req: ComputeRequest) -> Compute
             Ok(None) => ComputeResponse::Error(format!("image not found: {name}")),
             Err(e) => ComputeResponse::Error(e.to_string()),
         },
-        ComputeRequest::ImagePull { name } => {
-            let catalog_url = mgr.catalog_url().to_string();
-            let cache_path = mgr.cache_path().to_path_buf();
-            let pull_policy = mgr.pull_policy();
-            match crate::image::catalog::fetch_catalog(&catalog_url, &cache_path, pull_policy).await
-            {
-                Ok(catalog) => {
-                    match crate::image::pull::pull(mgr.image_store(), &name, &catalog).await {
-                        Ok(meta) => ComputeResponse::ImageMeta(
-                            serde_json::to_value(meta).unwrap_or_default(),
-                        ),
-                        Err(e) => ComputeResponse::Error(e.to_string()),
-                    }
+        ComputeRequest::ImagePull { name } => match fetch_catalog_for(mgr).await {
+            Ok(catalog) => {
+                match crate::image::pull::pull(mgr.image_store(), &name, &catalog).await {
+                    Ok(meta) => ComputeResponse::ImageMeta(
+                        serde_json::to_value(meta).unwrap_or_default(),
+                    ),
+                    Err(e) => ComputeResponse::Error(e.to_string()),
                 }
-                Err(e) => ComputeResponse::Error(e.to_string()),
             }
+            Err(e) => ComputeResponse::Error(e.to_string()),
         }
         ComputeRequest::ImageImport { path, name, arch } => {
             match crate::image::import::import(mgr.image_store(), &path, &name, &arch) {
@@ -296,17 +303,11 @@ async fn handle_compute_request(mgr: &VmManager, req: ComputeRequest) -> Compute
                 Err(e) => ComputeResponse::Error(e.to_string()),
             }
         }
-        ComputeRequest::ImageCatalog => {
-            let catalog_url = mgr.catalog_url().to_string();
-            let cache_path = mgr.cache_path().to_path_buf();
-            let pull_policy = mgr.pull_policy();
-            match crate::image::catalog::fetch_catalog(&catalog_url, &cache_path, pull_policy).await
-            {
-                Ok(catalog) => {
-                    ComputeResponse::ImageCatalog(serde_json::to_value(catalog).unwrap_or_default())
-                }
-                Err(e) => ComputeResponse::Error(e.to_string()),
+        ComputeRequest::ImageCatalog => match fetch_catalog_for(mgr).await {
+            Ok(catalog) => {
+                ComputeResponse::ImageCatalog(serde_json::to_value(catalog).unwrap_or_default())
             }
+            Err(e) => ComputeResponse::Error(e.to_string()),
         }
     }
 }

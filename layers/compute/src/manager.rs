@@ -239,11 +239,6 @@ impl VmManager {
         &self.image_store
     }
 
-    /// Get a shared reference to the image store (Arc).
-    pub fn image_store_arc(&self) -> Arc<ImageStore> {
-        Arc::clone(&self.image_store)
-    }
-
     /// Get the configured catalog URL.
     pub fn catalog_url(&self) -> &str {
         &self.config.catalog_url

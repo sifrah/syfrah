@@ -8,6 +8,20 @@ use tracing::info;
 use super::error::ImageError;
 use super::types::{ImageCatalog, PullPolicy};
 
+/// Validate that a URL uses an allowed scheme (https:// or http:// only).
+///
+/// Rejects file://, ftp://, and any other scheme to prevent SSRF attacks
+/// where an operator might point at internal metadata endpoints.
+pub fn validate_url(url: &str) -> Result<(), ImageError> {
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return Err(ImageError::CatalogFetchFailed {
+            url: url.to_string(),
+            reason: "only https:// and http:// URLs are allowed".to_string(),
+        });
+    }
+    Ok(())
+}
+
 /// Fetch the image catalog from a remote URL with caching.
 ///
 /// Behavior depends on `policy`:
@@ -21,9 +35,12 @@ pub async fn fetch_catalog(
 ) -> Result<ImageCatalog, ImageError> {
     if url.is_empty() && !matches!(policy, PullPolicy::Never) {
         return Err(ImageError::CatalogFetchFailed {
-            url: String::new(),
+            url: "(not configured)".to_string(),
             reason: "No image catalog URL configured \u{2014} set [compute.images] catalog_url in ~/.syfrah/config.toml or use the default".to_string(),
         });
+    }
+    if !matches!(policy, PullPolicy::Never) {
+        validate_url(url)?;
     }
     match policy {
         PullPolicy::Never => read_cache(cache_path),
@@ -316,5 +333,73 @@ mod tests {
 
         let result = fetch_catalog(&url, &cache_path, PullPolicy::IfNotPresent).await;
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_url_accepts_https() {
+        assert!(validate_url("https://images.syfrah.dev/catalog.json").is_ok());
+    }
+
+    #[test]
+    fn validate_url_accepts_http() {
+        assert!(validate_url("http://localhost:8080/catalog.json").is_ok());
+    }
+
+    #[test]
+    fn validate_url_rejects_file() {
+        let result = validate_url("file:///etc/passwd");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("only https:// and http://"));
+    }
+
+    #[test]
+    fn validate_url_rejects_ftp() {
+        assert!(validate_url("ftp://evil.example.com/data").is_err());
+    }
+
+    #[test]
+    fn validate_url_rejects_empty() {
+        assert!(validate_url("").is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_catalog_rejects_file_url() {
+        let tmp = TempDir::new().unwrap();
+        let cache_path = tmp.path().join("catalog.json");
+
+        let result =
+            fetch_catalog("file:///etc/passwd", &cache_path, PullPolicy::Always).await;
+        assert!(matches!(result, Err(ImageError::CatalogFetchFailed { .. })));
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("only https:// and http://"));
+    }
+
+    #[tokio::test]
+    async fn fetch_catalog_never_skips_url_validation() {
+        let tmp = TempDir::new().unwrap();
+        let cache_path = tmp.path().join("catalog.json");
+        let catalog = sample_catalog();
+        fs::write(&cache_path, serde_json::to_string(&catalog).unwrap()).unwrap();
+
+        // PullPolicy::Never should still work even with a bad URL since it
+        // only reads from cache and skips URL validation
+        let result =
+            fetch_catalog("file:///etc/passwd", &cache_path, PullPolicy::Never).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn fetch_catalog_empty_url_shows_not_configured() {
+        let tmp = TempDir::new().unwrap();
+        let cache_path = tmp.path().join("catalog.json");
+
+        let result = fetch_catalog("", &cache_path, PullPolicy::Always).await;
+        match result {
+            Err(ImageError::CatalogFetchFailed { url, .. }) => {
+                assert_eq!(url, "(not configured)");
+            }
+            other => panic!("expected CatalogFetchFailed, got {other:?}"),
+        }
     }
 }
