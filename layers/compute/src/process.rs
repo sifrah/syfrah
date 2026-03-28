@@ -373,7 +373,7 @@ async fn spawn_vm_inner(
             reason: format!("failed to clone log file handle: {e}"),
         })?;
 
-    let child = std::process::Command::new(ch_binary)
+    let mut child = std::process::Command::new(ch_binary)
         .arg("--api-socket")
         .arg(&socket_path)
         .stdout(Stdio::from(log_file))
@@ -386,6 +386,22 @@ async fn spawn_vm_inner(
     let pid = child.id();
     // Internal event: Spawned
     info!(vm_id = %vm_id_str, pid = pid, "Spawned: cloud-hypervisor process started");
+
+    // Brief wait to let the child process initialize. If it exits immediately
+    // (e.g., bad binary), detect it early rather than waiting the full ping timeout.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    if let Some(exit_status) = child.try_wait().map_err(|e| ProcessError::SpawnFailed {
+        reason: format!("failed to check child status: {e}"),
+    })? {
+        return Err(ProcessError::SpawnFailed {
+            reason: format!(
+                "cloud-hypervisor exited immediately with status: {exit_status}"
+            ),
+        }
+        .into());
+    }
+    // Prevent Child::drop from interfering — we manage the process via PID.
+    std::mem::forget(child);
 
     // Get CH version (best-effort, non-blocking)
     let ch_version = get_ch_version(ch_binary).unwrap_or_else(|| "unknown".to_string());
