@@ -189,7 +189,7 @@ async fn run_create(
             let vm_image = v.get("image").and_then(|i| i.as_str()).unwrap_or("?");
             let vm_vcpus = v.get("vcpus").and_then(|c| c.as_u64()).unwrap_or(0);
             let vm_memory = v.get("memory").and_then(|m| m.as_u64()).unwrap_or(0);
-            println!("VM {vm_name} created ({vm_image}, {vm_vcpus} vCPU, {vm_memory} MB)");
+            println!("VM created: {vm_name} ({vm_image}, {vm_vcpus} vCPU, {vm_memory} MB)");
             if ssh_key.is_some() {
                 let mesh_ip = v
                     .get("mesh_ipv6")
