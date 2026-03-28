@@ -27,6 +27,10 @@ pub(crate) struct VmRuntimeState {
     pub(crate) cgroup_path: Option<PathBuf>,
     pub(crate) ch_binary_path: PathBuf,
     pub(crate) ch_binary_version: String,
+    /// Number of virtual CPUs allocated (from VmSpec).
+    pub(crate) vcpus: u32,
+    /// Memory allocation in megabytes (from VmSpec).
+    pub(crate) memory_mb: u32,
     /// Unix timestamp when the VM was launched.
     pub(crate) launched_at: u64,
     /// Unix timestamp of the last successful health-check ping.
@@ -53,8 +57,8 @@ impl VmRuntimeState {
         VmStatus {
             vm_id: self.vm_id.clone(),
             phase: self.current_phase,
-            vcpus: 0,     // TODO: populate from VmSpec once wired through
-            memory_mb: 0, // TODO: populate from VmSpec once wired through
+            vcpus: self.vcpus,
+            memory_mb: self.memory_mb,
             created_at: Some(self.launched_at),
             uptime_secs,
         }
@@ -73,6 +77,8 @@ mod tests {
             cgroup_path: Some(PathBuf::from("/sys/fs/cgroup/syfrah/vm-rt-1")),
             ch_binary_path: PathBuf::from("/usr/bin/cloud-hypervisor"),
             ch_binary_version: "38.0".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
             launched_at: 1_700_000_000,
             last_ping_at: Some(1_700_000_060),
             last_error: None,

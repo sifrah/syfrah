@@ -177,6 +177,12 @@ pub struct VmMeta {
     pub ch_binary: String,
     pub ch_version: String,
     pub spec_hash: String,
+    /// Number of virtual CPUs (persisted for reconnect).
+    #[serde(default)]
+    pub vcpus: u32,
+    /// Memory in megabytes (persisted for reconnect).
+    #[serde(default)]
+    pub memory_mb: u32,
 }
 
 /// Scan a base directory for runtime dirs that contain meta.json.
@@ -425,6 +431,8 @@ async fn spawn_vm_inner(
         ch_binary: ch_binary.to_string_lossy().into_owned(),
         ch_version: ch_version.clone(),
         spec_hash: compute_spec_hash(spec),
+        vcpus: spec.vcpus,
+        memory_mb: spec.memory_mb,
     };
     runtime_dir.write_meta(&meta)?;
 
@@ -502,6 +510,8 @@ async fn spawn_vm_inner(
         cgroup_path: None,
         ch_binary_path: ch_binary.to_path_buf(),
         ch_binary_version: ch_version,
+        vcpus: spec.vcpus,
+        memory_mb: spec.memory_mb,
         launched_at: now_unix(),
         last_ping_at: Some(now_unix()),
         last_error: None,
@@ -1029,6 +1039,8 @@ pub async fn reconnect(base_dir: &Path, event_tx: broadcast::Sender<VmEvent>) ->
             cgroup_path: None,
             ch_binary_path: PathBuf::from(&meta.ch_binary),
             ch_binary_version: meta.ch_version,
+            vcpus: meta.vcpus,
+            memory_mb: meta.memory_mb,
             launched_at: now_unix(),
             last_ping_at: Some(now_unix()),
             last_error: None,
@@ -1162,6 +1174,8 @@ mod tests {
             ch_binary: "/usr/local/lib/syfrah/cloud-hypervisor".to_string(),
             ch_version: "v43.0".to_string(),
             spec_hash: "hash:abc123".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
         };
 
         dir.write_meta(&meta).unwrap();
@@ -1182,6 +1196,8 @@ mod tests {
             ch_binary: "/bin/true".to_string(),
             ch_version: "v1.0".to_string(),
             spec_hash: "hash:0".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
         };
 
         dir.write_meta(&meta).unwrap();
@@ -1252,6 +1268,8 @@ mod tests {
             ch_binary: "/usr/bin/ch".to_string(),
             ch_version: "v42.0".to_string(),
             spec_hash: "hash:deadbeef".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
         };
         let json = serde_json::to_string(&meta).unwrap();
         let back: VmMeta = serde_json::from_str(&json).unwrap();
@@ -1274,6 +1292,8 @@ mod tests {
             ch_binary: "/bin/true".to_string(),
             ch_version: "v1".to_string(),
             spec_hash: "hash:0".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
         };
         dir1.write_meta(&meta).unwrap();
 
@@ -1370,6 +1390,8 @@ mod tests {
             cgroup_path: None,
             ch_binary_path: PathBuf::from("/bin/true"),
             ch_binary_version: "v1".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
             launched_at: 0,
             last_ping_at: None,
             last_error: None,
@@ -1397,6 +1419,8 @@ mod tests {
             cgroup_path: None,
             ch_binary_path: PathBuf::from("/bin/true"),
             ch_binary_version: "v1".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
             launched_at: 0,
             last_ping_at: None,
             last_error: None,
@@ -1424,6 +1448,8 @@ mod tests {
             cgroup_path: None,
             ch_binary_path: PathBuf::from("/bin/true"),
             ch_binary_version: "v1".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
             launched_at: 0,
             last_ping_at: None,
             last_error: None,
@@ -1453,6 +1479,8 @@ mod tests {
             cgroup_path: None,
             ch_binary_path: PathBuf::from("/bin/true"),
             ch_binary_version: "v1".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
             launched_at: 0,
             last_ping_at: None,
             last_error: None,
@@ -1483,6 +1511,8 @@ mod tests {
             ch_binary: "/bin/true".to_string(),
             ch_version: "v1".to_string(),
             spec_hash: "hash:0".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
         };
         dir1.write_meta(&meta).unwrap();
 
@@ -1516,6 +1546,8 @@ mod tests {
             ch_binary: "/bin/true".to_string(),
             ch_version: "v1".to_string(),
             spec_hash: "hash:0".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
         };
         dir.write_meta(&meta).unwrap();
 
@@ -1558,6 +1590,8 @@ mod tests {
             ch_binary: "/bin/true".to_string(),
             ch_version: "v1".to_string(),
             spec_hash: "hash:0".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
         };
         dir.write_meta(&meta).unwrap();
 
@@ -1646,6 +1680,8 @@ mod tests {
             cgroup_path: None,
             ch_binary_path: PathBuf::from("/bin/true"),
             ch_binary_version: "v1".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
             launched_at: 0,
             last_ping_at: None,
             last_error: None,
@@ -1741,6 +1777,8 @@ mod tests {
             ch_binary: "/bin/true".to_string(),
             ch_version: "v1".to_string(),
             spec_hash: "hash:aaa".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
         };
         dir.write_meta(&meta1).unwrap();
 
@@ -1775,6 +1813,8 @@ mod tests {
             cgroup_path: None,
             ch_binary_path: PathBuf::from("/bin/true"),
             ch_binary_version: "v1".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
             launched_at: 0,
             last_ping_at: None,
             last_error: None,
@@ -1805,6 +1845,8 @@ mod tests {
             ch_binary: "/bin/true".to_string(),
             ch_version: "v1".to_string(),
             spec_hash: "hash:0".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
         };
         dir.write_meta(&meta).unwrap();
         assert!(dir.meta_path().exists());
@@ -1818,6 +1860,8 @@ mod tests {
             cgroup_path: None,
             ch_binary_path: PathBuf::from("/bin/true"),
             ch_binary_version: "v1".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
             launched_at: 0,
             last_ping_at: None,
             last_error: None,
@@ -1854,6 +1898,8 @@ mod tests {
             ch_binary: "/bin/true".to_string(),
             ch_version: "v1".to_string(),
             spec_hash: "hash:0".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
         };
         dir1.write_meta(&meta1).unwrap();
 
@@ -1926,6 +1972,8 @@ mod tests {
             cgroup_path: None,
             ch_binary_path: PathBuf::from("/bin/true"),
             ch_binary_version: "v1".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
             launched_at: 0,
             last_ping_at: None,
             last_error: None,
