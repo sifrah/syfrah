@@ -198,6 +198,40 @@ jobs:
             echo "No SHA256 checksum file available — skipping verification"
           fi
 
+      - name: Download kernel (Linux only)
+        if: contains(matrix.target, 'linux')
+        run: |
+          set -euo pipefail
+          KERNEL_VERSION=$(cat SYFRAH_KERNEL_VERSION | tr -d '[:space:]')
+          echo "Kernel version: ${KERNEL_VERSION}"
+
+          if [ "$KERNEL_VERSION" = "latest" ]; then
+            KERNEL_URL="https://github.com/sacha-ops/syfrah-images/releases/latest/download/vmlinux.gz"
+          else
+            KERNEL_URL="https://github.com/sacha-ops/syfrah-images/releases/download/${KERNEL_VERSION}/vmlinux.gz"
+          fi
+
+          echo "Downloading kernel from ${KERNEL_URL}"
+          if ! curl -fsSL -o "/tmp/vmlinux.gz" "${KERNEL_URL}"; then
+            echo "::error::Failed to download kernel from ${KERNEL_URL}"
+            echo "::error::The syfrah-images repo may not have published a release yet."
+            echo "::error::Publish a release at https://github.com/sacha-ops/syfrah-images/releases"
+            exit 1
+          fi
+
+          echo "Decompressing kernel..."
+          gunzip -f /tmp/vmlinux.gz
+
+          echo "Validating kernel is an ELF binary..."
+          if ! file /tmp/vmlinux | grep -q ELF; then
+            echo "::error::Downloaded kernel is not a valid ELF binary"
+            file /tmp/vmlinux
+            exit 1
+          fi
+
+          cp /tmp/vmlinux "target/${{ matrix.target }}/release/vmlinux"
+          echo "Kernel downloaded and validated successfully"
+
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
@@ -205,6 +239,7 @@ jobs:
           path: |
             target/${{ matrix.target }}/release/syfrah
             target/${{ matrix.target }}/release/cloud-hypervisor
+            target/${{ matrix.target }}/release/vmlinux
 
   # ── Create release ────────────────────────────────────────
   release:
@@ -230,12 +265,16 @@ jobs:
             archive="syfrah-v${VERSION}-${target}.tar.gz"
             chmod +x "${target_dir}syfrah"
 
-            # Include cloud-hypervisor in tarball for Linux targets
+            # Include cloud-hypervisor and vmlinux in tarball for Linux targets
             if [ -f "${target_dir}cloud-hypervisor" ]; then
               chmod +x "${target_dir}cloud-hypervisor"
-              tar czf "release/${archive}" -C "$target_dir" syfrah cloud-hypervisor
+              TARBALL_FILES="syfrah cloud-hypervisor"
+              if [ -f "${target_dir}vmlinux" ]; then
+                TARBALL_FILES="${TARBALL_FILES} vmlinux"
+              fi
+              tar czf "release/${archive}" -C "$target_dir" ${TARBALL_FILES}
             else
-              # macOS targets: syfrah only (CH requires KVM/Linux)
+              # macOS targets: syfrah only (CH and kernel require KVM/Linux)
               tar czf "release/${archive}" -C "$target_dir" syfrah
             fi
           done
