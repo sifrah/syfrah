@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -383,15 +385,23 @@ async fn spawn_vm_inner(
             reason: format!("failed to clone log file handle: {e}"),
         })?;
 
-    let mut child = std::process::Command::new(ch_binary)
-        .arg("--api-socket")
+    // SAFETY: pre_exec runs after fork but before exec in the child process.
+    // We call setsid() to create a new session so the CH process is not
+    // affected by signals sent to the daemon's process group.
+    let mut cmd = std::process::Command::new(ch_binary);
+    cmd.arg("--api-socket")
         .arg(&socket_path)
         .stdout(Stdio::from(log_file))
-        .stderr(Stdio::from(stderr_file))
-        .spawn()
-        .map_err(|e| ProcessError::SpawnFailed {
-            reason: format!("failed to exec {}: {e}", ch_binary.display()),
-        })?;
+        .stderr(Stdio::from(stderr_file));
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn().map_err(|e| ProcessError::SpawnFailed {
+        reason: format!("failed to exec {}: {e}", ch_binary.display()),
+    })?;
 
     let pid = child.id();
     // Internal event: Spawned
@@ -404,9 +414,7 @@ async fn spawn_vm_inner(
         reason: format!("failed to check child status: {e}"),
     })? {
         return Err(ProcessError::SpawnFailed {
-            reason: format!(
-                "cloud-hypervisor exited immediately with status: {exit_status}"
-            ),
+            reason: format!("cloud-hypervisor exited immediately with status: {exit_status}"),
         }
         .into());
     }
