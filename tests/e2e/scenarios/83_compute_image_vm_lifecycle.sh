@@ -71,7 +71,7 @@ delete_vm "e2e-image-vm" "real-vm"
 sleep 2
 
 LIST_OUTPUT=$(list_vms "e2e-image-vm")
-if echo "$LIST_OUTPUT" | jq -e '.[] | select(.name == "real-vm")' >/dev/null 2>&1; then
+if echo "$LIST_OUTPUT" | jq -e '.[] | select(.id == "real-vm")' >/dev/null 2>&1; then
     fail "VM real-vm still in list after delete"
 else
     pass "VM real-vm cleaned up"
