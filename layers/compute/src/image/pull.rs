@@ -355,7 +355,9 @@ mod tests {
         let sha = "abc123";
         // Pre-populate the store with matching SHA
         let existing = sample_catalog_entry("existing", sha, "existing.raw");
-        store.write_metadata(&[existing.clone()]).unwrap();
+        store
+            .write_metadata(std::slice::from_ref(&existing))
+            .unwrap();
         // Create the .raw file
         std::fs::write(store.image_path("existing"), b"data").unwrap();
 
