@@ -30,6 +30,7 @@ pub mod control;
 pub mod error;
 pub mod events;
 pub mod handler;
+pub mod image;
 pub mod manager;
 pub mod phase;
 pub mod preflight;

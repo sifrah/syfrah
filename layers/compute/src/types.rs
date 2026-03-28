@@ -40,6 +40,12 @@ pub struct VmSpec {
     pub volumes: Vec<VolumeAttachment>,
     /// GPU passthrough mode.
     pub gpu: GpuMode,
+    /// SSH public key to inject into the VM via cloud-init.
+    #[serde(default)]
+    pub ssh_key: Option<String>,
+    /// Root disk size in megabytes. `None` uses the image default.
+    #[serde(default)]
+    pub disk_size_mb: Option<u32>,
 }
 
 /// TAP device configuration, provided by overlay via forge.
@@ -179,6 +185,8 @@ mod tests {
             gpu: GpuMode::Passthrough {
                 bdf: "0000:01:00.0".to_string(),
             },
+            ssh_key: None,
+            disk_size_mb: None,
         };
         let json = serde_json::to_string(&spec).unwrap();
         let back: VmSpec = serde_json::from_str(&json).unwrap();
@@ -196,6 +204,8 @@ mod tests {
             network: None,
             volumes: vec![],
             gpu: GpuMode::None,
+            ssh_key: None,
+            disk_size_mb: None,
         };
         let json = serde_json::to_string(&spec).unwrap();
         let back: VmSpec = serde_json::from_str(&json).unwrap();
@@ -307,5 +317,47 @@ mod tests {
         } else {
             panic!("expected Resized");
         }
+    }
+
+    #[test]
+    fn vm_spec_with_ssh_key_and_disk_size_serde_roundtrip() {
+        let spec = VmSpec {
+            id: VmId("vm-extended".to_string()),
+            vcpus: 2,
+            memory_mb: 1024,
+            image: "ubuntu-24.04".to_string(),
+            kernel: None,
+            network: None,
+            volumes: vec![],
+            gpu: GpuMode::None,
+            ssh_key: Some("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 user@host".to_string()),
+            disk_size_mb: Some(20480),
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        let back: VmSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(spec, back);
+        assert_eq!(
+            back.ssh_key.as_deref(),
+            Some("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 user@host")
+        );
+        assert_eq!(back.disk_size_mb, Some(20480));
+    }
+
+    #[test]
+    fn vm_spec_without_new_fields_deserializes() {
+        // Backward compatibility: JSON without ssh_key/disk_size_mb should deserialize
+        let json = r#"{
+            "id": "vm-old",
+            "vcpus": 1,
+            "memory_mb": 512,
+            "image": "alpine",
+            "kernel": null,
+            "network": null,
+            "volumes": [],
+            "gpu": "None"
+        }"#;
+        let spec: VmSpec = serde_json::from_str(json).unwrap();
+        assert!(spec.ssh_key.is_none());
+        assert!(spec.disk_size_mb.is_none());
     }
 }

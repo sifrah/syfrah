@@ -574,6 +574,8 @@ mod tests {
             spec_hash: "hash:0".to_string(),
             vcpus: 2,
             memory_mb: 512,
+            image_name: None,
+            disk_size_mb: None,
         };
         dir.write_meta(&meta).unwrap();
 

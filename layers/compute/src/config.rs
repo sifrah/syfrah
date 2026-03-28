@@ -23,6 +23,8 @@ pub struct ValidatedSpec {
     pub network: Option<NetworkConfig>,
     pub volumes: Vec<ValidatedVolume>,
     pub gpu: GpuMode,
+    pub ssh_key: Option<String>,
+    pub disk_size_mb: Option<u32>,
 }
 
 /// Volume attachment that has passed validation (path is non-empty).
@@ -78,6 +80,24 @@ pub fn validate(spec: &VmSpec) -> Result<ValidatedSpec, Vec<ConfigError>> {
         }
     }
 
+    // ssh_key: if provided, must not be empty after trim
+    if let Some(ref key) = spec.ssh_key {
+        if key.trim().is_empty() {
+            errors.push(ConfigError::ConflictingSettings {
+                detail: "ssh_key must not be empty or whitespace-only".to_string(),
+            });
+        }
+    }
+
+    // disk_size_mb: if provided, must be >= 128 (minimum bootable disk)
+    if let Some(size) = spec.disk_size_mb {
+        if size < 128 {
+            errors.push(ConfigError::ConflictingSettings {
+                detail: format!("disk_size_mb must be >= 128, got {size}"),
+            });
+        }
+    }
+
     // network: tap_name must not be empty
     if let Some(ref net) = spec.network {
         if net.tap_name.is_empty() {
@@ -102,6 +122,8 @@ pub fn validate(spec: &VmSpec) -> Result<ValidatedSpec, Vec<ConfigError>> {
                 })
                 .collect(),
             gpu: spec.gpu.clone(),
+            ssh_key: spec.ssh_key.clone(),
+            disk_size_mb: spec.disk_size_mb,
         })
     } else {
         Err(errors)
@@ -294,6 +316,8 @@ mod tests {
             network: None,
             volumes: vec![],
             gpu: GpuMode::None,
+            ssh_key: None,
+            disk_size_mb: None,
         }
     }
 
@@ -321,6 +345,8 @@ mod tests {
             gpu: GpuMode::Passthrough {
                 bdf: "0000:01:00.0".to_string(),
             },
+            ssh_key: None,
+            disk_size_mb: None,
         }
     }
 
@@ -470,6 +496,8 @@ mod tests {
             gpu: GpuMode::Passthrough {
                 bdf: "bad".to_string(),
             },
+            ssh_key: None,
+            disk_size_mb: None,
         };
         let errors = validate(&spec).unwrap_err();
         // Should have at least 5 errors: vcpus, memory, image, bdf, volume, tap
@@ -635,6 +663,8 @@ mod tests {
             network: None,
             volumes: vec![],
             gpu: GpuMode::None,
+            ssh_key: None,
+            disk_size_mb: None,
         };
         assert!(validate(&spec).is_ok());
     }
@@ -650,6 +680,8 @@ mod tests {
             network: None,
             volumes: vec![],
             gpu: GpuMode::None,
+            ssh_key: None,
+            disk_size_mb: None,
         };
         assert!(validate(&spec).is_ok());
     }
@@ -701,6 +733,8 @@ mod tests {
             network: None,
             volumes: vec![],
             gpu: GpuMode::None,
+            ssh_key: None,
+            disk_size_mb: None,
         };
         let errors = validate(&spec).unwrap_err();
         assert!(
@@ -737,6 +771,8 @@ mod tests {
                 read_only: false,
             }],
             gpu: GpuMode::None,
+            ssh_key: None,
+            disk_size_mb: None,
         };
         let validated = validate(&spec).unwrap();
         let resolved = resolve(
@@ -933,6 +969,8 @@ mod tests {
             gpu: GpuMode::Passthrough {
                 bdf: "0000:03:00.0".to_string(),
             },
+            ssh_key: None,
+            disk_size_mb: None,
         };
 
         // Step 1: validate
@@ -967,5 +1005,58 @@ mod tests {
         assert_eq!(json["net"].as_array().unwrap()[0]["tap"], "tap-e2e");
         assert_eq!(json["devices"].as_array().unwrap().len(), 1);
         assert_eq!(json["rng"]["src"], "/dev/urandom");
+    }
+
+    // -- ssh_key and disk_size_mb validation (#538) ---------------------------
+
+    #[test]
+    fn validate_ssh_key_empty_rejected() {
+        let mut spec = minimal_spec();
+        spec.ssh_key = Some("".to_string());
+        let errors = validate(&spec).unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ConfigError::ConflictingSettings { .. })));
+    }
+
+    #[test]
+    fn validate_ssh_key_whitespace_only_rejected() {
+        let mut spec = minimal_spec();
+        spec.ssh_key = Some("  \n".to_string());
+        let errors = validate(&spec).unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ConfigError::ConflictingSettings { .. })));
+    }
+
+    #[test]
+    fn validate_ssh_key_valid_passes() {
+        let mut spec = minimal_spec();
+        spec.ssh_key = Some("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 user@host".to_string());
+        assert!(validate(&spec).is_ok());
+    }
+
+    #[test]
+    fn validate_disk_size_mb_too_small_rejected() {
+        let mut spec = minimal_spec();
+        spec.disk_size_mb = Some(50);
+        let errors = validate(&spec).unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ConfigError::ConflictingSettings { .. })));
+    }
+
+    #[test]
+    fn validate_disk_size_mb_128_passes() {
+        let mut spec = minimal_spec();
+        spec.disk_size_mb = Some(128);
+        assert!(validate(&spec).is_ok());
+    }
+
+    #[test]
+    fn validate_disk_size_mb_none_passes() {
+        let spec = minimal_spec();
+        assert!(validate(&spec).is_ok());
+        assert!(spec.disk_size_mb.is_none());
     }
 }

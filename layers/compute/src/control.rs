@@ -138,6 +138,8 @@ async fn handle_compute_request(mgr: &VmManager, req: ComputeRequest) -> Compute
                 network,
                 volumes: vec![],
                 gpu,
+                ssh_key: None,
+                disk_size_mb: None,
             };
             match mgr.create_vm(spec).await {
                 Ok(status) => ComputeResponse::Vm(vm_status_to_json(&status)),
