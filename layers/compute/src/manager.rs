@@ -43,10 +43,21 @@ pub struct ComputeConfig {
     pub image_management: bool,
     /// Pull policy for image operations. Default: `IfNotPresent`.
     pub pull_policy: PullPolicy,
+    /// URL of the remote image catalog JSON.
+    /// Default: syfrah-images GitHub Release.
+    pub catalog_url: String,
+    /// Local path for caching the catalog JSON.
+    /// Default: `~/.syfrah/cache/catalog.json`.
+    pub cache_path: PathBuf,
 }
+
+/// Default catalog URL pointing to the syfrah-images GitHub Release.
+pub const DEFAULT_CATALOG_URL: &str =
+    "https://github.com/sacha-ops/syfrah-images/releases/latest/download/catalog.json";
 
 impl Default for ComputeConfig {
     fn default() -> Self {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
         Self {
             base_dir: PathBuf::from("/run/syfrah/vms"),
             image_dir: PathBuf::from("/opt/syfrah/images"),
@@ -57,6 +68,8 @@ impl Default for ComputeConfig {
             instance_base: PathBuf::from("/opt/syfrah/instances"),
             image_management: true,
             pull_policy: PullPolicy::default(),
+            catalog_url: DEFAULT_CATALOG_URL.to_string(),
+            cache_path: PathBuf::from(format!("{home}/.syfrah/cache/catalog.json")),
         }
     }
 }
@@ -224,6 +237,21 @@ impl VmManager {
     /// Get a reference to the image store.
     pub fn image_store(&self) -> &ImageStore {
         &self.image_store
+    }
+
+    /// Get the configured catalog URL.
+    pub fn catalog_url(&self) -> &str {
+        &self.config.catalog_url
+    }
+
+    /// Get the configured catalog cache path.
+    pub fn cache_path(&self) -> &Path {
+        &self.config.cache_path
+    }
+
+    /// Get the configured pull policy.
+    pub fn pull_policy(&self) -> PullPolicy {
+        self.config.pull_policy.clone()
     }
 
     // -- Lifecycle operations -------------------------------------------------
@@ -572,6 +600,11 @@ mod tests {
         assert_eq!(cfg.instance_base, PathBuf::from("/opt/syfrah/instances"));
         assert!(cfg.image_management);
         assert_eq!(cfg.pull_policy, PullPolicy::IfNotPresent);
+        assert_eq!(cfg.catalog_url, DEFAULT_CATALOG_URL);
+        assert!(cfg
+            .cache_path
+            .to_string_lossy()
+            .contains(".syfrah/cache/catalog.json"));
     }
 
     #[test]
@@ -602,6 +635,8 @@ mod tests {
             instance_base: tmp.join("instances"),
             image_management: false,
             pull_policy: PullPolicy::default(),
+            catalog_url: DEFAULT_CATALOG_URL.to_string(),
+            cache_path: tmp.join("cache").join("catalog.json"),
         };
         // Create the dirs so they exist for reconnect scanning
         std::fs::create_dir_all(&config.base_dir).unwrap();

@@ -71,6 +71,9 @@ async fn pull_inner(
     //    full URLs or the caller passes them in via the file field)
     let download_url = catalog_entry.file.clone();
 
+    // Validate URL scheme to prevent SSRF (only https:// and http:// allowed)
+    super::catalog::validate_url(&download_url)?;
+
     info!(name, url = %download_url, "starting image download");
 
     let response =
