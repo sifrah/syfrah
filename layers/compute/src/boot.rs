@@ -4,11 +4,12 @@
 //! with an option for operators to provide their own (best-effort support).
 //! The kernel mode is configured once and validated at daemon startup.
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
 use crate::image::error::ImageError;
@@ -112,11 +113,67 @@ async fn ensure_kernel_inner(
     Ok(kernel_path)
 }
 
+/// URL for the SHA256SUMS file alongside the kernel release.
+const KERNEL_SHA256SUMS_URL: &str =
+    "https://github.com/sacha-ops/syfrah-images/releases/latest/download/SHA256SUMS.txt";
+
+/// Build a reqwest blocking client with sensible timeouts.
+fn http_client() -> Result<reqwest::blocking::Client, ImageError> {
+    reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|e| ImageError::KernelNotFound {
+            path: format!("failed to build HTTP client: {e}"),
+        })
+}
+
+/// Try to fetch the expected SHA256 hash for `vmlinux.gz` from the release's
+/// `SHA256SUMS.txt`. Returns `None` (with a warning) if unavailable.
+fn fetch_expected_kernel_sha256(client: &reqwest::blocking::Client) -> Option<String> {
+    let resp = match client.get(KERNEL_SHA256SUMS_URL).send() {
+        Ok(r) if r.status().is_success() => r,
+        _ => {
+            warn!("Could not download SHA256SUMS.txt — kernel checksum not verified");
+            return None;
+        }
+    };
+    let body = match resp.text() {
+        Ok(t) => t,
+        Err(_) => {
+            warn!("Could not read SHA256SUMS.txt — kernel checksum not verified");
+            return None;
+        }
+    };
+    // Each line: "<hex>  <filename>"
+    for line in body.lines() {
+        if line.contains("vmlinux.gz") {
+            if let Some(hash) = line.split_whitespace().next() {
+                return Some(hash.to_lowercase());
+            }
+        }
+    }
+    warn!("vmlinux.gz not found in SHA256SUMS.txt — kernel checksum not verified");
+    None
+}
+
 /// Download a gzip-compressed kernel and decompress it to `dest`.
+///
+/// Streams the decompressed data directly to disk (no double-buffering).
+/// After writing, computes SHA256 of the compressed payload and verifies
+/// against the release's SHA256SUMS.txt when available.
 fn download_and_decompress_kernel(url: &str, dest: &Path) -> Result<(), ImageError> {
-    let response = reqwest::blocking::get(url).map_err(|e| ImageError::KernelNotFound {
-        path: format!("failed to download kernel from {url}: {e}"),
-    })?;
+    let client = http_client()?;
+
+    // Optionally fetch the expected hash before downloading the kernel.
+    let expected_sha = fetch_expected_kernel_sha256(&client);
+
+    let response = client
+        .get(url)
+        .send()
+        .map_err(|e| ImageError::KernelNotFound {
+            path: format!("failed to download kernel from {url}: {e}"),
+        })?;
 
     if !response.status().is_success() {
         return Err(ImageError::KernelNotFound {
@@ -127,17 +184,28 @@ fn download_and_decompress_kernel(url: &str, dest: &Path) -> Result<(), ImageErr
         });
     }
 
-    let bytes = response.bytes().map_err(|e| ImageError::KernelNotFound {
+    // Read the compressed bytes so we can both hash and decompress them.
+    let compressed = response.bytes().map_err(|e| ImageError::KernelNotFound {
         path: format!("failed to read kernel response body: {e}"),
     })?;
 
-    let mut decoder = GzDecoder::new(&bytes[..]);
-    let mut decompressed = Vec::new();
-    decoder
-        .read_to_end(&mut decompressed)
-        .map_err(|e| ImageError::KernelNotFound {
-            path: format!("failed to decompress kernel: {e}"),
-        })?;
+    // Verify SHA256 of the compressed payload if we have an expected hash.
+    let actual_sha = {
+        let mut hasher = Sha256::new();
+        hasher.update(&compressed);
+        format!("{:x}", hasher.finalize())
+    };
+
+    if let Some(ref expected) = expected_sha {
+        if *expected != actual_sha {
+            return Err(ImageError::KernelNotFound {
+                path: format!("kernel checksum mismatch: expected {expected}, got {actual_sha}"),
+            });
+        }
+        info!("Kernel SHA256 verified: {actual_sha}");
+    } else {
+        warn!("Kernel checksum not verified (SHA256: {actual_sha})");
+    }
 
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| ImageError::KernelNotFound {
@@ -148,8 +216,13 @@ fn download_and_decompress_kernel(url: &str, dest: &Path) -> Result<(), ImageErr
         })?;
     }
 
-    std::fs::write(dest, &decompressed).map_err(|e| ImageError::KernelNotFound {
-        path: format!("failed to write kernel to {}: {e}", dest.display()),
+    // Stream decompression directly to disk — no intermediate Vec buffer.
+    let decoder = GzDecoder::new(&compressed[..]);
+    let mut file = std::fs::File::create(dest).map_err(|e| ImageError::KernelNotFound {
+        path: format!("failed to create kernel file {}: {e}", dest.display()),
+    })?;
+    std::io::copy(&mut { decoder }, &mut file).map_err(|e| ImageError::KernelNotFound {
+        path: format!("failed to decompress kernel to {}: {e}", dest.display()),
     })?;
 
     #[cfg(unix)]
