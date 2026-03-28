@@ -306,7 +306,11 @@ fn available_disk_space(path: &Path) -> u64 {
     unsafe {
         let mut stat: libc::statvfs = std::mem::zeroed();
         if libc::statvfs(c_path.as_ptr(), &mut stat) == 0 {
-            stat.f_bavail * stat.f_bsize
+            #[allow(clippy::unnecessary_cast)]
+            let avail = stat.f_bavail as u64;
+            #[allow(clippy::unnecessary_cast)]
+            let bsize = stat.f_bsize as u64;
+            avail * bsize
         } else {
             u64::MAX // cannot check — assume enough
         }
