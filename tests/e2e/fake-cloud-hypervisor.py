@@ -165,10 +165,23 @@ def main():
     # Print PID to stdout
     print(os.getpid(), flush=True)
 
-    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    server.bind(socket_path)
-    server.listen(5)
-    server.settimeout(1.0)  # allow periodic signal checks
+    try:
+        sys.stderr.write(f"fake-ch: creating socket at {socket_path}\n")
+        sys.stderr.flush()
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sys.stderr.write("fake-ch: binding socket\n")
+        sys.stderr.flush()
+        server.bind(socket_path)
+        sys.stderr.write("fake-ch: listening\n")
+        sys.stderr.flush()
+        server.listen(5)
+        server.settimeout(1.0)  # allow periodic signal checks
+        sys.stderr.write("fake-ch: ready\n")
+        sys.stderr.flush()
+    except Exception as e:
+        sys.stderr.write(f"fake-ch: error during setup: {e}\n")
+        sys.stderr.flush()
+        sys.exit(1)
 
     shutdown_event = threading.Event()
 
