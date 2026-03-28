@@ -28,12 +28,28 @@ sleep 2
 # ── Create a VM ──────────────────────────────────────────────────
 
 info "Creating test VM"
-OUTPUT=$(create_vm "e2e-compute-create" "test-vm-1" --vcpu 2 --memory 512 --image alpine-3.20)
+OUTPUT=$(create_vm "e2e-compute-create" "test-vm-1" --vcpu 2 --memory 512 --image alpine-3.20 || true)
+EXIT_CODE=${PIPESTATUS[0]:-$?}
 
-if [ $? -eq 0 ]; then
+if echo "$OUTPUT" | grep -q "VM created"; then
     pass "VM creation command succeeded"
 else
-    fail "VM creation command failed: $OUTPUT"
+    fail "VM creation command failed (exit=$EXIT_CODE): $OUTPUT"
+    # Diagnostic info
+    info "Daemon log:"
+    docker exec "e2e-compute-create" cat /root/.syfrah/syfrah.log 2>/dev/null | tail -30 || true
+    info "Runtime dir:"
+    docker exec "e2e-compute-create" ls -la /run/syfrah/vms/ 2>/dev/null || true
+    info "CH process log:"
+    docker exec "e2e-compute-create" cat /run/syfrah/vms/test-vm-1/stdout.log 2>/dev/null || true
+    info "Processes:"
+    docker exec "e2e-compute-create" ps aux 2>/dev/null || true
+    info "Python check:"
+    docker exec "e2e-compute-create" which python3 2>/dev/null || true
+    docker exec "e2e-compute-create" python3 --version 2>/dev/null || true
+    info "Fake CH check:"
+    docker exec "e2e-compute-create" ls -la /usr/local/lib/syfrah/cloud-hypervisor 2>/dev/null || true
+    docker exec "e2e-compute-create" head -1 /usr/local/lib/syfrah/cloud-hypervisor 2>/dev/null || true
 fi
 
 # ── Verify VM in list ────────────────────────────────────────────
