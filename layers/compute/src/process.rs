@@ -344,7 +344,13 @@ pub async fn spawn_vm(
     match result {
         Ok(state) => Ok(state),
         Err(e) => {
+            // Capture the CH process log before cleanup for diagnostics.
+            let log_contents = fs::read_to_string(runtime_dir.log_path()).unwrap_or_default();
+            if !log_contents.is_empty() {
+                error!(vm_id = %vm_id_str, log = %log_contents, "CH process log");
+            }
             error!(vm_id = %vm_id_str, error = %e, "spawn failed, cleaning up");
+            debug!(vm_id = %vm_id_str, path = %runtime_dir.path().display(), "SocketRemoved: cleaning up runtime dir");
             // Best-effort cleanup
             let _ = runtime_dir.cleanup();
             Err(e)
