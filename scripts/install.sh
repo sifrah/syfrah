@@ -241,6 +241,20 @@ if [ -f "${TMPDIR}/${KERNEL_BIN}" ]; then
   fi
 fi
 
+if [ ! -f "${KERNEL_INSTALL_DIR}/${KERNEL_BIN}" ]; then
+    # Kernel not in tarball — download from syfrah-images release
+    start_spinner "Downloading kernel..."
+    KERNEL_URL="https://github.com/sacha-ops/syfrah-images/releases/latest/download/vmlinux.gz"
+    if curl -fsSL -o "${TMPDIR}/vmlinux.gz" "$KERNEL_URL"; then
+        gunzip -f "${TMPDIR}/vmlinux.gz"
+        mkdir -p "$KERNEL_INSTALL_DIR"
+        install -m 644 "${TMPDIR}/vmlinux" "${KERNEL_INSTALL_DIR}/vmlinux"
+        stop_spinner "Downloaded and installed kernel"
+    else
+        stop_spinner "Could not download kernel (compute layer will download at first use)" fail
+    fi
+fi
+
 # --- Create data directories ------------------------------------------------
 
 mkdir -p /opt/syfrah/images
