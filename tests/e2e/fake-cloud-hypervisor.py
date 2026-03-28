@@ -152,6 +152,11 @@ def handle_client(conn):
 
 
 def main():
+    # Write all output immediately.
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, write_through=True)
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, write_through=True)
+
     parser = argparse.ArgumentParser(description="Fake Cloud Hypervisor")
     parser.add_argument("--api-socket", required=True, help="Path to API Unix socket")
     args = parser.parse_args()
@@ -163,20 +168,19 @@ def main():
         os.unlink(socket_path)
 
     # Print PID to stdout
-    print(os.getpid(), flush=True)
-    print(f"DIAG:socket_path={socket_path}", flush=True)
-    print(f"DIAG:creating_socket", flush=True)
+    os.write(1, f"{os.getpid()}\n".encode())
+    os.write(1, f"DIAG:socket={socket_path}\n".encode())
 
     try:
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        print("DIAG:binding", flush=True)
+        os.write(1, b"DIAG:binding\n")
         server.bind(socket_path)
-        print("DIAG:listening", flush=True)
+        os.write(1, b"DIAG:listening\n")
         server.listen(5)
         server.settimeout(1.0)  # allow periodic signal checks
-        print("DIAG:ready", flush=True)
+        os.write(1, b"DIAG:ready\n")
     except Exception as e:
-        print(f"DIAG:error={e}", flush=True)
+        os.write(1, f"DIAG:error={e}\n".encode())
         sys.exit(1)
 
     shutdown_event = threading.Event()

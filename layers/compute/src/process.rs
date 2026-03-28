@@ -391,6 +391,7 @@ async fn spawn_vm_inner(
     let mut cmd = std::process::Command::new(ch_binary);
     cmd.arg("--api-socket")
         .arg(&socket_path)
+        .stdin(Stdio::null())
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(stderr_file));
     unsafe {
