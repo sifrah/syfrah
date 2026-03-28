@@ -45,7 +45,7 @@ fi
 sleep 3  # allow VM to reach Running state
 
 LIST_OUTPUT=$(list_vms "e2e-compute-create")
-if echo "$LIST_OUTPUT" | jq -e '.[] | select(.name == "test-vm-1")' >/dev/null 2>&1; then
+if echo "$LIST_OUTPUT" | jq -e '.[] | select(.id == "test-vm-1")' >/dev/null 2>&1; then
     pass "VM test-vm-1 appears in vm list"
 else
     fail "VM test-vm-1 not in vm list: $LIST_OUTPUT"
@@ -66,7 +66,7 @@ else
     fail "VM vCPUs: $VCPUS (expected 2)"
 fi
 
-MEMORY=$(echo "$VM_JSON" | jq -r '.memory // .spec.memory // empty' 2>/dev/null)
+MEMORY=$(echo "$VM_JSON" | jq -r '.memory_mb // .spec.memory_mb // empty' 2>/dev/null)
 if [ "$MEMORY" = "512" ]; then
     pass "VM has 512 MB memory"
 else
