@@ -37,7 +37,8 @@ echo "$output_join" | grep -qi "joined\|approved\|accepted" || fail "join: no ap
 pass "join: approval confirmed"
 
 wait_daemon "e2e-flow-first-2" 30
-sleep 5
+wait_for_peer_active "e2e-flow-first-1" 1 30
+wait_for_peer_active "e2e-flow-first-2" 1 30
 
 # Step 4: Both see each other in peers
 info "Step 4: Verify bidirectional peer visibility..."

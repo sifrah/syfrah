@@ -18,7 +18,7 @@ init_mesh "e2e-flow-rot-1" "172.20.0.10" "rot-srv-1"
 start_peering "e2e-flow-rot-1"
 join_mesh "e2e-flow-rot-2" "172.20.0.10" "172.20.0.11" "rot-srv-2"
 
-sleep 5
+wait_for_peer_active "e2e-flow-rot-1" 1 30
 assert_peer_count "e2e-flow-rot-1" 1
 
 # Capture initial secret

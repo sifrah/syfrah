@@ -40,7 +40,7 @@ fi
 info "Testing: join when state exists..."
 start_peering "e2e-err-join-1"
 join_mesh "e2e-err-join-2" "172.20.0.10" "172.20.0.11" "err-join-srv-2"
-sleep 3
+wait_for_peer_active "e2e-err-join-2" 1 30
 
 err3=$(docker exec "e2e-err-join-2" syfrah fabric join 172.20.0.10:51821 \
     --node-name err-join-2b --endpoint 172.20.0.11:51820 --pin "$E2E_PIN" 2>&1 || true)

@@ -19,7 +19,7 @@ E2E_MESH="consist-mesh"
 init_mesh "e2e-consist-1" "172.20.0.10" "consist-srv-1"
 start_peering "e2e-consist-1"
 join_mesh "e2e-consist-2" "172.20.0.10" "172.20.0.11" "consist-srv-2"
-sleep 3
+sleep 2
 join_mesh "e2e-consist-3" "172.20.0.10" "172.20.0.12" "consist-srv-3"
 
 wait_for_convergence "e2e-consist-" 3 2 45 || true
@@ -79,7 +79,7 @@ done
 # === Post leave+rejoin: no stale data ===
 info "Testing: no stale data after leave+rejoin..."
 docker exec "e2e-consist-3" syfrah fabric leave --yes 2>&1 || true
-sleep 3
+sleep 2
 start_peering "e2e-consist-1"
 join_mesh "e2e-consist-3" "172.20.0.10" "172.20.0.12" "consist-srv-3"
 wait_for_convergence "e2e-consist-" 3 2 30 || true
@@ -105,6 +105,7 @@ stop_daemon "e2e-consist-1"
 sleep 2
 docker exec -d "e2e-consist-1" syfrah fabric start
 wait_daemon "e2e-consist-1" 30
+wait_for_peer_active "e2e-consist-1" 2 30 || true
 peers_after=$(docker exec "e2e-consist-1" syfrah fabric peers 2>&1 | tail -n +3 | wc -l)
 
 if [ "$peers_before" = "$peers_after" ]; then
