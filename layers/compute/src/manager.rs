@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::{broadcast, Mutex, RwLock};
 use tracing::info;
@@ -175,6 +175,9 @@ pub struct ReconnectSummary {
 ///
 /// **MVP limitation:** long operations (e.g., 30s graceful shutdown) block
 /// concurrent ops on the same VM. Future: command-in-progress model.
+/// How long a cached health-check result is considered fresh.
+const HEALTH_CHECK_TTL: Duration = Duration::from_secs(30);
+
 pub struct VmManager {
     config: ComputeConfig,
     /// Resolved cloud-hypervisor binary path (validated at construction).
@@ -189,6 +192,9 @@ pub struct VmManager {
     catalog: Arc<RwLock<ImageCatalog>>,
     /// In-memory refcount: image_name -> number of active VMs using that image.
     image_refcounts: Arc<RwLock<HashMap<String, u32>>>,
+    /// Cached health-check result: (timestamp, status, warnings).
+    /// Avoids repeated stat syscalls when status is polled frequently.
+    last_health_check: std::sync::Mutex<Option<(Instant, &'static str, Vec<String>)>>,
 }
 
 impl VmManager {
@@ -238,6 +244,7 @@ impl VmManager {
             image_store,
             catalog,
             image_refcounts: Arc::new(RwLock::new(HashMap::new())),
+            last_health_check: std::sync::Mutex::new(None),
         })
     }
 
@@ -273,6 +280,68 @@ impl VmManager {
     /// Get the configured pull policy.
     pub fn pull_policy(&self) -> PullPolicy {
         self.config.pull_policy.clone()
+    }
+
+    /// Run health checks against KVM, CH binary, and kernel availability.
+    ///
+    /// Returns `("healthy", [])` if everything is OK, or `("degraded", warnings)`
+    /// if one or more prerequisites are missing.
+    ///
+    /// Results are cached for [`HEALTH_CHECK_TTL`] (30 s) to avoid repeated stat
+    /// syscalls when the status endpoint is polled frequently.
+    ///
+    /// NOTE: The path-existence checks here intentionally duplicate the logic in
+    /// `preflight.rs`. Preflight returns typed `PreflightError` variants (collected
+    /// into a `Vec<PreflightError>`) while health_check returns human-readable
+    /// warning strings. Extracting a shared helper would couple two different
+    /// error models for only 3 lines of savings.
+    pub fn health_check(&self) -> (&'static str, Vec<String>) {
+        // Return cached result if still fresh.
+        {
+            let cache = self
+                .last_health_check
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some((ts, status, ref warnings)) = *cache {
+                if ts.elapsed() < HEALTH_CHECK_TTL {
+                    return (status, warnings.clone());
+                }
+            }
+        }
+
+        // Cache miss — perform the stat checks.
+        // Pre-allocate for the 3 possible warnings to avoid a heap allocation
+        // on the happy path (with_capacity(0) is free; grows only if needed).
+        let mut warnings = Vec::with_capacity(3);
+
+        if !Path::new("/dev/kvm").exists() {
+            warnings.push("KVM not available — VMs cannot boot".to_string());
+        }
+
+        if !self.ch_binary.exists() {
+            warnings.push("cloud-hypervisor binary not found".to_string());
+        }
+
+        if !self.config.kernel_path.exists() {
+            warnings.push("kernel not found".to_string());
+        }
+
+        let status = if warnings.is_empty() {
+            "healthy"
+        } else {
+            "degraded"
+        };
+
+        // Update cache.
+        {
+            let mut cache = self
+                .last_health_check
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            *cache = Some((Instant::now(), status, warnings.clone()));
+        }
+
+        (status, warnings)
     }
 
     // -- Lifecycle operations -------------------------------------------------

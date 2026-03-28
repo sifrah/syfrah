@@ -312,11 +312,7 @@ mod tests {
         let catalog = ImageCatalog {
             version: 1,
             base_url: base_url.clone(),
-            images: vec![sample_catalog_entry(
-                "test-image",
-                &sha,
-                &format!("{base_url}/images/test.raw"),
-            )],
+            images: vec![sample_catalog_entry("test-image", &sha, "images/test.raw")],
         };
 
         let meta = pull(&store, "test-image", &catalog).await.unwrap();
@@ -339,7 +335,7 @@ mod tests {
             images: vec![sample_catalog_entry(
                 "bad-image",
                 "wrong_sha_value",
-                &format!("{base_url}/images/bad.raw"),
+                "images/bad.raw",
             )],
         };
 
@@ -405,11 +401,7 @@ mod tests {
 
         let base_url = start_test_server(vec![("gzip.raw.gz".to_string(), compressed)]).await;
 
-        let mut entry = sample_catalog_entry(
-            "gzip-image",
-            &sha,
-            &format!("{base_url}/images/gzip.raw.gz"),
-        );
+        let mut entry = sample_catalog_entry("gzip-image", &sha, "images/gzip.raw.gz");
         entry.compression = Some("gzip".to_string());
 
         let catalog = ImageCatalog {
@@ -439,7 +431,7 @@ mod tests {
             images: vec![sample_catalog_entry(
                 "missing",
                 "sha",
-                &format!("{base_url}/images/nonexistent.raw"),
+                "images/nonexistent.raw",
             )],
         };
 
@@ -460,11 +452,7 @@ mod tests {
         let catalog = ImageCatalog {
             version: 1,
             base_url: base_url.clone(),
-            images: vec![sample_catalog_entry(
-                "meta-test",
-                &sha,
-                &format!("{base_url}/images/meta.raw"),
-            )],
+            images: vec![sample_catalog_entry("meta-test", &sha, "images/meta.raw")],
         };
 
         pull(&store, "meta-test", &catalog).await.unwrap();

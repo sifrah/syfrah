@@ -247,8 +247,10 @@ async fn handle_compute_request(mgr: &VmManager, req: ComputeRequest) -> Compute
                 .iter()
                 .filter(|v| v.phase == crate::phase::VmPhase::Running)
                 .count() as u32;
+            let (status, warnings) = mgr.health_check();
             ComputeResponse::Status(serde_json::json!({
-                "status": "healthy",
+                "status": status,
+                "warnings": warnings,
                 "total_vms": total,
                 "running_vms": running,
             }))
