@@ -44,6 +44,14 @@ pub struct ImageMeta {
     pub source_kind: String,
     /// Filename of the image artifact in the catalog.
     pub file: String,
+    /// Filename of the OCI container image artifact in the catalog.
+    /// `None` for images that only have a VM (raw) variant.
+    #[serde(default)]
+    pub container_file: Option<String>,
+    /// SHA-256 checksum of the uncompressed OCI container image.
+    /// `None` when no container variant is available.
+    #[serde(default)]
+    pub container_sha256: Option<String>,
     /// Local-only: timestamp of when the image was imported. `None` for
     /// catalog-only entries that have not been pulled yet.
     pub imported_at: Option<String>,
@@ -78,6 +86,20 @@ pub enum PullPolicy {
     Always,
     /// Never pull — fail if the image is not present locally.
     Never,
+}
+
+// ---------------------------------------------------------------------------
+// RuntimeMode (#608)
+// ---------------------------------------------------------------------------
+
+/// Specifies which image format to pull based on the target runtime.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub enum RuntimeMode {
+    /// Pull the VM raw disk image (default, for KVM / Cloud Hypervisor).
+    #[default]
+    Vm,
+    /// Pull the OCI container image (for crun + gVisor).
+    Container,
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +196,8 @@ mod tests {
             rootfs_fs: Some("ext4".to_string()),
             source_kind: "catalog".to_string(),
             file: "ubuntu-24.04-aarch64-minimal.raw.zst".to_string(),
+            container_file: None,
+            container_sha256: None,
             imported_at: Some("2025-01-15T12:00:00Z".to_string()),
         }
     }
@@ -195,6 +219,8 @@ mod tests {
             rootfs_fs: None,
             source_kind: "import".to_string(),
             file: "alpine-3.20-x86_64.raw".to_string(),
+            container_file: None,
+            container_sha256: None,
             imported_at: None,
         }
     }
@@ -284,6 +310,63 @@ mod tests {
             let back: PullPolicy = serde_json::from_str(&json).unwrap();
             assert_eq!(policy, back);
         }
+    }
+
+    // -- RuntimeMode tests (#608) ----------------------------------------------
+
+    #[test]
+    fn runtime_mode_default_is_vm() {
+        assert_eq!(RuntimeMode::default(), RuntimeMode::Vm);
+    }
+
+    #[test]
+    fn runtime_mode_serde_roundtrip() {
+        for mode in [RuntimeMode::Vm, RuntimeMode::Container] {
+            let json = serde_json::to_string(&mode).unwrap();
+            let back: RuntimeMode = serde_json::from_str(&json).unwrap();
+            assert_eq!(mode, back);
+        }
+    }
+
+    #[test]
+    fn image_meta_with_container_fields_roundtrip() {
+        let mut meta = sample_image_meta();
+        meta.container_file = Some("ubuntu-24.04-oci.tar.gz".to_string());
+        meta.container_sha256 = Some("sha256_of_oci_image".to_string());
+        let json = serde_json::to_string(&meta).unwrap();
+        let back: ImageMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(meta, back);
+        assert_eq!(
+            back.container_file.as_deref(),
+            Some("ubuntu-24.04-oci.tar.gz")
+        );
+    }
+
+    #[test]
+    fn image_meta_without_container_fields_deserializes() {
+        // Backward compatibility: existing JSON without container fields should
+        // still deserialize, with container_file and container_sha256 as None.
+        let json = r#"{
+            "name": "alpine-3.20",
+            "arch": "x86_64",
+            "os_family": "linux",
+            "variant": null,
+            "format": "raw",
+            "compression": null,
+            "boot_mode": "bios",
+            "sha256": "deadbeef",
+            "size_mb": 256,
+            "min_disk_mb": 512,
+            "cloud_init": false,
+            "default_username": null,
+            "rootfs_fs": null,
+            "source_kind": "import",
+            "file": "alpine-3.20-x86_64.raw",
+            "imported_at": null
+        }"#;
+        let meta: ImageMeta = serde_json::from_str(json).unwrap();
+        assert!(meta.container_file.is_none());
+        assert!(meta.container_sha256.is_none());
     }
 
     // -- InstanceId tests (#536) ----------------------------------------------

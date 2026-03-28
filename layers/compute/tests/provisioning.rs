@@ -40,6 +40,8 @@ fn sample_image_meta(name: &str) -> ImageMeta {
         rootfs_fs: Some("ext4".to_string()),
         source_kind: "catalog".to_string(),
         file: format!("{name}.raw"),
+        container_file: None,
+        container_sha256: None,
         imported_at: None,
     }
 }

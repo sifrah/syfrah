@@ -169,6 +169,8 @@ mod tests {
                 rootfs_fs: Some("ext4".to_string()),
                 source_kind: "catalog".to_string(),
                 file: "ubuntu-24.04.raw".to_string(),
+                container_file: None,
+                container_sha256: None,
                 imported_at: None,
             }],
         }
