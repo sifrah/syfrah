@@ -40,6 +40,8 @@ pub mod preflight;
 pub(crate) mod process;
 #[allow(dead_code)]
 mod runtime;
+pub mod runtime_backend;
+pub mod runtime_ch;
 #[cfg(test)]
 pub mod test_utils;
 pub mod types;
@@ -55,4 +57,5 @@ pub use error::{
 pub use events::emit;
 pub use manager::{ComputeConfig, ReconnectSummary, VmManager};
 pub use phase::VmPhase;
+pub use runtime_backend::{ComputeRuntime, RuntimeHandle, RuntimeInfo, RuntimeSpec, RuntimeType};
 pub use types::{GpuMode, NetworkConfig, VmEvent, VmId, VmSpec, VmStatus, VolumeAttachment};

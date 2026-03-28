@@ -1,0 +1,185 @@
+//! Trait abstraction for compute runtime backends.
+//!
+//! `ComputeRuntime` defines the interface that both Cloud Hypervisor (VM) and
+//! future container (crun+gVisor) backends must implement. This allows
+//! `VmManager` to be backend-agnostic.
+
+use std::path::{Path, PathBuf};
+
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+
+use crate::error::ComputeError;
+use crate::phase::VmPhase;
+use crate::types::{GpuMode, NetworkConfig};
+
+// ---------------------------------------------------------------------------
+// RuntimeSpec — common input for creating a workload
+// ---------------------------------------------------------------------------
+
+/// Specification for creating a workload through any runtime backend.
+///
+/// This is the backend-agnostic counterpart of `VmSpec`. The manager translates
+/// a `VmSpec` into a `RuntimeSpec` before calling `ComputeRuntime::create`.
+#[derive(Debug, Clone)]
+pub struct RuntimeSpec {
+    /// Number of virtual CPUs.
+    pub vcpus: u32,
+    /// Memory allocation in megabytes.
+    pub memory_mb: u32,
+    /// Path to the root filesystem (.raw for VM, OCI dir for container).
+    pub rootfs_path: PathBuf,
+    /// Optional path to a cloud-init config drive.
+    pub cloud_init_path: Option<PathBuf>,
+    /// Network configuration.
+    pub network: Option<NetworkConfig>,
+    /// GPU passthrough mode.
+    pub gpu: GpuMode,
+}
+
+// ---------------------------------------------------------------------------
+// RuntimeHandle — common output identifying a running workload
+// ---------------------------------------------------------------------------
+
+/// Handle to a running workload, returned by `ComputeRuntime::create`.
+#[derive(Debug, Clone)]
+pub struct RuntimeHandle {
+    /// Workload identifier (same as the VM/container ID).
+    pub id: String,
+    /// OS-level process ID of the runtime process.
+    pub pid: u32,
+    /// Which backend is managing this workload.
+    pub runtime_type: RuntimeType,
+    /// Path to the runtime directory containing socket, PID file, metadata.
+    pub runtime_dir: PathBuf,
+}
+
+// ---------------------------------------------------------------------------
+// RuntimeType — discriminator for backend type
+// ---------------------------------------------------------------------------
+
+/// Identifies which runtime backend manages a workload.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeType {
+    /// Cloud Hypervisor VM.
+    Vm,
+    /// Container (crun + gVisor). Reserved for future use.
+    Container,
+}
+
+// ---------------------------------------------------------------------------
+// RuntimeInfo — status information about a workload
+// ---------------------------------------------------------------------------
+
+/// Status information about a running workload.
+#[derive(Debug, Clone)]
+pub struct RuntimeInfo {
+    /// Current lifecycle phase.
+    pub phase: VmPhase,
+    /// OS-level process ID.
+    pub pid: u32,
+    /// Seconds since the workload was started.
+    pub uptime_secs: Option<u64>,
+    /// Which backend manages this workload.
+    pub runtime_type: RuntimeType,
+}
+
+// ---------------------------------------------------------------------------
+// ComputeRuntime trait
+// ---------------------------------------------------------------------------
+
+/// Backend-agnostic interface for managing compute workloads.
+///
+/// Implementations wrap a specific runtime (Cloud Hypervisor, crun+gVisor)
+/// and translate the common `RuntimeSpec` into backend-specific configuration.
+#[async_trait]
+pub trait ComputeRuntime: Send + Sync {
+    /// Create and start a workload.
+    async fn create(&self, id: &str, spec: &RuntimeSpec) -> Result<RuntimeHandle, ComputeError>;
+
+    /// Stop a running workload.
+    ///
+    /// When `force` is true, skip the graceful shutdown phase.
+    async fn stop(&self, handle: &RuntimeHandle, force: bool) -> Result<(), ComputeError>;
+
+    /// Delete a workload and clean up all artifacts.
+    async fn delete(&self, handle: &RuntimeHandle) -> Result<(), ComputeError>;
+
+    /// Get workload status information.
+    async fn info(&self, handle: &RuntimeHandle) -> Result<RuntimeInfo, ComputeError>;
+
+    /// Check whether the workload process is still alive.
+    async fn is_alive(&self, handle: &RuntimeHandle) -> bool;
+
+    /// Reconnect to existing workloads after a daemon restart.
+    ///
+    /// Scans the given runtime directory base for recoverable workloads.
+    async fn reconnect(&self, runtime_dir: &Path) -> Vec<RuntimeHandle>;
+
+    /// Human-readable name for this runtime backend (e.g., "cloud-hypervisor").
+    fn name(&self) -> &str;
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_type_serde_roundtrip() {
+        let vm = RuntimeType::Vm;
+        let json = serde_json::to_string(&vm).unwrap();
+        let back: RuntimeType = serde_json::from_str(&json).unwrap();
+        assert_eq!(vm, back);
+
+        let container = RuntimeType::Container;
+        let json = serde_json::to_string(&container).unwrap();
+        let back: RuntimeType = serde_json::from_str(&json).unwrap();
+        assert_eq!(container, back);
+    }
+
+    #[test]
+    fn runtime_spec_clone() {
+        let spec = RuntimeSpec {
+            vcpus: 4,
+            memory_mb: 2048,
+            rootfs_path: PathBuf::from("/tmp/rootfs.raw"),
+            cloud_init_path: None,
+            network: None,
+            gpu: GpuMode::None,
+        };
+        let cloned = spec.clone();
+        assert_eq!(cloned.vcpus, 4);
+        assert_eq!(cloned.memory_mb, 2048);
+    }
+
+    #[test]
+    fn runtime_handle_clone() {
+        let handle = RuntimeHandle {
+            id: "vm-1".to_string(),
+            pid: 1234,
+            runtime_type: RuntimeType::Vm,
+            runtime_dir: PathBuf::from("/run/syfrah/vms/vm-1"),
+        };
+        let cloned = handle.clone();
+        assert_eq!(cloned.id, "vm-1");
+        assert_eq!(cloned.pid, 1234);
+        assert_eq!(cloned.runtime_type, RuntimeType::Vm);
+    }
+
+    #[test]
+    fn runtime_info_debug() {
+        let info = RuntimeInfo {
+            phase: VmPhase::Running,
+            pid: 5678,
+            uptime_secs: Some(120),
+            runtime_type: RuntimeType::Vm,
+        };
+        let debug = format!("{info:?}");
+        assert!(debug.contains("Running"));
+        assert!(debug.contains("5678"));
+    }
+}
