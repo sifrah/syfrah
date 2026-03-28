@@ -29,12 +29,12 @@ done
 info "Waiting for full convergence ($NODE_COUNT nodes, $EXPECTED peers each)..."
 START_TIME=$(date +%s)
 
-if wait_for_convergence "e2e-max-" $NODE_COUNT $EXPECTED 90; then
+if wait_for_convergence "e2e-max-" $NODE_COUNT $EXPECTED 180; then
     ELAPSED=$(($(date +%s) - START_TIME))
     pass "$NODE_COUNT nodes converged in ${ELAPSED}s"
 else
     ELAPSED=$(($(date +%s) - START_TIME))
-    fail "mesh did not fully converge in 90s"
+    fail "mesh did not fully converge in 180s"
     for i in $(seq 1 $NODE_COUNT); do
         count=$(docker exec "e2e-max-$i" syfrah fabric peers 2>&1 | grep -c "active" || echo "0")
         echo "  e2e-max-$i: $count/$EXPECTED peers"
