@@ -111,7 +111,7 @@ init_mesh() {
     local node_name="${3:-$container}"
 
     debug "init_mesh: $container at $ip as $node_name"
-    docker exec -d "$container" \
+    docker exec -d -e RUST_LOG=info,syfrah_compute=debug "$container" \
         syfrah fabric init \
         --name "$E2E_MESH" \
         --node-name "$node_name" \
