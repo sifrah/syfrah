@@ -201,6 +201,13 @@ impl VmManager {
         info!(ch_binary = %ch_binary.display(), "VmManager: resolved cloud-hypervisor binary");
 
         // Ensure data directories exist even if install.sh was not run.
+        // base_dir lives under /run (tmpfs) so it vanishes on reboot — always recreate.
+        std::fs::create_dir_all(&config.base_dir).map_err(|e| ProcessError::SpawnFailed {
+            reason: format!(
+                "failed to create base_dir {}: {e}",
+                config.base_dir.display()
+            ),
+        })?;
         std::fs::create_dir_all(&config.image_dir).map_err(|e| ProcessError::SpawnFailed {
             reason: format!(
                 "failed to create image_dir {}: {e}",
