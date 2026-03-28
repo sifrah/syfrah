@@ -603,14 +603,61 @@ Compute does not manage networking directly. It receives TAP device configuratio
 
 ---
 
-## Storage integration
+## Image management
 
-Compute receives block device paths from the storage layer (via forge) and attaches them to Cloud Hypervisor:
+Compute manages VM boot assets: kernels, base images, instance disks, and cloud-init provisioning. See [handbook/image-management.md](../../handbook/image-management.md) for the full design.
 
-- **Root filesystem**: read-only ext4 image, passed as `--disk path={rootfs}`
-- **Data volumes**: ZeroFS NBD devices, passed as additional `--disk` entries
+### Summary
 
-Compute does not manage volumes, images, or caches. It receives paths and passes them to CH.
+- **Kernel**: bundled with Syfrah (direct kernel boot), custom kernel override via config
+- **Base images**: immutable raw disk images, pulled from HTTP catalog or imported locally
+- **Instance disks**: per-VM writable clone of a base image (reflink when available, full copy on ext4)
+- **Cloud-init**: NoCloud config-drive disk generated per VM (hostname, SSH keys, users)
+- **Pull policy**: `IfNotPresent` (default), `Always`, `Never` (air-gapped)
+- **Architecture**: `amd64` and `arm64` tagged everywhere, v1 = amd64 only
+
+### Quick example
+
+```bash
+# Create a VM with SSH access (auto-pulls image if not cached)
+syfrah compute vm create --name web-1 --image ubuntu-24.10 \
+    --vcpu 2 --memory 2048 --ssh-key ~/.ssh/id_ed25519.pub
+
+# SSH in after ~10 seconds
+ssh ubuntu@<vm-mesh-ipv6>
+```
+
+### Storage layout
+
+```
+/opt/syfrah/
+├── kernels/vmlinux                              # shared kernel
+├── images/                                      # base images (read-only)
+│   ├── ubuntu-24.10.raw
+│   └── images.json                              # local metadata cache
+└── instances/                                   # per-VM (writable)
+    └── {uuid}/
+        ├── rootfs.raw                           # clone of base image
+        ├── cloud-init.img                       # config-drive
+        └── serial.log                           # console output
+```
+
+Instance directories are named by UUID, not by VM name. Names are mutable metadata; UUIDs are permanent identity.
+
+### Image CLI
+
+```
+syfrah compute image list                        # local images
+syfrah compute image catalog                     # remote catalog
+syfrah compute image pull ubuntu-24.10           # download
+syfrah compute image import /path --name custom  # import
+syfrah compute image delete alpine-3.20          # delete (if unused)
+syfrah compute image inspect ubuntu-24.10        # metadata
+```
+
+## Storage integration (data volumes)
+
+For persistent data volumes beyond the rootfs, compute receives block device paths from the storage layer (via forge) and attaches them to Cloud Hypervisor as additional `--disk` entries. Data volumes (ZeroFS/S3-backed) are managed by the storage layer, not by compute. See [storage](../storage/README.md) for the full design.
 
 ---
 
