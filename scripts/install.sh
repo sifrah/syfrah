@@ -205,6 +205,22 @@ if [ -f "${TMPDIR}/${CH_BIN}" ]; then
   fi
 fi
 
+# --- Install kernel (if bundled) -------------------------------------------
+
+KERNEL_BIN="vmlinux"
+KERNEL_INSTALL_DIR="/opt/syfrah/kernels"
+
+if [ -f "${TMPDIR}/${KERNEL_BIN}" ]; then
+  start_spinner "Installing kernel to ${KERNEL_INSTALL_DIR}/${KERNEL_BIN}..."
+  mkdir -p "$KERNEL_INSTALL_DIR"
+  if install -m 644 "${TMPDIR}/${KERNEL_BIN}" "${KERNEL_INSTALL_DIR}/${KERNEL_BIN}"; then
+    stop_spinner "Installed kernel to ${KERNEL_INSTALL_DIR}/${KERNEL_BIN}"
+  else
+    stop_spinner "Failed to install kernel (are you root?)" fail
+    exit 1
+  fi
+fi
+
 # --- Verify -----------------------------------------------------------------
 
 EXPECTED_VERSION="${VERSION#v}"
