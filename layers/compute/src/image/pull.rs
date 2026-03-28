@@ -53,7 +53,7 @@ pub async fn pull(
             reason: format!("failed to acquire lock: {e}"),
         })?;
 
-    let result = pull_inner(store, name, catalog_entry).await;
+    let result = pull_inner(store, name, catalog_entry, &catalog.base_url).await;
 
     // Release lock (drop does it, but be explicit)
     let _ = lock_file.unlock();
@@ -66,10 +66,10 @@ async fn pull_inner(
     store: &ImageStore,
     name: &str,
     catalog_entry: &ImageMeta,
+    base_url: &str,
 ) -> Result<ImageMeta, ImageError> {
-    // 4. Download streaming — use file field as URL directly (catalog populates
-    //    full URLs or the caller passes them in via the file field)
-    let download_url = catalog_entry.file.clone();
+    // 4. Build download URL from base_url + file name
+    let download_url = format!("{}/{}", base_url.trim_end_matches('/'), catalog_entry.file);
 
     // Validate URL scheme to prevent SSRF (only https:// and http:// allowed)
     super::catalog::validate_url(&download_url)?;

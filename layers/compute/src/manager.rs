@@ -200,6 +200,27 @@ impl VmManager {
         let ch_binary = resolve_ch_binary(config.ch_binary.as_deref())?;
         info!(ch_binary = %ch_binary.display(), "VmManager: resolved cloud-hypervisor binary");
 
+        // Ensure data directories exist even if install.sh was not run.
+        // base_dir lives under /run (tmpfs) so it vanishes on reboot — always recreate.
+        std::fs::create_dir_all(&config.base_dir).map_err(|e| ProcessError::SpawnFailed {
+            reason: format!(
+                "failed to create base_dir {}: {e}",
+                config.base_dir.display()
+            ),
+        })?;
+        std::fs::create_dir_all(&config.image_dir).map_err(|e| ProcessError::SpawnFailed {
+            reason: format!(
+                "failed to create image_dir {}: {e}",
+                config.image_dir.display()
+            ),
+        })?;
+        std::fs::create_dir_all(&config.instance_base).map_err(|e| ProcessError::SpawnFailed {
+            reason: format!(
+                "failed to create instance_base {}: {e}",
+                config.instance_base.display()
+            ),
+        })?;
+
         let (event_tx, _) = broadcast::channel(256);
 
         let image_store = Arc::new(ImageStore::new(config.image_dir.clone()));
