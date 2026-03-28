@@ -153,14 +153,8 @@ fn error_to_status(err: &ComputeError) -> StatusCode {
         ComputeError::Preflight(_) => StatusCode::BAD_REQUEST,
         ComputeError::Transition(_) => StatusCode::CONFLICT,
         ComputeError::Concurrency(_) => StatusCode::CONFLICT,
-        ComputeError::Process(ref pe) => {
-            let msg = pe.to_string();
-            if msg.contains("not found") {
-                StatusCode::NOT_FOUND
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
-        }
+        ComputeError::VmNotFound { .. } => StatusCode::NOT_FOUND,
+        ComputeError::Process(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ComputeError::Client(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ComputeError::Image(_) => StatusCode::UNPROCESSABLE_ENTITY,
     }
@@ -593,15 +587,15 @@ mod tests {
     }
 
     #[test]
-    fn error_to_status_process_not_found() {
-        let err = ComputeError::Process(crate::error::ProcessError::SpawnFailed {
-            reason: "VM vm-123 not found".to_string(),
-        });
+    fn error_to_status_vm_not_found() {
+        let err = ComputeError::VmNotFound {
+            id: "vm-123".to_string(),
+        };
         assert_eq!(error_to_status(&err), StatusCode::NOT_FOUND);
     }
 
     #[test]
-    fn error_to_status_process_other_is_500() {
+    fn error_to_status_process_is_500() {
         let err = ComputeError::Process(crate::error::ProcessError::SpawnFailed {
             reason: "permission denied".to_string(),
         });

@@ -27,6 +27,9 @@ pub enum ComputeError {
     #[error("concurrency error: {0}")]
     Concurrency(#[from] ConcurrencyError),
 
+    #[error("VM {id} not found")]
+    VmNotFound { id: String },
+
     #[error("image error: {0}")]
     Image(#[from] crate::image::error::ImageError),
 }
