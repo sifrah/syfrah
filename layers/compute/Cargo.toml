@@ -9,12 +9,17 @@ async-trait = "0.1"
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
+flate2 = "1"
+fs2 = "0.4"
+futures-util = "0.3"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 libc = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = "0.10"
 syfrah-api = { path = "../api" }
 thiserror = { workspace = true }
 tokio = { workspace = true }
@@ -22,6 +27,8 @@ tracing = { workspace = true }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
+filetime = "0.2"
+flate2 = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["server", "http1"] }
 tempfile = "3"
