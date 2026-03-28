@@ -27,6 +27,22 @@ sleep 2
 
 # ── Create a VM ──────────────────────────────────────────────────
 
+# Pre-check: verify fake CH can start
+info "Testing fake CH"
+FAKE_CH_TEST=$(docker exec "e2e-compute-create" sh -c 'mkdir -p /tmp/ch-test && timeout 3 /usr/local/lib/syfrah/cloud-hypervisor --api-socket /tmp/ch-test/test.sock &
+sleep 1
+if [ -S /tmp/ch-test/test.sock ]; then echo "SOCKET_OK"; kill %1 2>/dev/null; else echo "SOCKET_FAIL"; fi
+rm -rf /tmp/ch-test' 2>&1)
+debug "Fake CH test: $FAKE_CH_TEST"
+
+# Check /dev/kvm
+KVM_CHECK=$(docker exec "e2e-compute-create" ls -la /dev/kvm 2>&1 || echo "NO_KVM")
+debug "KVM check: $KVM_CHECK"
+
+# Check cgroup
+CGROUP_CHECK=$(docker exec "e2e-compute-create" ls /sys/fs/cgroup/cgroup.controllers 2>&1 || echo "NO_CGROUP")
+debug "Cgroup check: $CGROUP_CHECK"
+
 info "Creating test VM"
 OUTPUT=$(create_vm "e2e-compute-create" "test-vm-1" --vcpu 2 --memory 512 --image alpine-3.20 || true)
 EXIT_CODE=${PIPESTATUS[0]:-$?}
