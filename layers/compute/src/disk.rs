@@ -1,9 +1,10 @@
-//! Disk service: instance directories, image cloning, and resize.
+//! Disk service: instance directories, image cloning, resize, and cloud-init.
 //!
 //! Each VM instance gets a dedicated directory (`/opt/syfrah/instances/{uuid}/`)
 //! containing its rootfs clone, cloud-init disk, serial log, and local metadata.
 //! This module handles creating those directories, cloning base images with
-//! reflink support, and resizing disks when requested.
+//! reflink support, resizing disks when requested, and generating NoCloud
+//! config-drive images for cloud-init provisioning.
 
 use std::fs;
 use std::io::Write;
@@ -15,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::image::error::ImageError;
-use crate::image::types::InstanceId;
+use crate::image::types::{CloudInitConfig, InstanceId};
 
 // ---------------------------------------------------------------------------
 // InstanceMeta
@@ -49,6 +50,7 @@ pub struct InstanceMeta {
 /// A VM instance directory containing all per-instance artifacts.
 ///
 /// Created once per VM lifecycle and cleaned up on delete.
+#[derive(Debug)]
 pub struct InstanceDir {
     base_path: PathBuf,
 }
@@ -312,6 +314,234 @@ fn available_disk_space(path: &Path) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
+// generate_cloud_init (#550)
+// ---------------------------------------------------------------------------
+
+/// Check whether a system tool is available on PATH.
+fn tool_available(name: &str) -> bool {
+    Command::new("which")
+        .arg(name)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Generate a NoCloud config-drive FAT32 image for cloud-init.
+///
+/// Creates `meta-data`, `user-data`, and optionally `network-config` files,
+/// then packages them into a FAT32 image using `mkfs.vfat` + `mcopy`.
+///
+/// Returns the path to the generated `cloud-init.img` inside the instance dir.
+///
+/// Requires `mkfs.vfat` (from dosfstools) and `mcopy` (from mtools) to be
+/// installed. Returns `CloudInitGenerationFailed` with install instructions
+/// if either tool is missing.
+pub fn generate_cloud_init(
+    config: &CloudInitConfig,
+    instance_dir: &InstanceDir,
+    instance_id: &InstanceId,
+) -> Result<PathBuf, ImageError> {
+    // -- Check required tools ------------------------------------------------
+    if !tool_available("mkfs.vfat") || !tool_available("mcopy") {
+        return Err(ImageError::CloudInitGenerationFailed {
+            reason: "mkfs.vfat and mcopy are required; install dosfstools and mtools".to_string(),
+        });
+    }
+
+    let dest = instance_dir.cloud_init_path();
+
+    // -- Create temp working directory ---------------------------------------
+    let work_dir = instance_dir.path().join("cloud-init-tmp");
+    fs::create_dir_all(&work_dir).map_err(|e| ImageError::CloudInitGenerationFailed {
+        reason: format!("failed to create cloud-init work dir: {e}"),
+    })?;
+
+    // Cleanup helper: remove work dir and any partial .img on error
+    let cleanup = |work: &Path, img: &Path| {
+        let _ = fs::remove_dir_all(work);
+        let _ = fs::remove_file(img);
+    };
+
+    // -- 1. Write meta-data --------------------------------------------------
+    let meta_data = format!(
+        "instance-id: {}\nlocal-hostname: {}\n",
+        instance_id, config.hostname
+    );
+    let meta_path = work_dir.join("meta-data");
+    if let Err(e) = fs::write(&meta_path, &meta_data) {
+        cleanup(&work_dir, &dest);
+        return Err(ImageError::CloudInitGenerationFailed {
+            reason: format!("failed to write meta-data: {e}"),
+        });
+    }
+
+    // -- 2. Write user-data --------------------------------------------------
+    let mut user_data = String::from("#cloud-config\n");
+
+    // Build users list
+    let mut users_yaml = String::new();
+
+    // Default user
+    users_yaml.push_str(&format!("  - name: {}\n", config.default_user));
+    users_yaml.push_str("    sudo: ALL=(ALL) NOPASSWD:ALL\n");
+    users_yaml.push_str("    shell: /bin/bash\n");
+    if !config.ssh_authorized_keys.is_empty() {
+        users_yaml.push_str("    ssh_authorized_keys:\n");
+        for key in &config.ssh_authorized_keys {
+            users_yaml.push_str(&format!("      - {key}\n"));
+        }
+    }
+
+    // Additional users
+    for user in &config.users {
+        users_yaml.push_str(&format!("  - name: {}\n", user.name));
+        if !user.groups.is_empty() {
+            users_yaml.push_str(&format!("    groups: {}\n", user.groups.join(", ")));
+        }
+        if let Some(sudo) = &user.sudo {
+            users_yaml.push_str(&format!("    sudo: {sudo}\n"));
+        }
+        if let Some(shell) = &user.shell {
+            users_yaml.push_str(&format!("    shell: {shell}\n"));
+        }
+    }
+
+    if !users_yaml.is_empty() {
+        user_data.push_str("users:\n");
+        user_data.push_str(&users_yaml);
+    }
+
+    if let Some(extra) = &config.user_data_extra {
+        user_data.push_str(extra);
+        if !extra.ends_with('\n') {
+            user_data.push('\n');
+        }
+    }
+
+    let userdata_path = work_dir.join("user-data");
+    if let Err(e) = fs::write(&userdata_path, &user_data) {
+        cleanup(&work_dir, &dest);
+        return Err(ImageError::CloudInitGenerationFailed {
+            reason: format!("failed to write user-data: {e}"),
+        });
+    }
+
+    // -- 3. Optional network-config ------------------------------------------
+    let network_path = work_dir.join("network-config");
+    let has_network = config.network_config.is_some();
+    if let Some(net_cfg) = &config.network_config {
+        if let Err(e) = fs::write(&network_path, net_cfg) {
+            cleanup(&work_dir, &dest);
+            return Err(ImageError::CloudInitGenerationFailed {
+                reason: format!("failed to write network-config: {e}"),
+            });
+        }
+    }
+
+    // -- 4. Create FAT32 image -----------------------------------------------
+    // truncate -s 1M cloud-init.img
+    let truncate = Command::new("truncate")
+        .args(["-s", "1M", &dest.to_string_lossy()])
+        .output();
+    match truncate {
+        Ok(out) if !out.status.success() => {
+            cleanup(&work_dir, &dest);
+            return Err(ImageError::CloudInitGenerationFailed {
+                reason: format!(
+                    "truncate failed: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ),
+            });
+        }
+        Err(e) => {
+            cleanup(&work_dir, &dest);
+            return Err(ImageError::CloudInitGenerationFailed {
+                reason: format!("failed to run truncate: {e}"),
+            });
+        }
+        Ok(_) => {}
+    }
+
+    // mkfs.vfat -n cidata cloud-init.img
+    let mkfs = Command::new("mkfs.vfat")
+        .args(["-n", "cidata", &dest.to_string_lossy()])
+        .output();
+    match mkfs {
+        Ok(out) if !out.status.success() => {
+            cleanup(&work_dir, &dest);
+            return Err(ImageError::CloudInitGenerationFailed {
+                reason: format!(
+                    "mkfs.vfat failed: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ),
+            });
+        }
+        Err(e) => {
+            cleanup(&work_dir, &dest);
+            return Err(ImageError::CloudInitGenerationFailed {
+                reason: format!("failed to run mkfs.vfat: {e}"),
+            });
+        }
+        Ok(_) => {}
+    }
+
+    // mcopy files into the image
+    let files_to_copy: Vec<(&Path, &str)> = {
+        let mut v: Vec<(&Path, &str)> = vec![
+            (meta_path.as_path(), "meta-data"),
+            (userdata_path.as_path(), "user-data"),
+        ];
+        if has_network {
+            v.push((network_path.as_path(), "network-config"));
+        }
+        v
+    };
+
+    for (src, name) in &files_to_copy {
+        let mcopy = Command::new("mcopy")
+            .args([
+                "-i",
+                &dest.to_string_lossy(),
+                &src.to_string_lossy(),
+                &format!("::{name}"),
+            ])
+            .output();
+        match mcopy {
+            Ok(out) if !out.status.success() => {
+                cleanup(&work_dir, &dest);
+                return Err(ImageError::CloudInitGenerationFailed {
+                    reason: format!(
+                        "mcopy {name} failed: {}",
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    ),
+                });
+            }
+            Err(e) => {
+                cleanup(&work_dir, &dest);
+                return Err(ImageError::CloudInitGenerationFailed {
+                    reason: format!("failed to run mcopy for {name}: {e}"),
+                });
+            }
+            Ok(_) => {}
+        }
+    }
+
+    // -- 5. Clean up work dir ------------------------------------------------
+    let _ = fs::remove_dir_all(&work_dir);
+
+    info!(
+        path = %dest.display(),
+        instance_id = %instance_id,
+        hostname = %config.hostname,
+        has_network_config = has_network,
+        ssh_keys = config.ssh_authorized_keys.len(),
+        "cloud-init config-drive generated"
+    );
+
+    Ok(dest)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -321,7 +551,37 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    // -- InstanceDir tests (#548) --------------------------------------------
+    fn sample_meta() -> InstanceMeta {
+        InstanceMeta {
+            image_source: "ubuntu-24.04".to_string(),
+            image_sha: "abc123".to_string(),
+            arch: "aarch64".to_string(),
+            requested_disk_size_mb: Some(20480),
+            effective_disk_size_mb: 20480,
+            hostname: "vm-web-1".to_string(),
+            created_at: "2025-06-01T12:00:00Z".to_string(),
+            vm_name: "web-1".to_string(),
+        }
+    }
+
+    fn minimal_cloud_init_config() -> CloudInitConfig {
+        CloudInitConfig {
+            hostname: "vm-test-1".to_string(),
+            ssh_authorized_keys: vec!["ssh-ed25519 AAAA... user@host".to_string()],
+            default_user: "ubuntu".to_string(),
+            users: vec![],
+            network_config: None,
+            user_data_extra: None,
+        }
+    }
+
+    fn has_tool(name: &str) -> bool {
+        tool_available(name)
+    }
+
+    // ========================================================================
+    // 1. InstanceDir tests (#548 / #551)
+    // ========================================================================
 
     #[test]
     fn create_instance_dir_and_verify_paths() {
@@ -344,6 +604,8 @@ mod tests {
         let _dir = InstanceDir::create(tmp.path(), &id).unwrap();
         let result = InstanceDir::create(tmp.path(), &id);
         assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("already exists"));
     }
 
     #[test]
@@ -352,17 +614,7 @@ mod tests {
         let id = InstanceId::new();
         let dir = InstanceDir::create(tmp.path(), &id).unwrap();
 
-        let meta = InstanceMeta {
-            image_source: "ubuntu-24.04".to_string(),
-            image_sha: "abc123".to_string(),
-            arch: "aarch64".to_string(),
-            requested_disk_size_mb: Some(20480),
-            effective_disk_size_mb: 20480,
-            hostname: "vm-web-1".to_string(),
-            created_at: "2025-06-01T12:00:00Z".to_string(),
-            vm_name: "web-1".to_string(),
-        };
-
+        let meta = sample_meta();
         dir.write_metadata(&meta).unwrap();
         let back = dir.read_metadata().unwrap();
         assert_eq!(meta, back);
@@ -412,7 +664,6 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let id = InstanceId::new();
         let dir = InstanceDir::open(tmp.path(), &id);
-        // Dir was never created — cleanup should be a no-op
         assert!(dir.cleanup().is_ok());
     }
 
@@ -424,14 +675,16 @@ mod tests {
         assert!(!dir.exists());
     }
 
-    // -- Clone tests (#549) --------------------------------------------------
+    // ========================================================================
+    // 2. Clone tests (#549 / #551)
+    // ========================================================================
 
     #[test]
     fn clone_small_file_preserves_content() {
         let tmp = TempDir::new().unwrap();
         let base = tmp.path().join("base.raw");
 
-        // Create a 1 MB base image
+        // Create a 1 MB base image with a recognizable pattern
         let data: Vec<u8> = (0..1024 * 1024).map(|i| (i % 256) as u8).collect();
         fs::write(&base, &data).unwrap();
 
@@ -456,7 +709,7 @@ mod tests {
         let id = InstanceId::new();
         let dir = InstanceDir::create(tmp.path(), &id).unwrap();
 
-        // Request 2 MB, base min is 1 MB → should resize
+        // Request 2 MB, base min is 1 MB -> should resize
         let effective = clone_image(&base, &dir, Some(2), 1).unwrap();
         assert_eq!(effective, 2 * 1024 * 1024);
 
@@ -474,7 +727,7 @@ mod tests {
         let id = InstanceId::new();
         let dir = InstanceDir::create(tmp.path(), &id).unwrap();
 
-        // Request 5 MB but base_min is 10 MB → no resize
+        // Request 5 MB but base_min is 10 MB -> no resize
         let effective = clone_image(&base, &dir, Some(5), 10).unwrap();
         assert_eq!(effective, 10 * 1024 * 1024);
     }
@@ -488,12 +741,22 @@ mod tests {
         let id = InstanceId::new();
         let dir = InstanceDir::create(tmp.path(), &id).unwrap();
 
-        // Make rootfs path a directory so truncate will fail
+        // Make rootfs path a directory so cp will fail
         fs::create_dir_all(dir.rootfs_path()).unwrap();
 
         let result = clone_image(&base, &dir, Some(100), 1);
-        // cp will fail because dest is a directory
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn clone_base_not_found() {
+        let tmp = TempDir::new().unwrap();
+        let id = InstanceId::new();
+        let dir = InstanceDir::create(tmp.path(), &id).unwrap();
+
+        let result = clone_image(Path::new("/nonexistent/base.raw"), &dir, None, 1);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cannot stat"));
     }
 
     #[test]
@@ -512,5 +775,283 @@ mod tests {
         let json = serde_json::to_string(&meta).unwrap();
         let back: InstanceMeta = serde_json::from_str(&json).unwrap();
         assert_eq!(meta, back);
+    }
+
+    // ========================================================================
+    // 3. Cloud-init tests (#550 / #551)
+    // ========================================================================
+
+    #[test]
+    fn cloud_init_tools_missing_returns_helpful_error() {
+        // If both tools are available this test verifies the happy path
+        // does not produce the error; if missing it verifies the message.
+        if !has_tool("mkfs.vfat") || !has_tool("mcopy") {
+            let tmp = TempDir::new().unwrap();
+            let id = InstanceId::new();
+            let dir = InstanceDir::create(tmp.path(), &id).unwrap();
+            let config = minimal_cloud_init_config();
+
+            let result = generate_cloud_init(&config, &dir, &id);
+            assert!(result.is_err());
+            let msg = result.unwrap_err().to_string();
+            assert!(msg.contains("dosfstools"));
+            assert!(msg.contains("mtools"));
+        }
+    }
+
+    #[test]
+    fn cloud_init_generates_nonempty_image() {
+        if !has_tool("mkfs.vfat") || !has_tool("mcopy") {
+            eprintln!("SKIP: mkfs.vfat/mcopy not available");
+            return;
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let id = InstanceId::new();
+        let dir = InstanceDir::create(tmp.path(), &id).unwrap();
+        let config = minimal_cloud_init_config();
+
+        let path = generate_cloud_init(&config, &dir, &id).unwrap();
+        assert!(path.exists());
+        let size = fs::metadata(&path).unwrap().len();
+        assert!(size > 0, "cloud-init.img should be non-empty");
+        // FAT32 1M image
+        assert_eq!(size, 1024 * 1024);
+    }
+
+    #[test]
+    fn cloud_init_meta_data_contains_instance_id_and_hostname() {
+        if !has_tool("mkfs.vfat") || !has_tool("mcopy") {
+            eprintln!("SKIP: mkfs.vfat/mcopy not available");
+            return;
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let id = InstanceId::new();
+        let dir = InstanceDir::create(tmp.path(), &id).unwrap();
+        let config = minimal_cloud_init_config();
+
+        let img_path = generate_cloud_init(&config, &dir, &id).unwrap();
+
+        // Extract meta-data using mcopy
+        let extract_dir = tmp.path().join("extract");
+        fs::create_dir_all(&extract_dir).unwrap();
+        let out = Command::new("mcopy")
+            .args([
+                "-i",
+                &img_path.to_string_lossy(),
+                "::meta-data",
+                &extract_dir.join("meta-data").to_string_lossy(),
+            ])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "mcopy extract failed");
+
+        let content = fs::read_to_string(extract_dir.join("meta-data")).unwrap();
+        assert!(content.contains(&id.to_string()));
+        assert!(content.contains("vm-test-1"));
+    }
+
+    #[test]
+    fn cloud_init_user_data_contains_ssh_key() {
+        if !has_tool("mkfs.vfat") || !has_tool("mcopy") {
+            eprintln!("SKIP: mkfs.vfat/mcopy not available");
+            return;
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let id = InstanceId::new();
+        let dir = InstanceDir::create(tmp.path(), &id).unwrap();
+        let config = minimal_cloud_init_config();
+
+        let img_path = generate_cloud_init(&config, &dir, &id).unwrap();
+
+        let extract_dir = tmp.path().join("extract");
+        fs::create_dir_all(&extract_dir).unwrap();
+        let out = Command::new("mcopy")
+            .args([
+                "-i",
+                &img_path.to_string_lossy(),
+                "::user-data",
+                &extract_dir.join("user-data").to_string_lossy(),
+            ])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+
+        let content = fs::read_to_string(extract_dir.join("user-data")).unwrap();
+        assert!(content.contains("#cloud-config"));
+        assert!(content.contains("ssh-ed25519"));
+        assert!(content.contains("ubuntu"));
+    }
+
+    #[test]
+    fn cloud_init_without_ssh_key() {
+        if !has_tool("mkfs.vfat") || !has_tool("mcopy") {
+            eprintln!("SKIP: mkfs.vfat/mcopy not available");
+            return;
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let id = InstanceId::new();
+        let dir = InstanceDir::create(tmp.path(), &id).unwrap();
+        let config = CloudInitConfig {
+            hostname: "no-ssh-vm".to_string(),
+            ssh_authorized_keys: vec![],
+            default_user: "admin".to_string(),
+            users: vec![],
+            network_config: None,
+            user_data_extra: None,
+        };
+
+        let img_path = generate_cloud_init(&config, &dir, &id).unwrap();
+        assert!(img_path.exists());
+
+        // Verify user-data does not contain ssh_authorized_keys section
+        let extract_dir = tmp.path().join("extract");
+        fs::create_dir_all(&extract_dir).unwrap();
+        let out = Command::new("mcopy")
+            .args([
+                "-i",
+                &img_path.to_string_lossy(),
+                "::user-data",
+                &extract_dir.join("user-data").to_string_lossy(),
+            ])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+
+        let content = fs::read_to_string(extract_dir.join("user-data")).unwrap();
+        assert!(content.contains("#cloud-config"));
+        assert!(!content.contains("ssh_authorized_keys"));
+    }
+
+    #[test]
+    fn cloud_init_without_network_config() {
+        if !has_tool("mkfs.vfat") || !has_tool("mcopy") {
+            eprintln!("SKIP: mkfs.vfat/mcopy not available");
+            return;
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let id = InstanceId::new();
+        let dir = InstanceDir::create(tmp.path(), &id).unwrap();
+        let config = minimal_cloud_init_config();
+
+        let img_path = generate_cloud_init(&config, &dir, &id).unwrap();
+
+        // Trying to extract network-config should fail (file not on disk)
+        let extract_dir = tmp.path().join("extract");
+        fs::create_dir_all(&extract_dir).unwrap();
+        let out = Command::new("mcopy")
+            .args([
+                "-i",
+                &img_path.to_string_lossy(),
+                "::network-config",
+                &extract_dir.join("network-config").to_string_lossy(),
+            ])
+            .output()
+            .unwrap();
+        // mcopy should fail because network-config was not written
+        assert!(!out.status.success());
+    }
+
+    #[test]
+    fn cloud_init_with_network_config() {
+        if !has_tool("mkfs.vfat") || !has_tool("mcopy") {
+            eprintln!("SKIP: mkfs.vfat/mcopy not available");
+            return;
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let id = InstanceId::new();
+        let dir = InstanceDir::create(tmp.path(), &id).unwrap();
+        let config = CloudInitConfig {
+            hostname: "net-vm".to_string(),
+            ssh_authorized_keys: vec![],
+            default_user: "ubuntu".to_string(),
+            users: vec![],
+            network_config: Some("network:\n  version: 2\n".to_string()),
+            user_data_extra: None,
+        };
+
+        let img_path = generate_cloud_init(&config, &dir, &id).unwrap();
+
+        let extract_dir = tmp.path().join("extract");
+        fs::create_dir_all(&extract_dir).unwrap();
+        let out = Command::new("mcopy")
+            .args([
+                "-i",
+                &img_path.to_string_lossy(),
+                "::network-config",
+                &extract_dir.join("network-config").to_string_lossy(),
+            ])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "network-config should exist on disk");
+
+        let content = fs::read_to_string(extract_dir.join("network-config")).unwrap();
+        assert!(content.contains("version: 2"));
+    }
+
+    #[test]
+    fn cloud_init_cleanup_no_work_dir_left() {
+        if !has_tool("mkfs.vfat") || !has_tool("mcopy") {
+            eprintln!("SKIP: mkfs.vfat/mcopy not available");
+            return;
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let id = InstanceId::new();
+        let dir = InstanceDir::create(tmp.path(), &id).unwrap();
+        let config = minimal_cloud_init_config();
+
+        generate_cloud_init(&config, &dir, &id).unwrap();
+
+        // Temp working directory should have been cleaned up
+        assert!(!dir.path().join("cloud-init-tmp").exists());
+    }
+
+    // ========================================================================
+    // 4. Integration test (#551)
+    // ========================================================================
+
+    #[test]
+    fn integration_create_clone_cloud_init_cleanup() {
+        let tmp = TempDir::new().unwrap();
+        let id = InstanceId::new();
+
+        // 1. Create instance dir
+        let dir = InstanceDir::create(tmp.path(), &id).unwrap();
+        assert!(dir.exists());
+
+        // 2. Clone a base image
+        let base = tmp.path().join("base.raw");
+        fs::write(&base, vec![0xABu8; 1024 * 512]).unwrap();
+        let effective = clone_image(&base, &dir, None, 1).unwrap();
+        assert!(effective > 0);
+        assert!(dir.rootfs_path().exists());
+
+        // 3. Write metadata
+        let meta = sample_meta();
+        dir.write_metadata(&meta).unwrap();
+        assert!(dir.metadata_path().exists());
+
+        // 4. Generate cloud-init (if tools available)
+        if has_tool("mkfs.vfat") && has_tool("mcopy") {
+            let config = minimal_cloud_init_config();
+            let ci_path = generate_cloud_init(&config, &dir, &id).unwrap();
+            assert!(ci_path.exists());
+            assert!(dir.cloud_init_path().exists());
+        }
+
+        // 5. Verify all files present
+        assert!(dir.rootfs_path().exists());
+        assert!(dir.metadata_path().exists());
+
+        // 6. Cleanup and verify everything gone
+        let dir_path = dir.path().to_path_buf();
+        dir.cleanup().unwrap();
+        assert!(!dir_path.exists());
     }
 }
