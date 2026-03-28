@@ -54,7 +54,7 @@ async fn run_status(json: bool) -> anyhow::Result<()> {
     let req = ComputeRequest::Status;
     let resp = send_compute_request(&control_socket_path(), &req)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}\n\nIs the daemon running? Initialize with: syfrah fabric init --name <mesh-name>"))?;
 
     match resp {
         ComputeResponse::Status(v) => {
