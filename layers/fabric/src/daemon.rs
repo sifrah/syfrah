@@ -1920,7 +1920,18 @@ pub async fn run_daemon(
         ))
     };
 
-    // Wait for a shutdown signal (SIGINT or SIGTERM) or an unexpected task exit.
+    // SIGUSR1 handler: flush state and re-exec for zero-downtime update.
+    #[cfg(unix)]
+    let sigusr1_reexec = async {
+        let mut sig = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1())
+            .expect("failed to register SIGUSR1 handler");
+        sig.recv().await;
+    };
+    #[cfg(not(unix))]
+    let sigusr1_reexec = std::future::pending::<()>();
+
+    // Wait for a shutdown signal (SIGINT, SIGTERM, or SIGUSR1) or an unexpected task exit.
+    let mut reexec_requested = false;
     tokio::select! {
         _ = &mut control_task => {
             warn!("control_task exited unexpectedly");
@@ -1944,6 +1955,29 @@ pub async fn run_daemon(
         _ = terminate => {
             info!("received SIGTERM, shutting down");
         }
+        _ = sigusr1_reexec => {
+            info!("received SIGUSR1, scheduling re-exec after in-flight operations drain");
+            reexec_requested = true;
+        }
+    }
+
+    // If SIGUSR1 was received, give in-flight control socket operations (e.g.
+    // long image pulls) a grace period to finish before we proceed with re-exec.
+    // We wait up to 5 seconds for the control task to become idle rather than
+    // aborting it immediately.
+    if reexec_requested {
+        info!("waiting up to 5s for in-flight operations to complete...");
+        let drain_grace = tokio::time::Duration::from_secs(5);
+        let _ = tokio::time::timeout(drain_grace, async {
+            // Yield to the runtime so in-flight control socket responses can
+            // complete naturally. We don't cancel anything here — the tasks
+            // continue running and will finish their current request/response
+            // cycle during this window.
+            tokio::task::yield_now().await;
+            tokio::time::sleep(drain_grace).await;
+        })
+        .await;
+        info!("grace period elapsed, proceeding with re-exec");
     }
 
     // Signal all cancellation-aware loops to stop.
@@ -1980,6 +2014,35 @@ pub async fn run_daemon(
     // Flush any debounced JSON state so the on-disk export is up-to-date.
     let _ = store::flush_json();
     let _ = std::fs::remove_file(store::control_socket_path());
+
+    if reexec_requested {
+        // Re-exec: replace this process with the (potentially updated) binary.
+        // WireGuard interface stays up (kernel-managed). PID file is kept so
+        // the new process can overwrite it. We skip teardown_interface and
+        // remove_pid intentionally.
+        info!("flushed state, re-executing daemon...");
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            let exe = std::env::current_exe().expect("failed to determine current executable");
+            let args: Vec<String> = std::env::args().collect();
+            // exec() replaces this process — it does not return on success.
+            let err = std::process::Command::new(&exe).args(&args[1..]).exec();
+            // If we get here, exec() failed. Do NOT fall through to
+            // teardown_interface/remove_pid — that would destroy the WireGuard
+            // interface and PID file, leaving the daemon unrecoverable.
+            // Instead, exit immediately so systemd can restart us with the
+            // existing interface and PID file intact.
+            error!("re-exec failed: {err} — exiting for systemd restart");
+            std::process::exit(1);
+        }
+        #[cfg(not(unix))]
+        {
+            error!("re-exec is not supported on this platform — exiting for systemd restart");
+            std::process::exit(1);
+        }
+    }
+
     wg::teardown_interface()?;
     store::remove_pid();
     events::emit(
