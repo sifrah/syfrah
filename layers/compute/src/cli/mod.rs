@@ -4,6 +4,7 @@
 //! status queries. Each handler communicates with the daemon via the
 //! control socket.
 
+pub mod image;
 pub mod vm;
 
 use std::path::PathBuf;
@@ -20,6 +21,11 @@ pub enum ComputeCommand {
         #[command(subcommand)]
         command: vm::VmCommand,
     },
+    /// Manage images
+    Image {
+        #[command(subcommand)]
+        command: image::ImageCommand,
+    },
     /// Show compute layer status
     Status {
         /// Output as JSON
@@ -32,6 +38,7 @@ pub enum ComputeCommand {
 pub async fn run(cmd: ComputeCommand) -> anyhow::Result<()> {
     match cmd {
         ComputeCommand::Vm { command } => vm::run(command).await,
+        ComputeCommand::Image { command } => image::run(command).await,
         ComputeCommand::Status { json } => run_status(json).await,
     }
 }

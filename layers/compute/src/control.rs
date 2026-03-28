@@ -14,6 +14,8 @@ use tokio::net::UnixStream;
 use crate::manager::VmManager;
 use crate::types::{GpuMode, VmId, VmSpec};
 
+use std::path::PathBuf as StdPathBuf;
+
 // ---------------------------------------------------------------------------
 // Request / Response enums
 // ---------------------------------------------------------------------------
@@ -27,6 +29,10 @@ pub enum ComputeRequest {
         image: String,
         gpu_bdf: Option<String>,
         tap: Option<String>,
+        #[serde(default)]
+        ssh_key: Option<String>,
+        #[serde(default)]
+        disk_size_mb: Option<u32>,
     },
     ListVms,
     GetVm {
@@ -53,6 +59,22 @@ pub enum ComputeRequest {
         memory_mb: Option<u32>,
     },
     Status,
+    ImageList,
+    ImageInspect {
+        name: String,
+    },
+    ImagePull {
+        name: String,
+    },
+    ImageImport {
+        path: StdPathBuf,
+        name: String,
+        arch: String,
+    },
+    ImageDelete {
+        name: String,
+    },
+    ImageCatalog,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -67,6 +89,12 @@ pub enum ComputeResponse {
     Ok,
     /// Error message.
     Error(String),
+    /// List of image metadata.
+    ImageList(Vec<serde_json::Value>),
+    /// Single image metadata.
+    ImageMeta(serde_json::Value),
+    /// Image catalog (remote).
+    ImageCatalog(serde_json::Value),
 }
 
 // ---------------------------------------------------------------------------
@@ -122,6 +150,8 @@ async fn handle_compute_request(mgr: &VmManager, req: ComputeRequest) -> Compute
             image,
             gpu_bdf,
             tap,
+            ssh_key,
+            disk_size_mb,
         } => {
             let gpu = match gpu_bdf {
                 Some(bdf) => GpuMode::Passthrough { bdf },
@@ -140,8 +170,8 @@ async fn handle_compute_request(mgr: &VmManager, req: ComputeRequest) -> Compute
                 network,
                 volumes: vec![],
                 gpu,
-                ssh_key: None,
-                disk_size_mb: None,
+                ssh_key,
+                disk_size_mb,
             };
             match mgr.create_vm(spec).await {
                 Ok(status) => ComputeResponse::Vm(vm_status_to_json(&status)),
@@ -205,6 +235,67 @@ async fn handle_compute_request(mgr: &VmManager, req: ComputeRequest) -> Compute
                 "status": "healthy",
                 "total_vms": total,
                 "running_vms": running,
+            }))
+        }
+        ComputeRequest::ImageList => match mgr.image_store().list() {
+            Ok(images) => {
+                let json_list: Vec<serde_json::Value> = images
+                    .iter()
+                    .map(|i| serde_json::to_value(i).unwrap_or_default())
+                    .collect();
+                ComputeResponse::ImageList(json_list)
+            }
+            Err(e) => ComputeResponse::Error(e.to_string()),
+        },
+        ComputeRequest::ImageInspect { name } => match mgr.image_store().get(&name) {
+            Ok(Some(meta)) => {
+                ComputeResponse::ImageMeta(serde_json::to_value(meta).unwrap_or_default())
+            }
+            Ok(None) => ComputeResponse::Error(format!("image not found: {name}")),
+            Err(e) => ComputeResponse::Error(e.to_string()),
+        },
+        ComputeRequest::ImagePull { name } => {
+            let catalog = {
+                // Access catalog through the manager's public interface is not
+                // available directly; we need to use the pull function.
+                // For now, return an error indicating pull is not available in
+                // this context — the manager would need to expose pull.
+                let _ = &name;
+                ComputeResponse::Error(format!(
+                    "image pull via control socket not yet implemented for '{name}'"
+                ))
+            };
+            catalog
+        }
+        ComputeRequest::ImageImport { path, name, arch } => {
+            match crate::image::import::import(mgr.image_store(), &path, &name, &arch) {
+                Ok(meta) => {
+                    ComputeResponse::ImageMeta(serde_json::to_value(meta).unwrap_or_default())
+                }
+                Err(e) => ComputeResponse::Error(e.to_string()),
+            }
+        }
+        ComputeRequest::ImageDelete { name } => {
+            let refcounts = {
+                let mut refs = std::collections::HashMap::new();
+                let count = mgr.image_refcount(&name).await;
+                if count > 0 {
+                    refs.insert(name.clone(), count);
+                }
+                refs
+            };
+            match crate::image::delete::delete(mgr.image_store(), &name, &refcounts) {
+                Ok(()) => ComputeResponse::Ok,
+                Err(e) => ComputeResponse::Error(e.to_string()),
+            }
+        }
+        ComputeRequest::ImageCatalog => {
+            // Return an empty catalog placeholder — the real catalog would be
+            // fetched via the catalog service.
+            ComputeResponse::ImageCatalog(serde_json::json!({
+                "version": 1,
+                "base_url": "",
+                "images": [],
             }))
         }
     }
