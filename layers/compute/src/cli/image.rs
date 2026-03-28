@@ -88,7 +88,7 @@ async fn run_list(json: bool) -> anyhow::Result<()> {
         .await
         .map_err(|e| {
             anyhow::anyhow!(
-                "failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"
+                "failed to connect to daemon: {e}\n\nIs the daemon running? Initialize with: syfrah fabric init --name <mesh-name>"
             )
         })?;
 
@@ -139,7 +139,7 @@ async fn run_inspect(name: String) -> anyhow::Result<()> {
         .await
         .map_err(|e| {
             anyhow::anyhow!(
-                "failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"
+                "failed to connect to daemon: {e}\n\nIs the daemon running? Initialize with: syfrah fabric init --name <mesh-name>"
             )
         })?;
 
@@ -164,7 +164,7 @@ async fn run_pull(name: String) -> anyhow::Result<()> {
         .await
         .map_err(|e| {
             anyhow::anyhow!(
-                "failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"
+                "failed to connect to daemon: {e}\n\nIs the daemon running? Initialize with: syfrah fabric init --name <mesh-name>"
             )
         })?;
 
@@ -192,7 +192,7 @@ async fn run_import(path: PathBuf, name: String, arch: String) -> anyhow::Result
         .await
         .map_err(|e| {
             anyhow::anyhow!(
-                "failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"
+                "failed to connect to daemon: {e}\n\nIs the daemon running? Initialize with: syfrah fabric init --name <mesh-name>"
             )
         })?;
 
@@ -229,7 +229,7 @@ async fn run_delete(name: String, yes: bool) -> anyhow::Result<()> {
         .await
         .map_err(|e| {
             anyhow::anyhow!(
-                "failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"
+                "failed to connect to daemon: {e}\n\nIs the daemon running? Initialize with: syfrah fabric init --name <mesh-name>"
             )
         })?;
 
@@ -253,7 +253,7 @@ async fn run_catalog(json: bool) -> anyhow::Result<()> {
         .await
         .map_err(|e| {
             anyhow::anyhow!(
-                "failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"
+                "failed to connect to daemon: {e}\n\nIs the daemon running? Initialize with: syfrah fabric init --name <mesh-name>"
             )
         })?;
 
