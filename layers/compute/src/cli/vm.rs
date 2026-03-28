@@ -18,8 +18,8 @@ pub enum VmCommand {
         #[arg(long)]
         name: String,
         /// Number of virtual CPUs
-        #[arg(long, alias = "vcpus", default_value = "2")]
-        vcpu: u32,
+        #[arg(long = "vcpus", alias = "vcpu", default_value = "2")]
+        vcpus: u32,
         /// Memory in megabytes
         #[arg(long, default_value = "2048")]
         memory: u32,
@@ -97,14 +97,14 @@ pub async fn run(cmd: VmCommand) -> anyhow::Result<()> {
     match cmd {
         VmCommand::Create {
             name,
-            vcpu,
+            vcpus,
             memory,
             image,
             gpu,
             tap,
             ssh_key,
             disk_size,
-        } => run_create(name, vcpu, memory, image, gpu, tap, ssh_key, disk_size).await,
+        } => run_create(name, vcpus, memory, image, gpu, tap, ssh_key, disk_size).await,
         VmCommand::List { json } => run_list(json).await,
         VmCommand::Get { id, json } => run_get(id, json).await,
         VmCommand::Start { id } => run_start(id).await,
@@ -181,14 +181,14 @@ async fn run_create(
     };
     let resp = send_compute_request(&control_socket_path(), &req)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"))?;
 
     match resp {
         ComputeResponse::Vm(v) => {
-            let vm_name = v.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+            let vm_name = v.get("id").and_then(|n| n.as_str()).unwrap_or("?");
             let vm_image = v.get("image").and_then(|i| i.as_str()).unwrap_or("?");
             let vm_vcpus = v.get("vcpus").and_then(|c| c.as_u64()).unwrap_or(0);
-            let vm_memory = v.get("memory").and_then(|m| m.as_u64()).unwrap_or(0);
+            let vm_memory = v.get("memory_mb").and_then(|m| m.as_u64()).unwrap_or(0);
             println!("VM created: {vm_name} ({vm_image}, {vm_vcpus} vCPU, {vm_memory} MB)");
             if ssh_key.is_some() {
                 let mesh_ip = v
@@ -218,7 +218,7 @@ async fn run_list(json: bool) -> anyhow::Result<()> {
     let req = ComputeRequest::ListVms;
     let resp = send_compute_request(&control_socket_path(), &req)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"))?;
 
     match resp {
         ComputeResponse::VmList(vms) => {
@@ -227,24 +227,25 @@ async fn run_list(json: bool) -> anyhow::Result<()> {
                 println!("{json_str}");
             } else {
                 println!(
-                    "{:<20} {:<12} {:<6} {:<10} {:<10}",
-                    "NAME", "PHASE", "vCPUs", "MEMORY", "UPTIME"
+                    "{:<20} {:<20} {:<12} {:<6} {:<10} {:<10}",
+                    "NAME", "IMAGE", "PHASE", "vCPUs", "MEMORY", "UPTIME"
                 );
-                println!("{}", "-".repeat(58));
+                println!("{}", "-".repeat(78));
                 if vms.is_empty() {
                     println!("(no VMs)");
                 } else {
                     for vm in &vms {
-                        let name = vm.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+                        let name = vm.get("id").and_then(|n| n.as_str()).unwrap_or("?");
+                        let image = vm.get("image").and_then(|i| i.as_str()).unwrap_or("");
                         let phase = vm.get("phase").and_then(|p| p.as_str()).unwrap_or("?");
                         let vcpus = vm.get("vcpus").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let memory = vm.get("memory").and_then(|m| m.as_u64()).unwrap_or(0);
+                        let memory = vm.get("memory_mb").and_then(|m| m.as_u64()).unwrap_or(0);
                         let uptime = vm
                             .get("uptime_secs")
                             .and_then(|u| u.as_u64())
                             .map(format_uptime)
                             .unwrap_or_else(|| "-".to_string());
-                        println!("{name:<20} {phase:<12} {vcpus:<6} {memory:<10} {uptime:<10}");
+                        println!("{name:<20} {image:<20} {phase:<12} {vcpus:<6} {memory:<10} {uptime:<10}");
                     }
                 }
             }
@@ -263,17 +264,18 @@ async fn run_get(id: String, json: bool) -> anyhow::Result<()> {
     let req = ComputeRequest::GetVm { id };
     let resp = send_compute_request(&control_socket_path(), &req)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"))?;
 
     match resp {
         ComputeResponse::Vm(v) => {
             if json {
                 println!("{}", serde_json::to_string_pretty(&v)?);
             } else {
-                let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+                let name = v.get("id").and_then(|n| n.as_str()).unwrap_or("?");
+                let image = v.get("image").and_then(|i| i.as_str()).unwrap_or("");
                 let phase = v.get("phase").and_then(|p| p.as_str()).unwrap_or("?");
                 let vcpus = v.get("vcpus").and_then(|v| v.as_u64()).unwrap_or(0);
-                let memory = v.get("memory").and_then(|m| m.as_u64()).unwrap_or(0);
+                let memory = v.get("memory_mb").and_then(|m| m.as_u64()).unwrap_or(0);
                 let uptime = v
                     .get("uptime_secs")
                     .and_then(|u| u.as_u64())
@@ -281,6 +283,7 @@ async fn run_get(id: String, json: bool) -> anyhow::Result<()> {
                     .unwrap_or_else(|| "-".to_string());
                 println!("VM Details");
                 println!("  Name:      {name}");
+                println!("  Image:     {image}");
                 println!("  Phase:     {phase}");
                 println!("  vCPUs:     {vcpus}");
                 println!("  Memory:    {memory} MB");
@@ -301,7 +304,7 @@ async fn run_start(id: String) -> anyhow::Result<()> {
     let req = ComputeRequest::StartVm { id: id.clone() };
     let resp = send_compute_request(&control_socket_path(), &req)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"))?;
 
     match resp {
         ComputeResponse::Vm(v) => {
@@ -325,7 +328,7 @@ async fn run_stop(id: String, force: bool) -> anyhow::Result<()> {
     };
     let resp = send_compute_request(&control_socket_path(), &req)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"))?;
 
     match resp {
         ComputeResponse::Vm(v) => {
@@ -346,14 +349,25 @@ async fn run_stop(id: String, force: bool) -> anyhow::Result<()> {
     }
 }
 
-async fn run_delete(id: String, _yes: bool) -> anyhow::Result<()> {
+async fn run_delete(id: String, yes: bool) -> anyhow::Result<()> {
+    if !yes {
+        eprint!("Delete VM {id}? This cannot be undone. [y/N] ");
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        let answer = answer.trim();
+        if answer != "y" && answer != "Y" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
     let req = ComputeRequest::DeleteVm {
         id: id.clone(),
         retain_disk: false,
     };
     let resp = send_compute_request(&control_socket_path(), &req)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"))?;
 
     match resp {
         ComputeResponse::Ok => {
@@ -373,7 +387,7 @@ async fn run_reboot(id: String) -> anyhow::Result<()> {
     let req = ComputeRequest::RebootVm { id: id.clone() };
     let resp = send_compute_request(&control_socket_path(), &req)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"))?;
 
     match resp {
         ComputeResponse::Vm(v) => {
@@ -398,7 +412,7 @@ async fn run_resize(id: String, vcpus: Option<u32>, memory: Option<u32>) -> anyh
     };
     let resp = send_compute_request(&control_socket_path(), &req)
         .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}\n\nIs the daemon running? Try: syfrah start"))?;
 
     match resp {
         ComputeResponse::Vm(v) => {
@@ -449,7 +463,7 @@ mod tests {
         match cmd {
             VmCommand::Create {
                 name,
-                vcpu,
+                vcpus,
                 memory,
                 image,
                 gpu,
@@ -458,7 +472,7 @@ mod tests {
                 disk_size,
             } => {
                 assert_eq!(name, "test-vm");
-                assert_eq!(vcpu, 2); // default
+                assert_eq!(vcpus, 2); // default
                 assert_eq!(memory, 2048); // default
                 assert_eq!(image, "ubuntu-24.04");
                 assert!(gpu.is_none());
@@ -490,7 +504,7 @@ mod tests {
         match cmd {
             VmCommand::Create {
                 name,
-                vcpu,
+                vcpus,
                 memory,
                 image,
                 gpu,
@@ -499,7 +513,7 @@ mod tests {
                 disk_size,
             } => {
                 assert_eq!(name, "gpu-vm");
-                assert_eq!(vcpu, 8);
+                assert_eq!(vcpus, 8);
                 assert_eq!(memory, 16384);
                 assert_eq!(image, "ubuntu-24.04");
                 assert_eq!(gpu.as_deref(), Some("0000:01:00.0"));
@@ -512,13 +526,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_create_vcpus_alias() {
-        // The E2E tests use --vcpus (plural) as alias
+    fn parse_create_vcpu_alias() {
+        // --vcpu (singular) is now the alias for --vcpus
         let cmd = parse(&[
-            "create", "--name", "alias-vm", "--vcpus", "4", "--memory", "1024", "--image", "alpine",
+            "create", "--name", "alias-vm", "--vcpu", "4", "--memory", "1024", "--image", "alpine",
         ]);
         match cmd {
-            VmCommand::Create { vcpu, .. } => assert_eq!(vcpu, 4),
+            VmCommand::Create { vcpus, .. } => assert_eq!(vcpus, 4),
             other => panic!("expected Create, got {other:?}"),
         }
     }
