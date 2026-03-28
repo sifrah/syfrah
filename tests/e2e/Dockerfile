@@ -22,7 +22,15 @@ RUN apt-get update && apt-get install -y \
     curl \
     ncat \
     tini \
+    crun \
     && rm -rf /var/lib/apt/lists/*
+
+# Install gVisor (runsc) — used by the container runtime as the OCI runtime.
+# If gVisor is unavailable at runtime (e.g. missing kernel support in nested
+# Docker), the container runtime falls back to crun alone.
+RUN curl -fsSL https://storage.googleapis.com/gvisor/releases/release/latest/x86_64/runsc \
+        -o /usr/local/bin/runsc && \
+    chmod +x /usr/local/bin/runsc
 
 COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/syfrah /usr/local/bin/syfrah
 COPY --from=builder /app/tests/e2e/fake-ch/target/x86_64-unknown-linux-musl/release/fake-cloud-hypervisor /usr/local/lib/syfrah/cloud-hypervisor
