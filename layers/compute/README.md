@@ -63,6 +63,51 @@ The trade-off is ~13 MB overhead per VM (vs ~5 MB for Firecracker). Acceptable f
 
 ---
 
+## Runtime modes
+
+Syfrah compute automatically selects the best available runtime:
+
+| Mode | Runtime | Trigger | Isolation | GPU |
+|---|---|---|---|---|
+| **VM** | Cloud Hypervisor | `/dev/kvm` available | Hardware (KVM) | Yes (VFIO) |
+| **Container** | crun + gVisor | `/dev/kvm` absent | gVisor syscall sandbox | No |
+
+The runtime is selected at daemon startup. The operator does not choose — compute detects the environment and picks the best option. All commands work identically in both modes:
+
+```bash
+# Same command on bare-metal (KVM) or VPS (no KVM)
+syfrah compute vm create --name web-1 --image alpine-3.20 --vcpus 2 --memory 2048
+```
+
+### Why gVisor
+
+Plain containers (runc) share the host kernel directly — a kernel exploit gives host access. gVisor interposes a userspace kernel that intercepts syscalls, providing VM-like isolation without hardware virtualization. Used by Google Cloud Run and Cloudflare Workers.
+
+### Differences between modes
+
+| Aspect | VM (Cloud Hypervisor) | Container (gVisor) |
+|---|---|---|
+| Boot time | ~200ms | ~50ms |
+| Memory overhead | ~13 MB/VM | ~5 MB/container |
+| Isolation | Hardware (KVM + virtio) | Syscall interception |
+| GPU passthrough | Yes (VFIO) | No |
+| Nested virt | Yes | N/A |
+| Image format | .raw disk image | OCI container image |
+| Survive daemon restart | Yes (separate process) | Yes (crun process) |
+
+### Checking the runtime
+
+```bash
+syfrah compute status
+# Compute Status
+#   Status:      healthy
+#   Runtime:     container (gVisor)
+#   Total VMs:   0
+#   Running VMs: 0
+```
+
+---
+
 ## Types
 
 ### Shared types (exposed to forge and control plane)

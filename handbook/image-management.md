@@ -215,6 +215,32 @@ Validation at runtime:
 
 ---
 
+## Dual-format images
+
+Each image in the Syfrah catalog is published in two formats:
+
+| Format | File pattern | Used by |
+|---|---|---|
+| VM (raw disk) | `{name}.raw.gz` | Cloud Hypervisor runtime (KVM) |
+| Container (OCI) | `{name}-oci.tar.gz` | crun + gVisor runtime (no KVM) |
+
+When `syfrah compute image pull` runs, it downloads the format matching the active runtime — operators do not need to specify which variant they want. The catalog JSON includes both files and their checksums:
+
+```json
+{
+  "name": "alpine-3.20",
+  "arch": "amd64",
+  "vm_file": "alpine-3.20.raw.gz",
+  "vm_sha256": "abc123...",
+  "container_file": "alpine-3.20-oci.tar.gz",
+  "container_sha256": "def456..."
+}
+```
+
+On a node running with the VM runtime, only the `.raw.gz` file is pulled and stored. On a node running with the container runtime, only the `-oci.tar.gz` file is pulled and imported into the local OCI store. This keeps disk usage minimal — a node never downloads a format it cannot use.
+
+---
+
 ## Instance disks
 
 When a VM is created, compute clones the base image into a per-instance writable disk.
