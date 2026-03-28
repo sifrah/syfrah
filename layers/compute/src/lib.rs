@@ -23,6 +23,7 @@
 //! vs external broadcast channel).
 
 pub mod binary;
+pub mod boot;
 pub mod cli;
 pub mod client;
 pub mod config;
