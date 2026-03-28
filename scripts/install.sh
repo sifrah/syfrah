@@ -241,6 +241,11 @@ if [ -f "${TMPDIR}/${KERNEL_BIN}" ]; then
   fi
 fi
 
+# --- Create data directories ------------------------------------------------
+
+mkdir -p /opt/syfrah/images
+mkdir -p /opt/syfrah/instances
+
 # --- Verify -----------------------------------------------------------------
 
 EXPECTED_VERSION="${VERSION#v}"
