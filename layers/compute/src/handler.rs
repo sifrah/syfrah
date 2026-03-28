@@ -383,9 +383,13 @@ mod tests {
             ch_binary: Some(PathBuf::from("/bin/true")),
             monitor_interval_secs: 1,
             shutdown_timeout_secs: 5,
+            instance_base: tmp.join("instances"),
+            image_management: false,
+            pull_policy: crate::image::types::PullPolicy::default(),
         };
         std::fs::create_dir_all(&config.base_dir).unwrap();
         std::fs::create_dir_all(&config.image_dir).unwrap();
+        std::fs::create_dir_all(&config.instance_base).unwrap();
         Arc::new(VmManager::new(config).unwrap())
     }
 

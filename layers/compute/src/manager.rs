@@ -9,6 +9,8 @@ use tracing::info;
 use crate::client::ChClient;
 use crate::error::{ComputeError, ProcessError};
 use crate::events;
+use crate::image::store::ImageStore;
+use crate::image::types::{ImageCatalog, PullPolicy};
 use crate::process::{self, RuntimeDir};
 use crate::runtime::VmRuntimeState;
 use crate::types::{VmEvent, VmId, VmSpec, VmStatus};
@@ -34,6 +36,13 @@ pub struct ComputeConfig {
     pub monitor_interval_secs: u64,
     /// Timeout for graceful shutdown before escalating (seconds). Default: 30.
     pub shutdown_timeout_secs: u64,
+    /// Base directory for per-instance dirs. Default: `/opt/syfrah/instances`.
+    pub instance_base: PathBuf,
+    /// Enable image management (pull, clone, cloud-init) during provisioning.
+    /// Set to `false` for tests that don't need real image operations.
+    pub image_management: bool,
+    /// Pull policy for image operations. Default: `IfNotPresent`.
+    pub pull_policy: PullPolicy,
 }
 
 impl Default for ComputeConfig {
@@ -45,6 +54,9 @@ impl Default for ComputeConfig {
             ch_binary: None,
             monitor_interval_secs: 5,
             shutdown_timeout_secs: 30,
+            instance_base: PathBuf::from("/opt/syfrah/instances"),
+            image_management: true,
+            pull_policy: PullPolicy::default(),
         }
     }
 }
@@ -158,6 +170,12 @@ pub struct VmManager {
     vms: Arc<RwLock<HashMap<String, Arc<Mutex<VmRuntimeState>>>>>,
     /// Broadcast channel for lifecycle events consumed by forge.
     event_tx: broadcast::Sender<VmEvent>,
+    /// Local image store (shared across operations).
+    image_store: Arc<ImageStore>,
+    /// Image catalog for pulling remote images.
+    catalog: Arc<RwLock<ImageCatalog>>,
+    /// In-memory refcount: image_name -> number of active VMs using that image.
+    image_refcounts: Arc<RwLock<HashMap<String, u32>>>,
 }
 
 impl VmManager {
@@ -171,12 +189,41 @@ impl VmManager {
 
         let (event_tx, _) = broadcast::channel(256);
 
+        let image_store = Arc::new(ImageStore::new(config.image_dir.clone()));
+        let catalog = Arc::new(RwLock::new(ImageCatalog {
+            version: 1,
+            base_url: String::new(),
+            images: vec![],
+        }));
+
         Ok(Self {
             config,
             ch_binary,
             vms: Arc::new(RwLock::new(HashMap::new())),
             event_tx,
+            image_store,
+            catalog,
+            image_refcounts: Arc::new(RwLock::new(HashMap::new())),
         })
+    }
+
+    /// Set the image catalog (e.g., after fetching from a remote endpoint).
+    pub async fn set_catalog(&self, catalog: ImageCatalog) {
+        let mut guard = self.catalog.write().await;
+        *guard = catalog;
+    }
+
+    /// Get the current image refcount for a given image name.
+    ///
+    /// Returns 0 if the image is not in use.
+    pub async fn image_refcount(&self, image_name: &str) -> u32 {
+        let refcounts = self.image_refcounts.read().await;
+        refcounts.get(image_name).copied().unwrap_or(0)
+    }
+
+    /// Get a reference to the image store.
+    pub fn image_store(&self) -> &ImageStore {
+        &self.image_store
     }
 
     // -- Lifecycle operations -------------------------------------------------
@@ -202,22 +249,38 @@ impl VmManager {
         }
 
         // Spawn (this is the heavy part — runs outside any lock on the map).
+        let catalog = self.catalog.read().await.clone();
         let state = process::spawn_vm(
             &spec,
             &self.ch_binary,
             &self.config.base_dir,
             &self.config.image_dir,
             &self.config.kernel_path,
+            if self.config.image_management {
+                Some(&self.image_store)
+            } else {
+                None
+            },
+            &catalog,
+            &self.config.pull_policy,
+            &self.config.instance_base,
         )
         .await?;
 
         let now = now_unix();
         let status = state.to_status(now);
+        let image_name = spec.image.clone();
 
         // Insert into the map under a write lock.
         {
             let mut map = self.vms.write().await;
             map.insert(vm_id_str.clone(), Arc::new(Mutex::new(state)));
+        }
+
+        // Increment image refcount.
+        if self.config.image_management {
+            let mut refcounts = self.image_refcounts.write().await;
+            *refcounts.entry(image_name).or_insert(0) += 1;
         }
 
         // Emit events (best-effort — receivers may lag).
@@ -264,14 +327,49 @@ impl VmManager {
     ///
     /// Acquires the VM's mutex, calls `process::delete_vm`, removes the entry
     /// from the map, and emits a `Deleted` event.
+    ///
+    /// If `retain_disk` is true, the instance rootfs and metadata are preserved
+    /// but cloud-init and serial log are deleted.
     pub async fn delete_vm(&self, id: &str) -> Result<(), ComputeError> {
+        self.delete_vm_with_options(id, false).await
+    }
+
+    /// Delete a VM with the option to retain the instance disk.
+    pub async fn delete_vm_with_options(
+        &self,
+        id: &str,
+        retain_disk: bool,
+    ) -> Result<(), ComputeError> {
         let vm_arc = self.get_vm(id).await?;
         let mut guard = vm_arc.lock().await;
 
         let runtime_dir = RuntimeDir::from_existing(self.config.base_dir.join(id));
         let client = ChClient::new(guard.socket_path.clone());
 
+        // Capture image name before delete for refcount tracking.
+        let image_name = guard.image_name.clone();
+        let instance_dir_path = guard.instance_dir_path.clone();
+
         process::delete_vm(&mut guard, &client, &runtime_dir).await?;
+
+        // Clean up instance directory (if image management was used).
+        if let Some(ref inst_path) = instance_dir_path {
+            if retain_disk {
+                // Keep rootfs.raw + metadata.json, delete cloud-init.img + serial.log
+                let ci = inst_path.join("cloud-init.img");
+                let serial = inst_path.join("serial.log");
+                if ci.exists() {
+                    let _ = std::fs::remove_file(&ci);
+                }
+                if serial.exists() {
+                    let _ = std::fs::remove_file(&serial);
+                }
+                info!(path = %inst_path.display(), "instance disk retained");
+            } else if inst_path.exists() {
+                let _ = std::fs::remove_dir_all(inst_path);
+                info!(path = %inst_path.display(), "instance directory cleaned up");
+            }
+        }
 
         // Drop the guard before acquiring the write lock on the map.
         drop(guard);
@@ -279,6 +377,17 @@ impl VmManager {
         {
             let mut map = self.vms.write().await;
             map.remove(id);
+        }
+
+        // Decrement image refcount.
+        if let Some(ref img) = image_name {
+            let mut refcounts = self.image_refcounts.write().await;
+            if let Some(count) = refcounts.get_mut(img) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    refcounts.remove(img);
+                }
+            }
         }
 
         events::emit(
@@ -440,6 +549,9 @@ mod tests {
         assert!(cfg.ch_binary.is_none());
         assert_eq!(cfg.monitor_interval_secs, 5);
         assert_eq!(cfg.shutdown_timeout_secs, 30);
+        assert_eq!(cfg.instance_base, PathBuf::from("/opt/syfrah/instances"));
+        assert!(cfg.image_management);
+        assert_eq!(cfg.pull_policy, PullPolicy::IfNotPresent);
     }
 
     #[test]
@@ -467,10 +579,14 @@ mod tests {
             ch_binary: Some(PathBuf::from("/bin/true")),
             monitor_interval_secs: 1,
             shutdown_timeout_secs: 5,
+            instance_base: tmp.join("instances"),
+            image_management: false,
+            pull_policy: PullPolicy::default(),
         };
         // Create the dirs so they exist for reconnect scanning
         std::fs::create_dir_all(&config.base_dir).unwrap();
         std::fs::create_dir_all(&config.image_dir).unwrap();
+        std::fs::create_dir_all(&config.instance_base).unwrap();
         VmManager::new(config).unwrap()
     }
 
