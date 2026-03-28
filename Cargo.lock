@@ -2341,6 +2341,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "indicatif",
  "libc",
  "reqwest",
  "serde",
