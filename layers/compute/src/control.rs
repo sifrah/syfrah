@@ -41,6 +41,8 @@ pub enum ComputeRequest {
     },
     DeleteVm {
         id: String,
+        #[serde(default)]
+        retain_disk: bool,
     },
     RebootVm {
         id: String,
@@ -172,10 +174,12 @@ async fn handle_compute_request(mgr: &VmManager, req: ComputeRequest) -> Compute
                 Err(e) => ComputeResponse::Error(e.to_string()),
             }
         }
-        ComputeRequest::DeleteVm { id } => match mgr.delete_vm(&id).await {
-            Ok(()) => ComputeResponse::Ok,
-            Err(e) => ComputeResponse::Error(e.to_string()),
-        },
+        ComputeRequest::DeleteVm { id, retain_disk } => {
+            match mgr.delete_vm_with_options(&id, retain_disk).await {
+                Ok(()) => ComputeResponse::Ok,
+                Err(e) => ComputeResponse::Error(e.to_string()),
+            }
+        }
         ComputeRequest::RebootVm { id } => {
             // Reboot = return current info (MVP — fake CH handles reboot API)
             match mgr.info(&id).await {

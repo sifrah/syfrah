@@ -13,8 +13,13 @@ use tracing::{debug, error, info, warn};
 
 use crate::client::ChClient;
 use crate::config::{map, resolve, validate};
+use crate::disk;
 use crate::error::{ComputeError, ProcessError};
 use crate::events;
+use crate::image;
+use crate::image::error::ImageError;
+use crate::image::store::ImageStore;
+use crate::image::types::{CloudInitConfig, ImageCatalog, ImageMeta, InstanceId, PullPolicy};
 use crate::phase::VmPhase;
 use crate::preflight::run_preflight;
 use crate::runtime::{ReconnectSource, VmRuntimeState};
@@ -293,28 +298,47 @@ fn now_unix() -> u64 {
 // Spawn (#476)
 // ---------------------------------------------------------------------------
 
+/// Map the Rust `std::env::consts::ARCH` to the image metadata arch convention.
+fn node_arch() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" => "x86_64",
+        "aarch64" => "aarch64",
+        other => other,
+    }
+}
+
 /// Spawn a VM through the full pipeline.
 ///
 /// Steps:
 /// 1. validate(spec) -> ValidatedSpec
-/// 2. resolve(validated, image_dir, default_kernel) -> ResolvedSpec
-/// 3. map(resolved, socket_path) -> VmConfig JSON
-/// 4. run_preflight(resolved, ch_binary, socket_path)
-/// 5. Create RuntimeDir
-/// 6. Spawn cloud-hypervisor process
-/// 7. Write pid, meta.json, ch-version
-/// 8. Poll ping() until ready (100ms interval, 10s timeout)
-/// 9. client.create(vm_config)
-/// 10. client.boot()
-/// 11. Return VmRuntimeState with phase Running
+/// 2. Image check/pull (if image_store is Some)
+/// 3. Arch validation
+/// 4. Create instance dir, clone image, generate cloud-init
+/// 5. resolve(validated, image_dir, default_kernel) -> ResolvedSpec
+///    (with instance paths when image management is enabled)
+/// 6. map(resolved, socket_path) -> VmConfig JSON
+/// 7. run_preflight(resolved, ch_binary, socket_path)
+/// 8. Create RuntimeDir
+/// 9. Spawn cloud-hypervisor process
+/// 10. Write pid, meta.json, ch-version
+/// 11. Poll ping() until ready (100ms interval, 10s timeout)
+/// 12. client.create(vm_config)
+/// 13. client.boot()
+/// 14. Return VmRuntimeState with phase Running
 ///
-/// On ANY failure: cleanup (kill process if spawned, remove runtime dir).
+/// On ANY failure: cleanup (kill process if spawned, remove runtime dir,
+/// remove instance dir).
+#[allow(clippy::too_many_arguments)]
 pub async fn spawn_vm(
     spec: &VmSpec,
     ch_binary: &Path,
     base_dir: &Path,
     image_dir: &Path,
     default_kernel: &Path,
+    image_store: Option<&ImageStore>,
+    catalog: &ImageCatalog,
+    pull_policy: &PullPolicy,
+    instance_base: &Path,
 ) -> Result<VmRuntimeState, ComputeError> {
     let vm_id_str = spec.id.0.clone();
     info!(vm_id = %vm_id_str, "starting VM spawn");
@@ -329,35 +353,179 @@ pub async fn spawn_vm(
         )
     })?;
 
-    // Step 2: resolve
-    let resolved = resolve(&validated, image_dir, default_kernel).map_err(|errors| {
-        ComputeError::Config(
-            errors
-                .into_iter()
-                .next()
-                .expect("at least one config error"),
-        )
-    })?;
+    // -- Image management steps (only when image_store is provided) -----------
+    let mut instance_dir_path: Option<PathBuf> = None;
+    let mut instance_rootfs: Option<PathBuf> = None;
+    let mut instance_cloud_init: Option<PathBuf> = None;
+
+    if let Some(store) = image_store {
+        // Step 2: Image check/pull
+        let image_meta: ImageMeta = match store.get(&spec.image)? {
+            Some(meta) => {
+                info!(image = %spec.image, "image found in local cache");
+                meta
+            }
+            None if *pull_policy != PullPolicy::Never => {
+                info!(image = %spec.image, "pulling image from catalog");
+                image::pull::pull(store, &spec.image, catalog).await?
+            }
+            None => {
+                return Err(ImageError::ImageNotFound {
+                    name: spec.image.clone(),
+                }
+                .into());
+            }
+        };
+
+        // Step 3: Arch validation
+        // Treat "unknown" arch (from scan) as compatible to avoid false rejections.
+        if image_meta.arch != "unknown" && image_meta.arch != node_arch() {
+            return Err(ImageError::ArchMismatch {
+                image_arch: image_meta.arch.clone(),
+                node_arch: node_arch().to_string(),
+            }
+            .into());
+        }
+
+        // Step 4a: Create instance dir
+        let instance_id = InstanceId::new();
+        let inst_dir = disk::InstanceDir::create(instance_base, &instance_id)?;
+        let inst_path = inst_dir.path().to_path_buf();
+
+        // Step 4b: Clone base image (cleanup on failure)
+        let base_image_path = store.image_path(&spec.image);
+        let min_disk = image_meta.min_disk_mb as u32;
+        let effective_size_bytes =
+            match disk::clone_image(&base_image_path, &inst_dir, spec.disk_size_mb, min_disk) {
+                Ok(size) => {
+                    info!(
+                        vm_id = %vm_id_str,
+                        instance = %instance_id,
+                        "image cloned to instance dir"
+                    );
+                    size
+                }
+                Err(e) => {
+                    inst_dir.cleanup().ok();
+                    return Err(e.into());
+                }
+            };
+
+        // Step 4c: Generate cloud-init (if applicable)
+        if image_meta.cloud_init && spec.ssh_key.is_some() {
+            let cloud_config = CloudInitConfig {
+                hostname: vm_id_str.clone(),
+                ssh_authorized_keys: vec![spec.ssh_key.clone().unwrap()],
+                default_user: image_meta
+                    .default_username
+                    .clone()
+                    .unwrap_or_else(|| "ubuntu".to_string()),
+                users: vec![],
+                network_config: None,
+                user_data_extra: None,
+            };
+            match disk::generate_cloud_init(&cloud_config, &inst_dir, &instance_id) {
+                Ok(ci_path) => {
+                    info!(vm_id = %vm_id_str, "cloud-init config-drive generated");
+                    instance_cloud_init = Some(ci_path);
+                }
+                Err(e) => {
+                    inst_dir.cleanup().ok();
+                    return Err(e.into());
+                }
+            }
+        }
+
+        // Step 4d: Write instance metadata
+        let effective_mb = (effective_size_bytes / (1024 * 1024)) as u32;
+        let inst_meta = disk::InstanceMeta {
+            image_source: spec.image.clone(),
+            image_sha: image_meta.sha256.clone(),
+            arch: image_meta.arch.clone(),
+            requested_disk_size_mb: spec.disk_size_mb,
+            effective_disk_size_mb: effective_mb,
+            hostname: vm_id_str.clone(),
+            created_at: now_iso8601(),
+            vm_name: vm_id_str.clone(),
+        };
+        if let Err(e) = inst_dir.write_metadata(&inst_meta) {
+            inst_dir.cleanup().ok();
+            return Err(e.into());
+        }
+
+        instance_rootfs = Some(inst_dir.rootfs_path());
+        instance_dir_path = Some(inst_path);
+    }
+
+    // Step 5: resolve — use instance paths if available, else base image_dir
+    let effective_image_dir = if let Some(ref rootfs) = instance_rootfs {
+        // Point resolve at the instance dir parent; the rootfs file is named
+        // rootfs.raw there, but resolve expects {image}.raw. We override
+        // rootfs_path below instead.
+        rootfs.parent().unwrap_or(image_dir)
+    } else {
+        image_dir
+    };
+
+    let mut resolved =
+        resolve(&validated, effective_image_dir, default_kernel).map_err(|errors| {
+            // Cleanup instance dir on resolve failure
+            if let Some(ref p) = instance_dir_path {
+                let _ = fs::remove_dir_all(p);
+            }
+            ComputeError::Config(
+                errors
+                    .into_iter()
+                    .next()
+                    .expect("at least one config error"),
+            )
+        })?;
+
+    // Override rootfs path with instance rootfs if image management is active.
+    if let Some(ref rootfs) = instance_rootfs {
+        resolved.rootfs_path = rootfs.clone();
+    }
+
+    // If cloud-init was generated, add it to the resolved spec's volume list
+    // so it appears as a second disk in the CH config.
+    if let Some(ref ci_path) = instance_cloud_init {
+        resolved.volume_paths.insert(
+            0,
+            crate::config::ResolvedVolume {
+                path: ci_path.clone(),
+                read_only: true,
+            },
+        );
+    }
 
     // Compute socket path for preflight and map
-    let runtime_dir_path = base_dir.join(&vm_id_str);
-    let socket_path = runtime_dir_path.join("api.sock");
+    let runtime_dir_path_rt = base_dir.join(&vm_id_str);
+    let socket_path = runtime_dir_path_rt.join("api.sock");
 
-    // Step 3: map
+    // Step 6: map
     let vm_config = map(&resolved, &socket_path);
 
-    // Step 4: preflight
-    run_preflight(&resolved, ch_binary, &socket_path).map_err(|errors| {
-        ComputeError::Preflight(
-            errors
-                .into_iter()
-                .next()
-                .expect("at least one preflight error"),
-        )
-    })?;
+    // Step 7: preflight
+    if let Err(e) = run_preflight(&resolved, ch_binary, &socket_path) {
+        // Cleanup instance dir on preflight failure
+        if let Some(ref p) = instance_dir_path {
+            let _ = fs::remove_dir_all(p);
+        }
+        return Err(ComputeError::Preflight(
+            e.into_iter().next().expect("at least one preflight error"),
+        ));
+    }
 
-    // Step 5: Create RuntimeDir
-    let runtime_dir = RuntimeDir::create(base_dir, &vm_id_str)?;
+    // Step 8: Create RuntimeDir
+    let runtime_dir = match RuntimeDir::create(base_dir, &vm_id_str) {
+        Ok(d) => d,
+        Err(e) => {
+            if let Some(ref p) = instance_dir_path {
+                let _ = fs::remove_dir_all(p);
+            }
+            return Err(e.into());
+        }
+    };
     // Internal event: SocketCreated (runtime dir with socket path is ready)
     debug!(vm_id = %vm_id_str, path = %runtime_dir.path().display(), "SocketCreated: created runtime dir");
 
@@ -365,7 +533,11 @@ pub async fn spawn_vm(
     let result = spawn_vm_inner(&vm_id_str, ch_binary, &runtime_dir, &vm_config, spec).await;
 
     match result {
-        Ok(state) => Ok(state),
+        Ok(mut state) => {
+            state.image_name = Some(spec.image.clone());
+            state.instance_dir_path = instance_dir_path;
+            Ok(state)
+        }
         Err(e) => {
             // Capture the CH process log before cleanup for diagnostics.
             let log_contents = fs::read_to_string(runtime_dir.log_path()).unwrap_or_default();
@@ -376,6 +548,10 @@ pub async fn spawn_vm(
             debug!(vm_id = %vm_id_str, path = %runtime_dir.path().display(), "SocketRemoved: cleaning up runtime dir");
             // Best-effort cleanup
             let _ = runtime_dir.cleanup();
+            // Also cleanup instance dir
+            if let Some(ref p) = instance_dir_path {
+                let _ = fs::remove_dir_all(p);
+            }
             Err(e)
         }
     }
@@ -534,6 +710,8 @@ async fn spawn_vm_inner(
         last_error: None,
         current_phase: VmPhase::Running,
         reconnect_source: ReconnectSource::FreshSpawn,
+        image_name: Some(spec.image.clone()),
+        instance_dir_path: None, // Caller (spawn_vm) sets these
     })
 }
 
@@ -1063,6 +1241,8 @@ pub async fn reconnect(base_dir: &Path, event_tx: broadcast::Sender<VmEvent>) ->
             last_error: None,
             current_phase: VmPhase::Running,
             reconnect_source: ReconnectSource::Recovered,
+            image_name: meta.image_name.clone(),
+            instance_dir_path: None,
         };
 
         events::emit(
@@ -1424,6 +1604,8 @@ mod tests {
             last_error: None,
             current_phase: VmPhase::Deleted,
             reconnect_source: ReconnectSource::FreshSpawn,
+            image_name: None,
+            instance_dir_path: None,
         };
 
         let result = delete_vm(&mut state, &client, &dir).await;
@@ -1453,6 +1635,8 @@ mod tests {
             last_error: None,
             current_phase: VmPhase::Stopped,
             reconnect_source: ReconnectSource::FreshSpawn,
+            image_name: None,
+            instance_dir_path: None,
         };
 
         let result = delete_vm(&mut state, &client, &dir).await;
@@ -1482,6 +1666,8 @@ mod tests {
             last_error: None,
             current_phase: VmPhase::Failed,
             reconnect_source: ReconnectSource::FreshSpawn,
+            image_name: None,
+            instance_dir_path: None,
         };
 
         let result = delete_vm(&mut state, &client, &dir).await;
@@ -1513,6 +1699,8 @@ mod tests {
             last_error: None,
             current_phase: VmPhase::Running,
             reconnect_source: ReconnectSource::FreshSpawn,
+            image_name: None,
+            instance_dir_path: None,
         };
 
         let result = kill_vm(&mut state, &client, &dir).await;
@@ -1720,6 +1908,8 @@ mod tests {
             last_error: None,
             current_phase: VmPhase::Running,
             reconnect_source: ReconnectSource::FreshSpawn,
+            image_name: None,
+            instance_dir_path: None,
         };
 
         let vm_arc = Arc::new(Mutex::new(state));
@@ -1855,6 +2045,8 @@ mod tests {
             last_error: None,
             current_phase: VmPhase::Pending,
             reconnect_source: ReconnectSource::FreshSpawn,
+            image_name: None,
+            instance_dir_path: None,
         };
 
         let result = delete_vm(&mut state, &client, &dir).await;
@@ -1904,6 +2096,8 @@ mod tests {
             last_error: None,
             current_phase: VmPhase::Running,
             reconnect_source: ReconnectSource::FreshSpawn,
+            image_name: None,
+            instance_dir_path: None,
         };
 
         let result = kill_vm(&mut state, &client, &dir).await;
@@ -2018,6 +2212,8 @@ mod tests {
             last_error: None,
             current_phase: VmPhase::Stopped,
             reconnect_source: ReconnectSource::FreshSpawn,
+            image_name: None,
+            instance_dir_path: None,
         };
 
         let vm_arc = Arc::new(Mutex::new(state));

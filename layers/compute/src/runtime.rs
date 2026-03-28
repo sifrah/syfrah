@@ -39,6 +39,10 @@ pub(crate) struct VmRuntimeState {
     pub(crate) last_error: Option<String>,
     pub(crate) current_phase: VmPhase,
     pub(crate) reconnect_source: ReconnectSource,
+    /// Image name used to create this VM (for refcount tracking).
+    pub(crate) image_name: Option<String>,
+    /// Path to the instance directory (for cleanup on delete).
+    pub(crate) instance_dir_path: Option<PathBuf>,
 }
 
 #[allow(dead_code)]
@@ -84,6 +88,8 @@ mod tests {
             last_error: None,
             current_phase: phase,
             reconnect_source: ReconnectSource::FreshSpawn,
+            image_name: None,
+            instance_dir_path: None,
         }
     }
 

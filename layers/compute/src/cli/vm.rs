@@ -291,7 +291,10 @@ async fn run_stop(id: String, force: bool) -> anyhow::Result<()> {
 }
 
 async fn run_delete(id: String, _yes: bool) -> anyhow::Result<()> {
-    let req = ComputeRequest::DeleteVm { id: id.clone() };
+    let req = ComputeRequest::DeleteVm {
+        id: id.clone(),
+        retain_disk: false,
+    };
     let resp = send_compute_request(&control_socket_path(), &req)
         .await
         .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}"))?;
