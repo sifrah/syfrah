@@ -231,4 +231,107 @@ mod tests {
             "\"custom\""
         );
     }
+
+    // -- Additional boot asset resolution tests (issue #542) ------------------
+
+    #[test]
+    fn bundled_kernel_missing_error_contains_path() {
+        let config = KernelConfig {
+            mode: KernelMode::Bundled,
+            path: None,
+        };
+        let result = resolve_kernel_inner(&config, "/opt/syfrah/kernels/vmlinux");
+        let err = result.unwrap_err();
+        match &err {
+            ImageError::KernelNotFound { path } => {
+                // Error message must include the exact path that was checked
+                assert!(
+                    path.contains("/opt/syfrah/kernels/vmlinux"),
+                    "error should contain the missing path, got: {path}"
+                );
+            }
+            other => panic!("expected KernelNotFound, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn custom_kernel_missing_error_suggests_switching_mode() {
+        let config = KernelConfig {
+            mode: KernelMode::Custom,
+            path: Some(PathBuf::from("/srv/kernels/custom-vmlinux")),
+        };
+        let result = resolve_kernel_inner(&config, BUNDLED_KERNEL_PATH);
+        let err = result.unwrap_err();
+        match &err {
+            ImageError::KernelNotFound { path } => {
+                assert!(
+                    path.contains("bundled"),
+                    "custom-not-found error should suggest switching to bundled, got: {path}"
+                );
+            }
+            other => panic!("expected KernelNotFound, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bundled_resolved_path_equals_bundled_path() {
+        let dir = TempDir::new().unwrap();
+        let kernel = create_kernel(&dir, "vmlinux");
+        let bundled = kernel.to_str().unwrap();
+        let config = KernelConfig {
+            mode: KernelMode::Bundled,
+            path: Some(PathBuf::from("/ignored/path")), // should be ignored for bundled
+        };
+        let result = resolve_kernel_inner(&config, bundled).unwrap();
+        // Even though path is set, bundled mode ignores it
+        assert_eq!(result, kernel);
+    }
+
+    #[test]
+    fn kernel_config_serde_default_omits_path() {
+        let config = KernelConfig::default();
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["mode"], "bundled");
+        assert!(parsed["path"].is_null());
+    }
+
+    #[test]
+    fn kernel_config_deserialize_from_minimal_json() {
+        // Only mode specified — path should default to None
+        let json = r#"{"mode": "bundled"}"#;
+        let config: KernelConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.mode, KernelMode::Bundled);
+        assert!(config.path.is_none());
+    }
+
+    #[test]
+    fn kernel_config_deserialize_empty_defaults_to_bundled() {
+        // Completely empty object — mode should default to bundled
+        let json = r#"{}"#;
+        let config: KernelConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.mode, KernelMode::Bundled);
+        assert!(config.path.is_none());
+    }
+
+    #[test]
+    fn symlink_to_kernel_resolves_successfully() {
+        let dir = TempDir::new().unwrap();
+        let real_kernel = create_kernel(&dir, "vmlinux-real");
+        let symlink_path = dir.path().join("vmlinux-link");
+        std::os::unix::fs::symlink(&real_kernel, &symlink_path).unwrap();
+
+        let config = KernelConfig {
+            mode: KernelMode::Custom,
+            path: Some(symlink_path.clone()),
+        };
+        let result = resolve_kernel_inner(&config, BUNDLED_KERNEL_PATH).unwrap();
+        // Symlinks are followed — the resolved path is the symlink itself
+        assert_eq!(result, symlink_path);
+    }
+
+    #[test]
+    fn bundled_constant_points_to_expected_path() {
+        assert_eq!(BUNDLED_KERNEL_PATH, "/opt/syfrah/kernels/vmlinux");
+    }
 }
