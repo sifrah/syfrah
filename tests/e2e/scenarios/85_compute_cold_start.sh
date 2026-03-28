@@ -8,67 +8,115 @@ source "$SCRIPT_DIR/lib.sh"
 
 echo "── Compute: Cold Start (Real Operator Flow) ──"
 
+# ── Helper: retry a GitHub-facing command up to 3 times (5 s apart) ──
+catalog_with_retry() {
+    local node="$1"
+    local attempt=0
+    local output=""
+    while [ $attempt -lt 3 ]; do
+        output=$(docker exec "$node" syfrah compute image catalog --json 2>&1)
+        local count
+        count=$(echo "$output" | jq '.images | length' 2>/dev/null || echo "0")
+        if [ "$count" -gt 0 ]; then
+            echo "$output"
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        [ $attempt -lt 3 ] && sleep 5
+    done
+    echo "$output"
+    return 1
+}
+
+pull_with_retry() {
+    local node="$1" name="$2"
+    local attempt=0
+    local output=""
+    while [ $attempt -lt 3 ]; do
+        if docker exec "$node" syfrah compute image pull "$name" 2>&1; then
+            # Verify the image actually appears in the local store
+            if docker exec "$node" syfrah compute image list --json 2>&1 \
+                | jq -e ".[] | select(.name == \"$name\")" >/dev/null 2>&1; then
+                return 0
+            fi
+        fi
+        attempt=$((attempt + 1))
+        [ $attempt -lt 3 ] && sleep 5
+    done
+    return 1
+}
+
 create_network
 start_node "e2e-cold-1" "172.20.0.10"
 init_mesh "e2e-cold-1" "172.20.0.10" "cold-node"
 
-sleep 2
+# Wait for the daemon to be fully ready instead of a fixed sleep
+wait_daemon "e2e-cold-1" 15
+
+node="e2e-cold-1"
 
 # Step 1: Image list should be empty
 info "Step 1: Verify no images on fresh install"
-LIST=$(docker exec "e2e-cold-1" syfrah compute image list --json 2>&1)
+LIST=$(docker exec "$node" syfrah compute image list --json 2>&1)
 if echo "$LIST" | jq -e '. | length == 0' >/dev/null 2>&1; then
     pass "No images on fresh install"
 else
     fail "Expected empty image list, got: $LIST"
 fi
 
-# Step 2: Catalog should show images from the real GitHub catalog
-info "Step 2: Fetch remote catalog"
-CATALOG=$(docker exec "e2e-cold-1" syfrah compute image catalog --json 2>&1)
+# Step 2: Catalog should show images from the real GitHub catalog (with retries)
+info "Step 2: Fetch remote catalog (up to 3 attempts)"
+CATALOG=$(catalog_with_retry "$node")
 CATALOG_COUNT=$(echo "$CATALOG" | jq '.images | length' 2>/dev/null || echo "0")
 if [ "$CATALOG_COUNT" -gt 0 ]; then
     pass "Catalog shows $CATALOG_COUNT images"
 else
-    fail "Catalog is empty or unreachable: $CATALOG"
+    fail "Catalog is empty or unreachable after 3 attempts: $CATALOG"
 fi
 
-# Step 3: Pull a real image
-info "Step 3: Pull alpine-3.20 from catalog"
-PULL_OUTPUT=$(docker exec "e2e-cold-1" syfrah compute image pull alpine-3.20 2>&1)
-if echo "$PULL_OUTPUT" | grep -qi "done\|success\|pulled"; then
-    pass "Image pull succeeded"
+# Step 3: Pull a real image (with retries + verify in image list)
+info "Step 3: Pull alpine-3.20 from catalog (up to 3 attempts)"
+if pull_with_retry "$node" "alpine-3.20"; then
+    pass "Image pull succeeded and verified in image list"
 else
-    fail "Image pull failed: $PULL_OUTPUT"
+    fail "Image pull failed or image not found in list after 3 attempts"
 fi
 
-# Step 4: Verify image appears in list
+# Step 4: Verify image appears in list (explicit JSON check)
 info "Step 4: Verify image in local list"
-LIST_AFTER=$(docker exec "e2e-cold-1" syfrah compute image list --json 2>&1)
+LIST_AFTER=$(docker exec "$node" syfrah compute image list --json 2>&1)
 if echo "$LIST_AFTER" | jq -e '.[] | select(.name == "alpine-3.20")' >/dev/null 2>&1; then
     pass "alpine-3.20 appears in local list"
 else
     fail "alpine-3.20 not found after pull: $LIST_AFTER"
 fi
 
-# Step 5: Create a VM with the pulled image
+# Step 5: Create a VM with the pulled image (KVM-aware)
 info "Step 5: Create VM with pulled image"
-CREATE_OUTPUT=$(docker exec "e2e-cold-1" syfrah compute vm create --name cold-test --image alpine-3.20 --vcpus 1 --memory 256 2>&1)
-if echo "$CREATE_OUTPUT" | grep -qi "created\|running"; then
-    pass "VM created with pulled image"
-else
-    # VM creation may fail due to no KVM in Docker — that's expected
-    if echo "$CREATE_OUTPUT" | grep -qi "kvm\|not available"; then
-        pass "VM creation failed as expected (no KVM in Docker): correct error"
+CREATE_OUTPUT=$(docker exec "$node" syfrah compute vm create --name cold-test --image alpine-3.20 --vcpus 1 --memory 256 2>&1)
+CREATE_RC=$?
+
+if docker exec "$node" test -e /dev/kvm 2>/dev/null; then
+    # KVM available — VM should reach Running
+    if [ $CREATE_RC -eq 0 ]; then
+        wait_for_vm_phase "$node" "cold-test" "Running" 30
+        pass "VM reached Running on KVM-capable host"
     else
-        fail "VM creation failed unexpectedly: $CREATE_OUTPUT"
+        fail "VM creation failed on KVM-capable host: $CREATE_OUTPUT"
+    fi
+else
+    # No KVM — expect a clear error mentioning KVM / not available / degraded
+    if echo "$CREATE_OUTPUT" | grep -qi "kvm\|not available\|degraded"; then
+        pass "VM creation correctly reported no KVM"
+    else
+        fail "VM creation failed with unclear error: $CREATE_OUTPUT"
     fi
 fi
 
 # Step 6: Cleanup
 info "Step 6: Cleanup"
-docker exec "e2e-cold-1" syfrah compute vm delete cold-test --yes 2>/dev/null || true
-docker exec "e2e-cold-1" syfrah compute image delete alpine-3.20 --yes 2>/dev/null || true
+docker exec "$node" syfrah compute vm delete cold-test --yes 2>/dev/null || true
+docker exec "$node" syfrah compute image delete alpine-3.20 --yes 2>/dev/null || true
 
 cleanup
 summary
