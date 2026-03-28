@@ -136,6 +136,10 @@ message CreateVmRequest {
   repeated VolumeAttachment volumes = 7;
   // Network configuration.
   optional NetworkConfig network = 8;
+  // SSH public key to inject into the VM via cloud-init.
+  optional string ssh_key = 9;
+  // Root disk size in megabytes. Omit to use the image default.
+  optional uint32 disk_size_mb = 10;
 }
 
 // GetVmRequest identifies a VM to retrieve.

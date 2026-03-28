@@ -162,6 +162,7 @@ fn error_to_status(err: &ComputeError) -> StatusCode {
             }
         }
         ComputeError::Client(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        ComputeError::Image(_) => StatusCode::UNPROCESSABLE_ENTITY,
     }
 }
 
@@ -231,6 +232,8 @@ async fn create_vm(
             })
             .collect(),
         gpu: parse_gpu_mode(body.gpu),
+        ssh_key: None,
+        disk_size_mb: None,
     };
 
     match mgr.create_vm(spec).await {

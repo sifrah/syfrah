@@ -26,6 +26,9 @@ pub enum ComputeError {
 
     #[error("concurrency error: {0}")]
     Concurrency(#[from] ConcurrencyError),
+
+    #[error("image error: {0}")]
+    Image(#[from] crate::image::error::ImageError),
 }
 
 /// Precondition not met before spawning a VM.

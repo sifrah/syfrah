@@ -183,6 +183,12 @@ pub struct VmMeta {
     /// Memory in megabytes (persisted for reconnect).
     #[serde(default)]
     pub memory_mb: u32,
+    /// Image name used to create this VM.
+    #[serde(default)]
+    pub image_name: Option<String>,
+    /// Disk size in megabytes (persisted for reconnect).
+    #[serde(default)]
+    pub disk_size_mb: Option<u32>,
 }
 
 /// Scan a base directory for runtime dirs that contain meta.json.
@@ -442,6 +448,8 @@ async fn spawn_vm_inner(
         spec_hash: compute_spec_hash(spec),
         vcpus: spec.vcpus,
         memory_mb: spec.memory_mb,
+        image_name: Some(spec.image.clone()),
+        disk_size_mb: spec.disk_size_mb,
     };
     runtime_dir.write_meta(&meta)?;
 
@@ -1185,6 +1193,8 @@ mod tests {
             spec_hash: "hash:abc123".to_string(),
             vcpus: 2,
             memory_mb: 512,
+            image_name: None,
+            disk_size_mb: None,
         };
 
         dir.write_meta(&meta).unwrap();
@@ -1207,6 +1217,8 @@ mod tests {
             spec_hash: "hash:0".to_string(),
             vcpus: 2,
             memory_mb: 512,
+            image_name: None,
+            disk_size_mb: None,
         };
 
         dir.write_meta(&meta).unwrap();
@@ -1279,6 +1291,8 @@ mod tests {
             spec_hash: "hash:deadbeef".to_string(),
             vcpus: 2,
             memory_mb: 512,
+            image_name: None,
+            disk_size_mb: None,
         };
         let json = serde_json::to_string(&meta).unwrap();
         let back: VmMeta = serde_json::from_str(&json).unwrap();
@@ -1303,6 +1317,8 @@ mod tests {
             spec_hash: "hash:0".to_string(),
             vcpus: 2,
             memory_mb: 512,
+            image_name: None,
+            disk_size_mb: None,
         };
         dir1.write_meta(&meta).unwrap();
 
@@ -1375,6 +1391,8 @@ mod tests {
             network: None,
             volumes: vec![],
             gpu: GpuMode::None,
+            ssh_key: None,
+            disk_size_mb: None,
         };
         let h1 = compute_spec_hash(&spec);
         let h2 = compute_spec_hash(&spec);
@@ -1522,6 +1540,8 @@ mod tests {
             spec_hash: "hash:0".to_string(),
             vcpus: 2,
             memory_mb: 512,
+            image_name: None,
+            disk_size_mb: None,
         };
         dir1.write_meta(&meta).unwrap();
 
@@ -1557,6 +1577,8 @@ mod tests {
             spec_hash: "hash:0".to_string(),
             vcpus: 2,
             memory_mb: 512,
+            image_name: None,
+            disk_size_mb: None,
         };
         dir.write_meta(&meta).unwrap();
 
@@ -1601,6 +1623,8 @@ mod tests {
             spec_hash: "hash:0".to_string(),
             vcpus: 2,
             memory_mb: 512,
+            image_name: None,
+            disk_size_mb: None,
         };
         dir.write_meta(&meta).unwrap();
 
@@ -1788,6 +1812,8 @@ mod tests {
             spec_hash: "hash:aaa".to_string(),
             vcpus: 2,
             memory_mb: 512,
+            image_name: None,
+            disk_size_mb: None,
         };
         dir.write_meta(&meta1).unwrap();
 
@@ -1856,6 +1882,8 @@ mod tests {
             spec_hash: "hash:0".to_string(),
             vcpus: 2,
             memory_mb: 512,
+            image_name: None,
+            disk_size_mb: None,
         };
         dir.write_meta(&meta).unwrap();
         assert!(dir.meta_path().exists());
@@ -1909,6 +1937,8 @@ mod tests {
             spec_hash: "hash:0".to_string(),
             vcpus: 2,
             memory_mb: 512,
+            image_name: None,
+            disk_size_mb: None,
         };
         dir1.write_meta(&meta1).unwrap();
 
