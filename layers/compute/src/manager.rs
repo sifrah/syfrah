@@ -13,6 +13,8 @@ use crate::image::store::ImageStore;
 use crate::image::types::{ImageCatalog, PullPolicy};
 use crate::process::{self, RuntimeDir};
 use crate::runtime::VmRuntimeState;
+use crate::runtime_backend::ComputeRuntime;
+use crate::runtime_ch;
 use crate::types::{VmEvent, VmId, VmSpec, VmStatus};
 
 // ---------------------------------------------------------------------------
@@ -182,6 +184,9 @@ pub struct VmManager {
     config: ComputeConfig,
     /// Resolved cloud-hypervisor binary path (validated at construction).
     ch_binary: PathBuf,
+    /// Runtime backend (Cloud Hypervisor, or future container runtime).
+    /// Selected automatically based on system capabilities at construction.
+    runtime: Box<dyn ComputeRuntime>,
     /// Per-VM runtime state, keyed by VM ID string.
     vms: Arc<RwLock<HashMap<String, Arc<Mutex<VmRuntimeState>>>>>,
     /// Broadcast channel for lifecycle events consumed by forge.
@@ -227,6 +232,17 @@ impl VmManager {
             ),
         })?;
 
+        // Auto-select runtime backend based on system capabilities.
+        let runtime = runtime_ch::select_runtime(
+            ch_binary.clone(),
+            config.base_dir.clone(),
+            config.kernel_path.clone(),
+        )?;
+        info!(
+            runtime = runtime.name(),
+            "VmManager: selected runtime backend"
+        );
+
         let (event_tx, _) = broadcast::channel(256);
 
         let image_store = Arc::new(ImageStore::new(config.image_dir.clone()));
@@ -239,6 +255,7 @@ impl VmManager {
         Ok(Self {
             config,
             ch_binary,
+            runtime,
             vms: Arc::new(RwLock::new(HashMap::new())),
             event_tx,
             image_store,
@@ -280,6 +297,11 @@ impl VmManager {
     /// Get the configured pull policy.
     pub fn pull_policy(&self) -> PullPolicy {
         self.config.pull_policy.clone()
+    }
+
+    /// Get the name of the active runtime backend.
+    pub fn runtime_name(&self) -> &str {
+        self.runtime.name()
     }
 
     /// Run health checks against KVM, CH binary, and kernel availability.
