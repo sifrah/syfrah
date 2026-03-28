@@ -113,6 +113,8 @@ fn import_inner(
         rootfs_fs: None,
         source_kind: "custom".to_string(),
         file: format!("{name}.raw"),
+        container_file: None,
+        container_sha256: None,
         imported_at: Some(format!("{}Z", dur.as_secs())),
     };
 

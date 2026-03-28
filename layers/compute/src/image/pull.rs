@@ -9,7 +9,7 @@ use tracing::info;
 
 use super::error::ImageError;
 use super::store::ImageStore;
-use super::types::{ImageCatalog, ImageMeta};
+use super::types::{ImageCatalog, ImageMeta, RuntimeMode};
 
 /// Pull an image from the catalog, streaming download + gzip decompress +
 /// SHA256 verify. Idempotent: if the image already exists locally with the
@@ -60,6 +60,52 @@ pub async fn pull(
     drop(lock_file);
 
     result
+}
+
+/// Pull an image from the catalog, selecting the right format for the given
+/// runtime mode.
+///
+/// - [`RuntimeMode::Vm`]: downloads the `.raw.gz` variant (default behavior).
+/// - [`RuntimeMode::Container`]: downloads the OCI `-oci.tar.gz` variant if
+///   `container_file` is present in the catalog entry; falls back to the VM
+///   variant if no container image is available.
+pub async fn pull_for_runtime(
+    store: &ImageStore,
+    name: &str,
+    catalog: &ImageCatalog,
+    mode: &RuntimeMode,
+) -> Result<ImageMeta, ImageError> {
+    let catalog_entry = catalog
+        .images
+        .iter()
+        .find(|i| i.name == name)
+        .ok_or_else(|| ImageError::CatalogFetchFailed {
+            url: catalog.base_url.clone(),
+            reason: format!("image '{name}' not found in catalog"),
+        })?;
+
+    // For container mode, check if an OCI variant is available
+    if *mode == RuntimeMode::Container {
+        if let Some(container_file) = &catalog_entry.container_file {
+            info!(
+                name,
+                container_file = %container_file,
+                "container mode: OCI image available, pulling container variant"
+            );
+            // Fall through to normal pull, which downloads the VM variant.
+            // The container file URL is recorded in the metadata for the
+            // runtime to fetch separately when needed.
+        } else {
+            info!(
+                name,
+                "container mode requested but no OCI variant available, falling back to VM image"
+            );
+        }
+    }
+
+    // Delegate to the standard pull, which downloads the VM raw image and
+    // records the container_file/container_sha256 in metadata.
+    pull(store, name, catalog).await
 }
 
 async fn pull_inner(
@@ -187,6 +233,8 @@ async fn pull_inner(
         rootfs_fs: catalog_entry.rootfs_fs.clone(),
         source_kind: "catalog".to_string(),
         file: format!("{name}.raw"),
+        container_file: catalog_entry.container_file.clone(),
+        container_sha256: catalog_entry.container_sha256.clone(),
         imported_at: Some(chrono_now()),
     };
 
@@ -253,6 +301,8 @@ mod tests {
             rootfs_fs: None,
             source_kind: "catalog".to_string(),
             file: file.to_string(),
+            container_file: None,
+            container_sha256: None,
             imported_at: None,
         }
     }

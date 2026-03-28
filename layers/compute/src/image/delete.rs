@@ -94,6 +94,8 @@ mod tests {
             rootfs_fs: None,
             source_kind: "catalog".to_string(),
             file: format!("{name}.raw"),
+            container_file: None,
+            container_sha256: None,
             imported_at: None,
         }
     }

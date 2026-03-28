@@ -107,6 +107,11 @@ impl ImageStore {
         self.image_dir.join(format!("{name}.raw"))
     }
 
+    /// Return the expected path of an extracted OCI image directory.
+    pub fn container_image_path(&self, name: &str) -> PathBuf {
+        self.image_dir.join(format!("{name}-oci"))
+    }
+
     // ---- private helpers ----------------------------------------------------
 
     fn metadata_path(&self) -> PathBuf {
@@ -150,6 +155,8 @@ impl ImageStore {
                         rootfs_fs: None,
                         source_kind: "scan".to_string(),
                         file: format!("{stem}.raw"),
+                        container_file: None,
+                        container_sha256: None,
                         imported_at: None,
                     });
                 }
@@ -181,6 +188,8 @@ mod tests {
             rootfs_fs: Some("ext4".to_string()),
             source_kind: "catalog".to_string(),
             file: format!("{name}.raw"),
+            container_file: None,
+            container_sha256: None,
             imported_at: None,
         }
     }
