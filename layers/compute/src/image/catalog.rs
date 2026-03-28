@@ -19,6 +19,12 @@ pub async fn fetch_catalog(
     cache_path: &Path,
     policy: PullPolicy,
 ) -> Result<ImageCatalog, ImageError> {
+    if url.is_empty() && !matches!(policy, PullPolicy::Never) {
+        return Err(ImageError::CatalogFetchFailed {
+            url: String::new(),
+            reason: "No image catalog URL configured \u{2014} set [compute.images] catalog_url in ~/.syfrah/config.toml or use the default".to_string(),
+        });
+    }
     match policy {
         PullPolicy::Never => read_cache(cache_path),
         PullPolicy::Always => fetch_and_cache(url, cache_path).await,

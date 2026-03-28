@@ -310,6 +310,8 @@ async fn refcount_create_two_delete_one() {
         instance_base: tmp.path().join("instances"),
         image_management: false, // Disable for unit testing refcount logic
         pull_policy: PullPolicy::default(),
+        catalog_url: syfrah_compute::manager::DEFAULT_CATALOG_URL.to_string(),
+        cache_path: tmp.path().join("cache").join("catalog.json"),
     };
     fs::create_dir_all(&config.base_dir).unwrap();
     fs::create_dir_all(&config.image_dir).unwrap();

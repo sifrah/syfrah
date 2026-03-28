@@ -376,6 +376,8 @@ mod tests {
             instance_base: tmp.join("instances"),
             image_management: false,
             pull_policy: crate::image::types::PullPolicy::default(),
+            catalog_url: crate::manager::DEFAULT_CATALOG_URL.to_string(),
+            cache_path: tmp.join("cache").join("catalog.json"),
         };
         std::fs::create_dir_all(&config.base_dir).unwrap();
         std::fs::create_dir_all(&config.image_dir).unwrap();
