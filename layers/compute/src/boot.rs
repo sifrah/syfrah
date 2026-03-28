@@ -5,14 +5,21 @@
 //! The kernel mode is configured once and validated at daemon startup.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use sha2::{Digest, Sha256};
+use tracing::{info, warn};
 
 use crate::image::error::ImageError;
 
 /// Default path for the bundled kernel shipped with Syfrah releases.
 pub const BUNDLED_KERNEL_PATH: &str = "/opt/syfrah/kernels/vmlinux";
+
+/// URL for downloading the kernel when it is not present locally.
+const KERNEL_DOWNLOAD_URL: &str =
+    "https://github.com/sacha-ops/syfrah-images/releases/latest/download/vmlinux.gz";
 
 /// Kernel mode determines where the VM kernel comes from.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +51,190 @@ pub struct KernelConfig {
 /// [`ImageError::KernelNotFound`] with a helpful message if the file is missing.
 pub fn resolve_kernel(config: &KernelConfig) -> Result<PathBuf, ImageError> {
     resolve_kernel_inner(config, BUNDLED_KERNEL_PATH)
+}
+
+/// Ensure the kernel is available, downloading it if necessary.
+///
+/// If the kernel file already exists, this returns its path immediately.
+/// If the kernel is missing and the mode is `Bundled`, downloads the kernel
+/// from the syfrah-images GitHub release, decompresses it, and saves it to
+/// the default kernel path.
+///
+/// This is intended to be called at daemon startup so operators never have
+/// to manually provision the kernel.
+pub async fn ensure_kernel(config: &KernelConfig) -> Result<PathBuf, ImageError> {
+    ensure_kernel_inner(config, BUNDLED_KERNEL_PATH, KERNEL_DOWNLOAD_URL).await
+}
+
+/// Inner implementation that accepts configurable paths (for testing).
+async fn ensure_kernel_inner(
+    config: &KernelConfig,
+    bundled_path: &str,
+    download_url: &str,
+) -> Result<PathBuf, ImageError> {
+    let kernel_path = match &config.mode {
+        KernelMode::Bundled => PathBuf::from(bundled_path),
+        KernelMode::Custom => {
+            return config
+                .path
+                .clone()
+                .ok_or_else(|| ImageError::KernelNotFound {
+                    path: "kernel path is required when mode is 'custom'. \
+                           Set [compute.kernel].path in config.toml"
+                        .to_string(),
+                })
+                .and_then(|p| {
+                    validate_kernel_path(&p, &config.mode)?;
+                    Ok(p)
+                });
+        }
+    };
+
+    if kernel_path.exists() {
+        info!("Kernel already present at {}", kernel_path.display());
+        return Ok(kernel_path);
+    }
+
+    warn!("Kernel not found locally, downloading from syfrah-images...");
+
+    let url = download_url.to_string();
+    let dest = kernel_path.clone();
+
+    tokio::task::spawn_blocking(move || download_and_decompress_kernel(&url, &dest))
+        .await
+        .map_err(|e| ImageError::KernelNotFound {
+            path: format!("kernel download task panicked: {e}"),
+        })??;
+
+    info!(
+        "Kernel downloaded and installed to {}",
+        kernel_path.display()
+    );
+    Ok(kernel_path)
+}
+
+/// URL for the SHA256SUMS file alongside the kernel release.
+const KERNEL_SHA256SUMS_URL: &str =
+    "https://github.com/sacha-ops/syfrah-images/releases/latest/download/SHA256SUMS.txt";
+
+/// Build a reqwest blocking client with sensible timeouts.
+fn http_client() -> Result<reqwest::blocking::Client, ImageError> {
+    reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|e| ImageError::KernelNotFound {
+            path: format!("failed to build HTTP client: {e}"),
+        })
+}
+
+/// Try to fetch the expected SHA256 hash for `vmlinux.gz` from the release's
+/// `SHA256SUMS.txt`. Returns `None` (with a warning) if unavailable.
+fn fetch_expected_kernel_sha256(client: &reqwest::blocking::Client) -> Option<String> {
+    let resp = match client.get(KERNEL_SHA256SUMS_URL).send() {
+        Ok(r) if r.status().is_success() => r,
+        _ => {
+            warn!("Could not download SHA256SUMS.txt — kernel checksum not verified");
+            return None;
+        }
+    };
+    let body = match resp.text() {
+        Ok(t) => t,
+        Err(_) => {
+            warn!("Could not read SHA256SUMS.txt — kernel checksum not verified");
+            return None;
+        }
+    };
+    // Each line: "<hex>  <filename>"
+    for line in body.lines() {
+        if line.contains("vmlinux.gz") {
+            if let Some(hash) = line.split_whitespace().next() {
+                return Some(hash.to_lowercase());
+            }
+        }
+    }
+    warn!("vmlinux.gz not found in SHA256SUMS.txt — kernel checksum not verified");
+    None
+}
+
+/// Download a gzip-compressed kernel and decompress it to `dest`.
+///
+/// Streams the decompressed data directly to disk (no double-buffering).
+/// After writing, computes SHA256 of the compressed payload and verifies
+/// against the release's SHA256SUMS.txt when available.
+fn download_and_decompress_kernel(url: &str, dest: &Path) -> Result<(), ImageError> {
+    let client = http_client()?;
+
+    // Optionally fetch the expected hash before downloading the kernel.
+    let expected_sha = fetch_expected_kernel_sha256(&client);
+
+    let response = client
+        .get(url)
+        .send()
+        .map_err(|e| ImageError::KernelNotFound {
+            path: format!("failed to download kernel from {url}: {e}"),
+        })?;
+
+    if !response.status().is_success() {
+        return Err(ImageError::KernelNotFound {
+            path: format!(
+                "failed to download kernel from {url}: HTTP {}",
+                response.status()
+            ),
+        });
+    }
+
+    // Read the compressed bytes so we can both hash and decompress them.
+    let compressed = response.bytes().map_err(|e| ImageError::KernelNotFound {
+        path: format!("failed to read kernel response body: {e}"),
+    })?;
+
+    // Verify SHA256 of the compressed payload if we have an expected hash.
+    let actual_sha = {
+        let mut hasher = Sha256::new();
+        hasher.update(&compressed);
+        format!("{:x}", hasher.finalize())
+    };
+
+    if let Some(ref expected) = expected_sha {
+        if *expected != actual_sha {
+            return Err(ImageError::KernelNotFound {
+                path: format!("kernel checksum mismatch: expected {expected}, got {actual_sha}"),
+            });
+        }
+        info!("Kernel SHA256 verified: {actual_sha}");
+    } else {
+        warn!("Kernel checksum not verified (SHA256: {actual_sha})");
+    }
+
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| ImageError::KernelNotFound {
+            path: format!(
+                "failed to create kernel directory {}: {e}",
+                parent.display()
+            ),
+        })?;
+    }
+
+    // Stream decompression directly to disk — no intermediate Vec buffer.
+    let decoder = GzDecoder::new(&compressed[..]);
+    let mut file = std::fs::File::create(dest).map_err(|e| ImageError::KernelNotFound {
+        path: format!("failed to create kernel file {}: {e}", dest.display()),
+    })?;
+    std::io::copy(&mut { decoder }, &mut file).map_err(|e| ImageError::KernelNotFound {
+        path: format!("failed to decompress kernel to {}: {e}", dest.display()),
+    })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o644);
+        std::fs::set_permissions(dest, perms).map_err(|e| ImageError::KernelNotFound {
+            path: format!("failed to set permissions on {}: {e}", dest.display()),
+        })?;
+    }
+
+    Ok(())
 }
 
 /// Inner implementation that accepts a configurable bundled path (for testing).
@@ -244,7 +435,6 @@ mod tests {
         let err = result.unwrap_err();
         match &err {
             ImageError::KernelNotFound { path } => {
-                // Error message must include the exact path that was checked
                 assert!(
                     path.contains("/opt/syfrah/kernels/vmlinux"),
                     "error should contain the missing path, got: {path}"
@@ -280,10 +470,9 @@ mod tests {
         let bundled = kernel.to_str().unwrap();
         let config = KernelConfig {
             mode: KernelMode::Bundled,
-            path: Some(PathBuf::from("/ignored/path")), // should be ignored for bundled
+            path: Some(PathBuf::from("/ignored/path")),
         };
         let result = resolve_kernel_inner(&config, bundled).unwrap();
-        // Even though path is set, bundled mode ignores it
         assert_eq!(result, kernel);
     }
 
@@ -298,7 +487,6 @@ mod tests {
 
     #[test]
     fn kernel_config_deserialize_from_minimal_json() {
-        // Only mode specified — path should default to None
         let json = r#"{"mode": "bundled"}"#;
         let config: KernelConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.mode, KernelMode::Bundled);
@@ -307,7 +495,6 @@ mod tests {
 
     #[test]
     fn kernel_config_deserialize_empty_defaults_to_bundled() {
-        // Completely empty object — mode should default to bundled
         let json = r#"{}"#;
         let config: KernelConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.mode, KernelMode::Bundled);
@@ -326,12 +513,41 @@ mod tests {
             path: Some(symlink_path.clone()),
         };
         let result = resolve_kernel_inner(&config, BUNDLED_KERNEL_PATH).unwrap();
-        // Symlinks are followed — the resolved path is the symlink itself
         assert_eq!(result, symlink_path);
     }
 
     #[test]
     fn bundled_constant_points_to_expected_path() {
         assert_eq!(BUNDLED_KERNEL_PATH, "/opt/syfrah/kernels/vmlinux");
+    }
+
+    // -- ensure_kernel tests (issue #600) -------------------------------------
+
+    #[tokio::test]
+    async fn ensure_kernel_returns_existing_kernel() {
+        let dir = TempDir::new().unwrap();
+        let kernel = create_kernel(&dir, "vmlinux");
+        let config = KernelConfig {
+            mode: KernelMode::Bundled,
+            path: None,
+        };
+        let result = ensure_kernel_inner(&config, kernel.to_str().unwrap(), "http://invalid").await;
+        assert_eq!(result.unwrap(), kernel);
+    }
+
+    #[tokio::test]
+    async fn ensure_kernel_custom_mode_validates_path() {
+        let config = KernelConfig {
+            mode: KernelMode::Custom,
+            path: None,
+        };
+        let result = ensure_kernel_inner(&config, BUNDLED_KERNEL_PATH, "http://invalid").await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ImageError::KernelNotFound { path } => {
+                assert!(path.contains("required"));
+            }
+            other => panic!("expected KernelNotFound, got: {other:?}"),
+        }
     }
 }

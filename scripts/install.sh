@@ -241,6 +241,53 @@ if [ -f "${TMPDIR}/${KERNEL_BIN}" ]; then
   fi
 fi
 
+if [ ! -f "${KERNEL_INSTALL_DIR}/${KERNEL_BIN}" ]; then
+    # Kernel not in tarball — download from syfrah-images release
+    start_spinner "Downloading kernel..."
+    KERNEL_URL="https://github.com/sacha-ops/syfrah-images/releases/latest/download/vmlinux.gz"
+    KERNEL_SHASUMS_URL="https://github.com/sacha-ops/syfrah-images/releases/latest/download/SHA256SUMS.txt"
+    if curl -fsSL -o "${TMPDIR}/vmlinux.gz" "$KERNEL_URL"; then
+        stop_spinner "Downloaded kernel"
+
+        # Verify kernel checksum if SHA256SUMS.txt is available
+        start_spinner "Verifying kernel checksum..."
+        KERNEL_VERIFIED=false
+        if curl -fsSL -o "${TMPDIR}/kernel-SHA256SUMS.txt" "$KERNEL_SHASUMS_URL" 2>/dev/null; then
+            KERNEL_EXPECTED="$(grep -F "vmlinux.gz" "${TMPDIR}/kernel-SHA256SUMS.txt" | head -1 | awk '{print $1}')"
+            if [ -n "$KERNEL_EXPECTED" ]; then
+                if command -v sha256sum > /dev/null 2>&1; then
+                    KERNEL_ACTUAL="$(sha256sum "${TMPDIR}/vmlinux.gz" | awk '{print $1}')"
+                elif command -v shasum > /dev/null 2>&1; then
+                    KERNEL_ACTUAL="$(shasum -a 256 "${TMPDIR}/vmlinux.gz" | awk '{print $1}')"
+                else
+                    KERNEL_ACTUAL=""
+                fi
+                if [ -n "$KERNEL_ACTUAL" ] && [ "$KERNEL_EXPECTED" = "$KERNEL_ACTUAL" ]; then
+                    KERNEL_VERIFIED=true
+                    stop_spinner "Kernel checksum verified"
+                elif [ -n "$KERNEL_ACTUAL" ]; then
+                    stop_spinner "Kernel checksum mismatch (expected ${KERNEL_EXPECTED}, got ${KERNEL_ACTUAL})" fail
+                    exit 1
+                else
+                    stop_spinner "No sha256sum/shasum available — kernel checksum not verified" fail
+                fi
+            else
+                stop_spinner "vmlinux.gz not found in SHA256SUMS.txt — kernel checksum not verified" fail
+            fi
+        else
+            stop_spinner "SHA256SUMS.txt not available — kernel checksum not verified" fail
+        fi
+
+        start_spinner "Installing kernel..."
+        gunzip -f "${TMPDIR}/vmlinux.gz"
+        mkdir -p "$KERNEL_INSTALL_DIR"
+        install -m 644 "${TMPDIR}/vmlinux" "${KERNEL_INSTALL_DIR}/vmlinux"
+        stop_spinner "Installed kernel to ${KERNEL_INSTALL_DIR}/vmlinux"
+    else
+        stop_spinner "Could not download kernel (compute layer will download at first use)" fail
+    fi
+fi
+
 # --- Create data directories ------------------------------------------------
 
 mkdir -p /opt/syfrah/images
