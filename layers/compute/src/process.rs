@@ -400,7 +400,7 @@ async fn spawn_vm_inner(
             Ok(())
         });
     }
-    let mut child = cmd.spawn().map_err(|e| ProcessError::SpawnFailed {
+    let child = cmd.spawn().map_err(|e| ProcessError::SpawnFailed {
         reason: format!("failed to exec {}: {e}", ch_binary.display()),
     })?;
 
@@ -408,19 +408,10 @@ async fn spawn_vm_inner(
     // Internal event: Spawned
     info!(vm_id = %vm_id_str, pid = pid, "Spawned: cloud-hypervisor process started");
 
-    // Brief wait to let the child process initialize. If it exits immediately
-    // (e.g., bad binary), detect it early rather than waiting the full ping timeout.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    if let Some(exit_status) = child.try_wait().map_err(|e| ProcessError::SpawnFailed {
-        reason: format!("failed to check child status: {e}"),
-    })? {
-        return Err(ProcessError::SpawnFailed {
-            reason: format!("cloud-hypervisor exited immediately with status: {exit_status}"),
-        }
-        .into());
-    }
-    // Prevent Child::drop from interfering — we manage the process via PID.
-    std::mem::forget(child);
+    // Drop the Child handle without waiting. We manage the process via PID.
+    // The process will become a zombie when it exits; we clean up via kill+waitpid
+    // in the error/cleanup path.
+    drop(child);
 
     // Step 7: Write pid, meta.json, ch-version
     runtime_dir.write_pid(pid)?;
