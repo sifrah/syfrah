@@ -4,8 +4,10 @@
 //! Each handler communicates with the daemon via the control socket.
 
 use std::path::PathBuf;
+use std::time::Instant;
 
 use clap::Subcommand;
+use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::control::{send_compute_request, ComputeRequest, ComputeResponse};
 
@@ -158,25 +160,63 @@ async fn run_inspect(name: String) -> anyhow::Result<()> {
 }
 
 async fn run_pull(name: String) -> anyhow::Result<()> {
-    println!("Downloading {name}...");
+    let sock = control_socket_path();
+
+    // Fetch catalog to get image size before starting download.
+    let size_mb = match send_compute_request(&sock, &ComputeRequest::ImageCatalog).await {
+        Ok(ComputeResponse::ImageCatalog(v)) => v
+            .get("images")
+            .and_then(|i| i.as_array())
+            .and_then(|imgs| {
+                imgs.iter()
+                    .find(|img| img.get("name").and_then(|n| n.as_str()) == Some(&name))
+            })
+            .and_then(|img| img.get("size_mb").and_then(|s| s.as_u64())),
+        _ => None,
+    };
+
+    let size_label = match size_mb {
+        Some(mb) => format!(" ({mb} MB)"),
+        None => String::new(),
+    };
+
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::with_template("{spinner:.cyan} {msg}")
+            .unwrap_or_else(|_| ProgressStyle::default_spinner()),
+    );
+    spinner.set_message(format!("Downloading {name}{size_label}..."));
+    spinner.enable_steady_tick(std::time::Duration::from_millis(120));
+
+    let start = Instant::now();
+
     let req = ComputeRequest::ImagePull { name: name.clone() };
-    let resp = send_compute_request(&control_socket_path(), &req)
-        .await
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "failed to connect to daemon: {e}\n\nIs the daemon running? Initialize with: syfrah fabric init --name <mesh-name>"
-            )
-        })?;
+    let resp = send_compute_request(&sock, &req).await.map_err(|e| {
+        spinner.finish_and_clear();
+        anyhow::anyhow!(
+            "failed to connect to daemon: {e}\n\nIs the daemon running? Initialize with: syfrah fabric init --name <mesh-name>"
+        )
+    })?;
+
+    let elapsed = start.elapsed().as_secs_f64();
 
     match resp {
         ComputeResponse::ImageMeta(_) => {
-            println!("Done.");
+            spinner.finish_and_clear();
+            let time_str = if elapsed < 1.0 {
+                format!("{:.0}ms", elapsed * 1000.0)
+            } else {
+                format!("{elapsed:.1}s")
+            };
+            println!("Downloaded {name}{size_label} in {time_str}. SHA256 verified.");
             Ok(())
         }
         ComputeResponse::Error(msg) => {
+            spinner.finish_and_clear();
             anyhow::bail!("{msg}");
         }
         _ => {
+            spinner.finish_and_clear();
             anyhow::bail!("unexpected response from daemon");
         }
     }
