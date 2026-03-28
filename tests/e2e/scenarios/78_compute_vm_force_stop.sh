@@ -58,7 +58,7 @@ assert_vm_phase "e2e-compute-fstop" "test-vm-fs" "Stopped"
 
 # ── Verify CH process is gone ────────────────────────────────────
 
-PID=$(docker exec "e2e-compute-fstop" cat /run/syfrah/vms/test-vm-fs/pid 2>/dev/null)
+PID=$(docker exec "e2e-compute-fstop" cat /run/syfrah/vms/test-vm-fs/pid 2>/dev/null) || true
 if [ -n "$PID" ] && docker exec "e2e-compute-fstop" kill -0 "$PID" 2>/dev/null; then
     fail "CH process $PID still alive after force stop"
 else
