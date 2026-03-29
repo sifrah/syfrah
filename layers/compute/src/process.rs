@@ -23,6 +23,7 @@ use crate::image::types::{CloudInitConfig, ImageCatalog, ImageMeta, InstanceId, 
 use crate::phase::VmPhase;
 use crate::preflight::run_preflight;
 use crate::runtime::{ReconnectSource, VmRuntimeState};
+use crate::runtime_backend::RuntimeType;
 use crate::types::{VmEvent, VmId, VmSpec};
 
 // ---------------------------------------------------------------------------
@@ -1050,7 +1051,20 @@ pub async fn monitor_loop(
                 continue;
             }
 
-            // PID is alive — try ping on the socket.
+            // Containers have no API socket — PID check is sufficient.
+            let is_container = guard
+                .runtime_handle
+                .as_ref()
+                .map(|h| h.runtime_type == RuntimeType::Container)
+                .unwrap_or(false);
+
+            if is_container {
+                // PID is alive and that is all we can check for containers.
+                guard.last_ping_at = Some(now_unix());
+                continue;
+            }
+
+            // PID is alive — try ping on the CH API socket.
             let client = ChClient::with_timeout(guard.socket_path.clone(), Duration::from_secs(3));
             // Drop the guard before the async ping to avoid holding the lock across await.
             // We re-acquire after the ping completes.
