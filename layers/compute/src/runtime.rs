@@ -61,6 +61,9 @@ impl VmRuntimeState {
             pid: self.pid,
             runtime_type: RuntimeType::Vm,
             runtime_dir: base_dir.join(&self.vm_id.0),
+            vcpus: None,
+            memory_mb: None,
+            launched_at: None,
         }
     }
 

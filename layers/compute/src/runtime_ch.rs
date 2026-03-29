@@ -172,6 +172,9 @@ impl ComputeRuntime for ChRuntime {
                     pid: state.pid,
                     runtime_type: RuntimeType::Vm,
                     runtime_dir: runtime_dir.path().to_path_buf(),
+                    vcpus: None,
+                    memory_mb: None,
+                    launched_at: None,
                 };
                 info!(
                     vm_id = %id,
@@ -371,6 +374,9 @@ impl ComputeRuntime for ChRuntime {
                     pid: meta.pid,
                     runtime_type: RuntimeType::Vm,
                     runtime_dir: dir.path().to_path_buf(),
+                    vcpus: None,
+                    memory_mb: None,
+                    launched_at: None,
                 });
             }
         }
@@ -470,6 +476,9 @@ mod tests {
             pid: 4_000_000, // nonexistent PID
             runtime_type: RuntimeType::Vm,
             runtime_dir: PathBuf::from("/tmp/nonexistent"),
+            vcpus: None,
+            memory_mb: None,
+            launched_at: None,
         };
         assert!(!rt.is_alive(&handle).await);
     }
