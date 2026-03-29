@@ -144,10 +144,7 @@ fn vm_status_to_response(s: &VmStatus) -> VmResponse {
         phase: format!("{:?}", s.phase),
         vcpus: s.vcpus,
         memory_mb: s.memory_mb,
-        runtime: s.runtime.map(|r| match r {
-            crate::runtime_backend::RuntimeType::Vm => "vm".to_string(),
-            crate::runtime_backend::RuntimeType::Container => "container".to_string(),
-        }),
+        runtime: s.runtime.map(|r| r.to_string()),
         created_at: s.created_at,
         uptime_secs: s.uptime_secs,
     }
