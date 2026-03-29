@@ -38,6 +38,7 @@ fi
 
 # Test 3: Join when state exists — suggests syfrah fabric leave
 info "Testing: join when state exists..."
+ensure_daemon "e2e-err-join-1"
 start_peering "e2e-err-join-1"
 join_mesh "e2e-err-join-2" "172.20.0.10" "172.20.0.11" "err-join-srv-2"
 wait_for_peer_active "e2e-err-join-2" 1 30
