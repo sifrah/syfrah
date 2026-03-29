@@ -48,6 +48,9 @@ pub enum ImageError {
 
     #[error("kernel not found: {path}")]
     KernelNotFound { path: String },
+
+    #[error("invalid image name: {reason}")]
+    InvalidImageName { reason: String },
 }
 
 #[cfg(test)]
@@ -181,6 +184,15 @@ mod tests {
             path: "/opt/syfrah/vmlinux".to_string(),
         };
         assert!(e.to_string().contains("/opt/syfrah/vmlinux"));
+    }
+
+    #[test]
+    fn display_invalid_image_name() {
+        let e = ImageError::InvalidImageName {
+            reason: "must not contain '..'".to_string(),
+        };
+        assert!(e.to_string().contains("invalid image name"));
+        assert!(e.to_string().contains("must not contain"));
     }
 
     // -- From impl tests ------------------------------------------------------

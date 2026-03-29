@@ -6,6 +6,7 @@ use tracing::info;
 
 use super::error::ImageError;
 use super::store::ImageStore;
+use crate::config::validate_name;
 
 /// Delete an image from the store.
 ///
@@ -16,6 +17,10 @@ pub fn delete(
     name: &str,
     vm_refs: &HashMap<String, u32>,
 ) -> Result<(), ImageError> {
+    validate_name(name, "image").map_err(|e| ImageError::InvalidImageName {
+        reason: e.to_string(),
+    })?;
+
     // 1. Check image exists
     if !store.exists(name) {
         return Err(ImageError::ImageNotFound {

@@ -296,6 +296,7 @@ pub const WG_KEY_BASE64_LENGTH: usize = 44;
 // --- Validation functions ---
 
 /// Validate a name field (node name, region, zone): 1-255 chars, alphanumeric + `-_.` only.
+/// Double-dot (`..`) is rejected to prevent path-traversal attacks.
 pub fn validate_name(field_name: &str, value: &str) -> Result<(), MeshError> {
     if value.is_empty() {
         return Err(MeshError::Validation(format!(
@@ -314,6 +315,11 @@ pub fn validate_name(field_name: &str, value: &str) -> Result<(), MeshError> {
     {
         return Err(MeshError::Validation(format!(
             "{field_name} contains invalid characters (allowed: alphanumeric, dash, underscore, dot)"
+        )));
+    }
+    if value.contains("..") {
+        return Err(MeshError::Validation(format!(
+            "{field_name} must not contain '..' (path traversal)"
         )));
     }
     Ok(())
@@ -781,6 +787,14 @@ mod tests {
         assert!(err.to_string().contains("invalid characters"));
         let err = validate_name("name", "node/path").unwrap_err();
         assert!(err.to_string().contains("invalid characters"));
+    }
+
+    #[test]
+    fn validate_name_rejects_double_dot() {
+        let err = validate_name("name", "..").unwrap_err();
+        assert!(err.to_string().contains("path traversal"));
+        let err = validate_name("name", "foo..bar").unwrap_err();
+        assert!(err.to_string().contains("path traversal"));
     }
 
     #[test]
