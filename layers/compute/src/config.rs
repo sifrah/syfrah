@@ -57,6 +57,12 @@ pub fn validate(spec: &VmSpec) -> Result<ValidatedSpec, Vec<ConfigError>> {
             value: spec.memory_mb,
         });
     }
+    // memory: must be <= 1_048_576 MB (1 TB practical cap)
+    if spec.memory_mb > 1_048_576 {
+        errors.push(ConfigError::InvalidMemory {
+            value: spec.memory_mb,
+        });
+    }
     // memory: must be a multiple of 2 (CH alignment requirement for hotplug)
     if spec.memory_mb >= 128 && !spec.memory_mb.is_multiple_of(2) {
         errors.push(ConfigError::InvalidMemory {
@@ -137,8 +143,9 @@ pub fn validate(spec: &VmSpec) -> Result<ValidatedSpec, Vec<ConfigError>> {
 
 /// Validate a resource name (VM or image).
 ///
-/// Rules: 1-63 chars, ASCII alphanumeric plus `-` and `_`, must start with
-/// alphanumeric. Rejects empty, path traversal, slashes, spaces, unicode.
+/// Rules: 1-63 chars, ASCII alphanumeric plus `-`, `_`, and `.`, must start
+/// with alphanumeric. Double-dot (`..`) is rejected to prevent path traversal.
+/// Rejects empty, slashes, spaces, unicode.
 pub(crate) fn validate_name(name: &str, kind: &str) -> Result<(), ConfigError> {
     if name.is_empty() {
         return Err(ConfigError::ConflictingSettings {
@@ -150,20 +157,25 @@ pub(crate) fn validate_name(name: &str, kind: &str) -> Result<(), ConfigError> {
             detail: format!("{kind} name too long (max 63 chars)"),
         });
     }
-    // Only allow: alphanumeric, hyphens, underscores. Must start with alphanumeric.
+    // Only allow: alphanumeric, hyphens, underscores, dots. Must start with alphanumeric.
     let valid = name.chars().enumerate().all(|(i, c)| {
         if i == 0 {
             c.is_ascii_alphanumeric()
         } else {
-            c.is_ascii_alphanumeric() || c == '-' || c == '_'
+            c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'
         }
     });
     if !valid {
         return Err(ConfigError::ConflictingSettings {
             detail: format!(
                 "{kind} name contains invalid characters \
-                 (only a-z, A-Z, 0-9, -, _ allowed, must start with alphanumeric)"
+                 (only a-z, A-Z, 0-9, -, _, . allowed, must start with alphanumeric)"
             ),
+        });
+    }
+    if name.contains("..") {
+        return Err(ConfigError::ConflictingSettings {
+            detail: format!("{kind} name must not contain '..' (path traversal)"),
         });
     }
     Ok(())
@@ -1117,6 +1129,18 @@ mod tests {
     }
 
     #[test]
+    fn validate_name_valid_with_dot() {
+        assert!(validate_name("ubuntu-24.04", "image").is_ok());
+        assert!(validate_name("debian-12.1", "image").is_ok());
+    }
+
+    #[test]
+    fn validate_name_reject_double_dot() {
+        let err = validate_name("name..bad", "VM").unwrap_err();
+        assert!(err.to_string().contains("path traversal"));
+    }
+
+    #[test]
     fn validate_name_reject_empty() {
         let err = validate_name("", "VM").unwrap_err();
         assert!(err.to_string().contains("cannot be empty"));
@@ -1173,5 +1197,22 @@ mod tests {
         assert!(errors
             .iter()
             .any(|e| matches!(e, ConfigError::ConflictingSettings { .. })));
+    }
+
+    #[test]
+    fn validate_memory_1tb_ok() {
+        let mut spec = minimal_spec();
+        spec.memory_mb = 1_048_576; // exactly 1 TB
+        assert!(validate(&spec).is_ok());
+    }
+
+    #[test]
+    fn validate_memory_exceeds_1tb_rejected() {
+        let mut spec = minimal_spec();
+        spec.memory_mb = 1_048_578; // just over 1 TB (and even)
+        let errors = validate(&spec).unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ConfigError::InvalidMemory { .. })));
     }
 }

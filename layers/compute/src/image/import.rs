@@ -99,10 +99,6 @@ fn import_inner(
         .map(|m| m.len() / (1024 * 1024))
         .unwrap_or(0);
 
-    let dur = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-
     let meta = ImageMeta {
         name: name.to_string(),
         arch: arch.to_string(),
@@ -121,7 +117,7 @@ fn import_inner(
         file: format!("{name}.raw"),
         container_file: None,
         container_sha256: None,
-        imported_at: Some(format!("{}Z", dur.as_secs())),
+        imported_at: Some(super::pull::iso8601_now()),
     };
 
     // 8. Update images.json (using metadata read before copy to avoid scan
