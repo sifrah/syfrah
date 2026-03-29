@@ -29,11 +29,15 @@ pub enum ImageCommand {
         json: bool,
     },
     /// Download an image from the catalog
+    #[command(after_help = "Examples:\n  syfrah compute image pull alpine-3.20")]
     Pull {
         /// Image name
         name: String,
     },
     /// Import a local raw disk image
+    #[command(
+        after_help = "Examples:\n  syfrah compute image import /tmp/disk.raw --name custom-os"
+    )]
     Import {
         /// Path to the raw disk image file
         path: PathBuf,
@@ -53,6 +57,9 @@ pub enum ImageCommand {
         yes: bool,
     },
     /// Show remote image catalog
+    #[command(
+        after_help = "Examples:\n  syfrah compute image catalog\n  syfrah compute image catalog --json"
+    )]
     Catalog {
         /// Output as JSON
         #[arg(long)]
