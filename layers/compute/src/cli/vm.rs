@@ -13,6 +13,9 @@ use crate::control::{send_compute_request, ComputeRequest, ComputeResponse};
 #[derive(Debug, Subcommand)]
 pub enum VmCommand {
     /// Create a new virtual machine
+    #[command(
+        after_help = "Examples:\n  syfrah compute vm create --name web-1 --image alpine-3.20\n  syfrah compute vm create --name web-1 --image alpine-3.20 --vcpus 4 --memory 4096 --ssh-key ~/.ssh/id_ed25519.pub"
+    )]
     Create {
         /// Human-readable name for the VM
         #[arg(long)]
@@ -40,6 +43,7 @@ pub enum VmCommand {
         disk_size: Option<u32>,
     },
     /// List all virtual machines
+    #[command(after_help = "Examples:\n  syfrah compute vm list\n  syfrah compute vm list --json")]
     List {
         /// Output as JSON
         #[arg(long)]

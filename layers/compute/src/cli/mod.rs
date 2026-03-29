@@ -78,10 +78,12 @@ async fn run_status(json: bool) -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string_pretty(&v)?);
             } else {
                 let status = v.get("status").and_then(|s| s.as_str()).unwrap_or("?");
+                let runtime = v.get("runtime").and_then(|r| r.as_str()).unwrap_or("?");
                 let total = v.get("total_vms").and_then(|t| t.as_u64()).unwrap_or(0);
                 let running = v.get("running_vms").and_then(|r| r.as_u64()).unwrap_or(0);
                 println!("Compute Status");
                 println!("  Status:      {status}");
+                println!("  Runtime:     {runtime}");
                 println!("  Total VMs:   {total}");
                 println!("  Running VMs: {running}");
                 if let Some(warnings) = v.get("warnings").and_then(|w| w.as_array()) {
