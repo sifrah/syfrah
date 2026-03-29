@@ -843,15 +843,14 @@ impl ComputeRuntime for ContainerRuntime {
                 reason: format!("failed to write config.json: {e}"),
             })?;
 
-        // 4. runtime create --bundle {runtime_dir} {id}
+        // 4. runtime run -d --bundle {runtime_dir} {id}
+        //    `run -d` does create+start in one call and detaches immediately,
+        //    avoiding the deadlock where `create` blocks waiting for `start`.
         let runtime_dir_str = runtime_dir.to_string_lossy().to_string();
-        self.runtime_exec(&["create", "--bundle", &runtime_dir_str, id])
+        self.runtime_exec(&["run", "-d", "--bundle", &runtime_dir_str, id])
             .await?;
 
-        // 5. runtime start {id}
-        self.runtime_exec(&["start", id]).await?;
-
-        // 6. Get PID from runtime state.
+        // 5. Get PID from runtime state.
         let state_json = self.runtime_exec(&["state", id]).await?;
         let state: serde_json::Value =
             serde_json::from_str(&state_json).map_err(|e| ProcessError::SpawnFailed {
