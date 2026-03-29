@@ -41,6 +41,11 @@ pub struct ValidatedVolume {
 pub fn validate(spec: &VmSpec) -> Result<ValidatedSpec, Vec<ConfigError>> {
     let mut errors = Vec::new();
 
+    // VM name: must be valid (no path traversal, special chars, etc.)
+    if let Err(e) = validate_name(&spec.id.to_string(), "VM") {
+        errors.push(e);
+    }
+
     // vcpus: must be > 0 and <= 256 (Cloud Hypervisor max)
     if spec.vcpus == 0 || spec.vcpus > 256 {
         errors.push(ConfigError::InvalidVcpuCount { value: spec.vcpus });
@@ -128,6 +133,40 @@ pub fn validate(spec: &VmSpec) -> Result<ValidatedSpec, Vec<ConfigError>> {
     } else {
         Err(errors)
     }
+}
+
+/// Validate a resource name (VM or image).
+///
+/// Rules: 1-63 chars, ASCII alphanumeric plus `-` and `_`, must start with
+/// alphanumeric. Rejects empty, path traversal, slashes, spaces, unicode.
+pub(crate) fn validate_name(name: &str, kind: &str) -> Result<(), ConfigError> {
+    if name.is_empty() {
+        return Err(ConfigError::ConflictingSettings {
+            detail: format!("{kind} name cannot be empty"),
+        });
+    }
+    if name.len() > 63 {
+        return Err(ConfigError::ConflictingSettings {
+            detail: format!("{kind} name too long (max 63 chars)"),
+        });
+    }
+    // Only allow: alphanumeric, hyphens, underscores. Must start with alphanumeric.
+    let valid = name.chars().enumerate().all(|(i, c)| {
+        if i == 0 {
+            c.is_ascii_alphanumeric()
+        } else {
+            c.is_ascii_alphanumeric() || c == '-' || c == '_'
+        }
+    });
+    if !valid {
+        return Err(ConfigError::ConflictingSettings {
+            detail: format!(
+                "{kind} name contains invalid characters \
+                 (only a-z, A-Z, 0-9, -, _ allowed, must start with alphanumeric)"
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Validate a PCI BDF address: DDDD:BB:DD.F
@@ -1058,5 +1097,81 @@ mod tests {
         let spec = minimal_spec();
         assert!(validate(&spec).is_ok());
         assert!(spec.disk_size_mb.is_none());
+    }
+
+    // -- validate_name tests --------------------------------------------------
+
+    #[test]
+    fn validate_name_valid_web_1() {
+        assert!(validate_name("web-1", "VM").is_ok());
+    }
+
+    #[test]
+    fn validate_name_valid_my_vm() {
+        assert!(validate_name("my_vm", "VM").is_ok());
+    }
+
+    #[test]
+    fn validate_name_valid_alpine_3_20() {
+        assert!(validate_name("alpine-3-20", "image").is_ok());
+    }
+
+    #[test]
+    fn validate_name_reject_empty() {
+        let err = validate_name("", "VM").unwrap_err();
+        assert!(err.to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn validate_name_reject_slash() {
+        let err = validate_name("my/vm", "VM").unwrap_err();
+        assert!(err.to_string().contains("invalid characters"));
+    }
+
+    #[test]
+    fn validate_name_reject_path_traversal() {
+        let err = validate_name("../hack", "VM").unwrap_err();
+        assert!(err.to_string().contains("invalid characters"));
+    }
+
+    #[test]
+    fn validate_name_reject_space() {
+        let err = validate_name("my vm", "VM").unwrap_err();
+        assert!(err.to_string().contains("invalid characters"));
+    }
+
+    #[test]
+    fn validate_name_reject_too_long() {
+        let long = "a".repeat(64);
+        let err = validate_name(&long, "VM").unwrap_err();
+        assert!(err.to_string().contains("too long"));
+    }
+
+    #[test]
+    fn validate_name_reject_emoji() {
+        let err = validate_name("\u{1f680}vm", "VM").unwrap_err();
+        assert!(err.to_string().contains("invalid characters"));
+    }
+
+    #[test]
+    fn validate_name_reject_starts_with_hyphen() {
+        let err = validate_name("-leading", "VM").unwrap_err();
+        assert!(err.to_string().contains("invalid characters"));
+    }
+
+    #[test]
+    fn validate_name_max_63_chars_ok() {
+        let name = "a".repeat(63);
+        assert!(validate_name(&name, "VM").is_ok());
+    }
+
+    #[test]
+    fn validate_vm_name_in_spec_rejected() {
+        let mut spec = minimal_spec();
+        spec.id = VmId("../escape".to_string());
+        let errors = validate(&spec).unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ConfigError::ConflictingSettings { .. })));
     }
 }

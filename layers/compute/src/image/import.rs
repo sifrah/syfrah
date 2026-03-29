@@ -9,6 +9,7 @@ use super::error::ImageError;
 use super::pull::compute_sha256;
 use super::store::ImageStore;
 use super::types::ImageMeta;
+use crate::config::validate_name;
 
 /// QCOW2 magic bytes: `QFI\xfb`
 const QCOW2_MAGIC: [u8; 4] = [0x51, 0x46, 0x49, 0xfb];
@@ -23,6 +24,11 @@ pub fn import(
     name: &str,
     arch: &str,
 ) -> Result<ImageMeta, ImageError> {
+    // 0. Validate image name
+    validate_name(name, "image").map_err(|e| ImageError::ImportFailed {
+        reason: e.to_string(),
+    })?;
+
     // 1. Validate file exists
     if !path.exists() {
         return Err(ImageError::ImportFailed {
@@ -209,6 +215,46 @@ mod tests {
         // Verify metadata is persisted
         let stored = store.get("field-check").unwrap().unwrap();
         assert_eq!(stored.sha256, meta.sha256);
+    }
+
+    #[test]
+    fn import_reject_empty_name() {
+        let tmp = TempDir::new().unwrap();
+        let store = ImageStore::new(tmp.path().join("store"));
+        fs::create_dir_all(store.image_dir()).unwrap();
+
+        let src = tmp.path().join("source.raw");
+        fs::write(&src, b"data").unwrap();
+
+        let result = import(&store, &src, "", "x86_64");
+        assert!(matches!(result, Err(ImageError::ImportFailed { .. })));
+        assert!(result.unwrap_err().to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn import_reject_path_traversal_name() {
+        let tmp = TempDir::new().unwrap();
+        let store = ImageStore::new(tmp.path().join("store"));
+        fs::create_dir_all(store.image_dir()).unwrap();
+
+        let src = tmp.path().join("source.raw");
+        fs::write(&src, b"data").unwrap();
+
+        let result = import(&store, &src, "../hack", "x86_64");
+        assert!(matches!(result, Err(ImageError::ImportFailed { .. })));
+    }
+
+    #[test]
+    fn import_reject_slash_in_name() {
+        let tmp = TempDir::new().unwrap();
+        let store = ImageStore::new(tmp.path().join("store"));
+        fs::create_dir_all(store.image_dir()).unwrap();
+
+        let src = tmp.path().join("source.raw");
+        fs::write(&src, b"data").unwrap();
+
+        let result = import(&store, &src, "my/image", "x86_64");
+        assert!(matches!(result, Err(ImageError::ImportFailed { .. })));
     }
 
     #[test]
