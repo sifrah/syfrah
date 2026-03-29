@@ -384,11 +384,17 @@ impl VmManager {
             use crate::disk;
             use crate::image;
             use crate::image::error::ImageError;
-            use crate::image::types::{CloudInitConfig, InstanceId};
+            use crate::image::types::{CloudInitConfig, InstanceId, RuntimeMode};
 
             let store = &self.image_store;
+            let is_container = self.runtime.name() == "container";
+            let runtime_mode = if is_container {
+                RuntimeMode::Container
+            } else {
+                RuntimeMode::Vm
+            };
 
-            // Image check/pull
+            // Image check/pull — use runtime-aware pull to get the right format.
             let image_meta = match store.get(&spec.image)? {
                 Some(meta) => {
                     info!(image = %spec.image, "image found in local cache");
@@ -396,7 +402,8 @@ impl VmManager {
                 }
                 None if self.config.pull_policy != PullPolicy::Never => {
                     info!(image = %spec.image, "pulling image from catalog");
-                    image::pull::pull(store, &spec.image, &catalog).await?
+                    image::pull::pull_for_runtime(store, &spec.image, &catalog, &runtime_mode)
+                        .await?
                 }
                 None => {
                     return Err(ImageError::ImageNotFound {
@@ -420,16 +427,52 @@ impl VmManager {
                 .into());
             }
 
-            // Create instance dir
-            let instance_id = InstanceId::new();
-            let inst_dir = disk::InstanceDir::create(&self.config.instance_base, &instance_id)?;
-            let inst_path = inst_dir.path().to_path_buf();
+            if is_container {
+                // Container mode: pass the OCI tar.gz directly to the runtime.
+                // No clone, no cloud-init — the container runtime extracts
+                // the archive at create time.
+                let oci_tar = store.image_dir().join(format!("{}-oci.tar.gz", spec.image));
 
-            // Clone base image
-            let base_image_path = store.image_path(&spec.image);
-            let min_disk = image_meta.min_disk_mb as u32;
-            let effective_size_bytes =
-                match disk::clone_image(&base_image_path, &inst_dir, spec.disk_size_mb, min_disk) {
+                // Create a minimal instance dir for metadata tracking.
+                let instance_id = InstanceId::new();
+                let inst_dir = disk::InstanceDir::create(&self.config.instance_base, &instance_id)?;
+                let inst_path = inst_dir.path().to_path_buf();
+
+                let inst_meta = disk::InstanceMeta {
+                    image_source: spec.image.clone(),
+                    image_sha: image_meta.sha256.clone(),
+                    arch: image_meta.arch.clone(),
+                    requested_disk_size_mb: spec.disk_size_mb,
+                    effective_disk_size_mb: 0,
+                    hostname: vm_id_str.clone(),
+                    created_at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs()
+                        .to_string(),
+                    vm_name: vm_id_str.clone(),
+                };
+                if let Err(e) = inst_dir.write_metadata(&inst_meta) {
+                    inst_dir.cleanup().ok();
+                    return Err(e.into());
+                }
+
+                instance_rootfs = Some(oci_tar);
+                instance_dir_path = Some(inst_path);
+            } else {
+                // VM mode: clone the .raw image and generate cloud-init.
+                let instance_id = InstanceId::new();
+                let inst_dir = disk::InstanceDir::create(&self.config.instance_base, &instance_id)?;
+                let inst_path = inst_dir.path().to_path_buf();
+
+                let base_image_path = store.image_path(&spec.image);
+                let min_disk = image_meta.min_disk_mb as u32;
+                let effective_size_bytes = match disk::clone_image(
+                    &base_image_path,
+                    &inst_dir,
+                    spec.disk_size_mb,
+                    min_disk,
+                ) {
                     Ok(size) => {
                         info!(
                             vm_id = %vm_id_str,
@@ -444,54 +487,55 @@ impl VmManager {
                     }
                 };
 
-            // Generate cloud-init (if applicable)
-            if image_meta.cloud_init && spec.ssh_key.is_some() {
-                let cloud_config = CloudInitConfig {
-                    hostname: vm_id_str.clone(),
-                    ssh_authorized_keys: vec![spec.ssh_key.clone().unwrap()],
-                    default_user: image_meta
-                        .default_username
-                        .clone()
-                        .unwrap_or_else(|| "ubuntu".to_string()),
-                    users: vec![],
-                    network_config: None,
-                    user_data_extra: None,
-                };
-                match disk::generate_cloud_init(&cloud_config, &inst_dir, &instance_id) {
-                    Ok(ci_path) => {
-                        info!(vm_id = %vm_id_str, "cloud-init config-drive generated");
-                        cloud_init_path = Some(ci_path);
-                    }
-                    Err(e) => {
-                        inst_dir.cleanup().ok();
-                        return Err(e.into());
+                // Generate cloud-init (if applicable)
+                if image_meta.cloud_init && spec.ssh_key.is_some() {
+                    let cloud_config = CloudInitConfig {
+                        hostname: vm_id_str.clone(),
+                        ssh_authorized_keys: vec![spec.ssh_key.clone().unwrap()],
+                        default_user: image_meta
+                            .default_username
+                            .clone()
+                            .unwrap_or_else(|| "ubuntu".to_string()),
+                        users: vec![],
+                        network_config: None,
+                        user_data_extra: None,
+                    };
+                    match disk::generate_cloud_init(&cloud_config, &inst_dir, &instance_id) {
+                        Ok(ci_path) => {
+                            info!(vm_id = %vm_id_str, "cloud-init config-drive generated");
+                            cloud_init_path = Some(ci_path);
+                        }
+                        Err(e) => {
+                            inst_dir.cleanup().ok();
+                            return Err(e.into());
+                        }
                     }
                 }
-            }
 
-            // Write instance metadata
-            let effective_mb = (effective_size_bytes / (1024 * 1024)) as u32;
-            let inst_meta = disk::InstanceMeta {
-                image_source: spec.image.clone(),
-                image_sha: image_meta.sha256.clone(),
-                arch: image_meta.arch.clone(),
-                requested_disk_size_mb: spec.disk_size_mb,
-                effective_disk_size_mb: effective_mb,
-                hostname: vm_id_str.clone(),
-                created_at: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs()
-                    .to_string(),
-                vm_name: vm_id_str.clone(),
-            };
-            if let Err(e) = inst_dir.write_metadata(&inst_meta) {
-                inst_dir.cleanup().ok();
-                return Err(e.into());
-            }
+                // Write instance metadata
+                let effective_mb = (effective_size_bytes / (1024 * 1024)) as u32;
+                let inst_meta = disk::InstanceMeta {
+                    image_source: spec.image.clone(),
+                    image_sha: image_meta.sha256.clone(),
+                    arch: image_meta.arch.clone(),
+                    requested_disk_size_mb: spec.disk_size_mb,
+                    effective_disk_size_mb: effective_mb,
+                    hostname: vm_id_str.clone(),
+                    created_at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs()
+                        .to_string(),
+                    vm_name: vm_id_str.clone(),
+                };
+                if let Err(e) = inst_dir.write_metadata(&inst_meta) {
+                    inst_dir.cleanup().ok();
+                    return Err(e.into());
+                }
 
-            instance_rootfs = Some(inst_dir.rootfs_path());
-            instance_dir_path = Some(inst_path);
+                instance_rootfs = Some(inst_dir.rootfs_path());
+                instance_dir_path = Some(inst_path);
+            }
         }
 
         // -- Build RuntimeSpec and delegate to the runtime --------------------
