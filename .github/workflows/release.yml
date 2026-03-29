@@ -232,6 +232,68 @@ jobs:
           cp /tmp/vmlinux "target/${{ matrix.target }}/release/vmlinux"
           echo "Kernel downloaded and validated successfully"
 
+      - name: Download crun static binary (Linux only)
+        if: contains(matrix.target, 'linux')
+        run: |
+          set -euo pipefail
+          CRUN_VERSION=$(cat CRUN_VERSION | tr -d '[:space:]')
+          echo "crun version: ${CRUN_VERSION}"
+
+          if [[ "${{ matrix.target }}" == aarch64-* ]]; then
+            CRUN_ARCH="arm64"
+          else
+            CRUN_ARCH="amd64"
+          fi
+
+          CRUN_URL="https://github.com/containers/crun/releases/download/${CRUN_VERSION}/crun-${CRUN_VERSION}-linux-${CRUN_ARCH}"
+          echo "Downloading crun from ${CRUN_URL}"
+          curl -fsSL -o "target/${{ matrix.target }}/release/crun" "${CRUN_URL}"
+          chmod +x "target/${{ matrix.target }}/release/crun"
+
+          # Validate downloaded binary is non-empty and is an ELF executable
+          CRUN_SIZE=$(wc -c < "target/${{ matrix.target }}/release/crun" | tr -d ' ')
+          if [ "$CRUN_SIZE" -lt 1024 ]; then
+            echo "::error::Downloaded crun binary is too small (${CRUN_SIZE} bytes)"
+            exit 1
+          fi
+          if ! file "target/${{ matrix.target }}/release/crun" | grep -q ELF; then
+            echo "::error::Downloaded crun binary is not a valid ELF executable"
+            file "target/${{ matrix.target }}/release/crun"
+            exit 1
+          fi
+          echo "crun binary validated (${CRUN_SIZE} bytes, ELF)"
+
+      - name: Download runsc / gVisor (Linux only)
+        if: contains(matrix.target, 'linux')
+        run: |
+          set -euo pipefail
+          RUNSC_VERSION=$(cat RUNSC_VERSION | tr -d '[:space:]')
+          echo "runsc/gVisor version: ${RUNSC_VERSION}"
+
+          if [[ "${{ matrix.target }}" == aarch64-* ]]; then
+            RUNSC_ARCH="aarch64"
+          else
+            RUNSC_ARCH="x86_64"
+          fi
+
+          RUNSC_URL="https://storage.googleapis.com/gvisor/releases/release/${RUNSC_VERSION}/${RUNSC_ARCH}/runsc"
+          echo "Downloading runsc from ${RUNSC_URL}"
+          curl -fsSL -o "target/${{ matrix.target }}/release/runsc" "${RUNSC_URL}"
+          chmod +x "target/${{ matrix.target }}/release/runsc"
+
+          # Validate downloaded binary is non-empty and is an ELF executable
+          RUNSC_SIZE=$(wc -c < "target/${{ matrix.target }}/release/runsc" | tr -d ' ')
+          if [ "$RUNSC_SIZE" -lt 1024 ]; then
+            echo "::error::Downloaded runsc binary is too small (${RUNSC_SIZE} bytes)"
+            exit 1
+          fi
+          if ! file "target/${{ matrix.target }}/release/runsc" | grep -q ELF; then
+            echo "::error::Downloaded runsc binary is not a valid ELF executable"
+            file "target/${{ matrix.target }}/release/runsc"
+            exit 1
+          fi
+          echo "runsc binary validated (${RUNSC_SIZE} bytes, ELF)"
+
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
@@ -240,6 +302,8 @@ jobs:
             target/${{ matrix.target }}/release/syfrah
             target/${{ matrix.target }}/release/cloud-hypervisor
             target/${{ matrix.target }}/release/vmlinux
+            target/${{ matrix.target }}/release/crun
+            target/${{ matrix.target }}/release/runsc
 
   # ── Create release ────────────────────────────────────────
   release:
@@ -265,12 +329,20 @@ jobs:
             archive="syfrah-v${VERSION}-${target}.tar.gz"
             chmod +x "${target_dir}syfrah"
 
-            # Include cloud-hypervisor and vmlinux in tarball for Linux targets
+            # Include cloud-hypervisor, vmlinux, crun, and runsc in tarball for Linux targets
             if [ -f "${target_dir}cloud-hypervisor" ]; then
               chmod +x "${target_dir}cloud-hypervisor"
               TARBALL_FILES="syfrah cloud-hypervisor"
               if [ -f "${target_dir}vmlinux" ]; then
                 TARBALL_FILES="${TARBALL_FILES} vmlinux"
+              fi
+              if [ -f "${target_dir}crun" ]; then
+                chmod +x "${target_dir}crun"
+                TARBALL_FILES="${TARBALL_FILES} crun"
+              fi
+              if [ -f "${target_dir}runsc" ]; then
+                chmod +x "${target_dir}runsc"
+                TARBALL_FILES="${TARBALL_FILES} runsc"
               fi
               tar czf "release/${archive}" -C "$target_dir" ${TARBALL_FILES}
             else

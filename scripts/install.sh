@@ -241,6 +241,106 @@ if [ -f "${TMPDIR}/${KERNEL_BIN}" ]; then
   fi
 fi
 
+# --- Install crun (if bundled) -----------------------------------------------
+
+CRUN_BIN="crun"
+if [ -f "${TMPDIR}/${CRUN_BIN}" ]; then
+  start_spinner "Installing crun to ${INSTALL_DIR}/${CRUN_BIN}..."
+  if install -m 755 "${TMPDIR}/${CRUN_BIN}" "${INSTALL_DIR}/${CRUN_BIN}"; then
+    stop_spinner "Installed crun to ${INSTALL_DIR}/${CRUN_BIN}"
+  else
+    stop_spinner "Failed to install crun (are you root?)" fail
+    exit 1
+  fi
+else
+  # Fallback: download crun if not bundled (older release)
+  if ! command -v crun > /dev/null 2>&1; then
+    CRUN_VERSION="${SYFRAH_CRUN_VERSION:-1.18.2}"
+    case "$ARCH" in
+      x86_64)  CRUN_ARCH="amd64" ;;
+      aarch64) CRUN_ARCH="arm64" ;;
+      *)
+        step_fail "Unsupported architecture for crun: $ARCH"
+        exit 1
+        ;;
+    esac
+    CRUN_URL="https://github.com/containers/crun/releases/download/${CRUN_VERSION}/crun-${CRUN_VERSION}-linux-${CRUN_ARCH}"
+    start_spinner "Downloading crun ${CRUN_VERSION}..."
+    if curl -fsSL -o "${TMPDIR}/${CRUN_BIN}" "$CRUN_URL"; then
+      # Validate downloaded binary
+      CRUN_DL_SIZE=$(wc -c < "${TMPDIR}/${CRUN_BIN}" | tr -d ' ')
+      if [ "$CRUN_DL_SIZE" -lt 1024 ]; then
+        stop_spinner "Downloaded crun binary is too small (${CRUN_DL_SIZE} bytes)" fail
+        exit 1
+      fi
+      if command -v file > /dev/null 2>&1 && ! file "${TMPDIR}/${CRUN_BIN}" | grep -q ELF; then
+        stop_spinner "Downloaded crun binary is not a valid ELF executable" fail
+        exit 1
+      fi
+      stop_spinner "Downloaded crun ${CRUN_VERSION}"
+      if install -m 755 "${TMPDIR}/${CRUN_BIN}" "${INSTALL_DIR}/${CRUN_BIN}"; then
+        step_ok "Installed crun to ${INSTALL_DIR}/${CRUN_BIN}"
+      else
+        step_fail "Failed to install crun (are you root?)"
+        exit 1
+      fi
+    else
+      stop_spinner "Failed to download crun from ${CRUN_URL}" fail
+      exit 1
+    fi
+  fi
+fi
+
+# --- Install runsc / gVisor (if bundled) ------------------------------------
+
+RUNSC_BIN="runsc"
+if [ -f "${TMPDIR}/${RUNSC_BIN}" ]; then
+  start_spinner "Installing runsc to ${INSTALL_DIR}/${RUNSC_BIN}..."
+  if install -m 755 "${TMPDIR}/${RUNSC_BIN}" "${INSTALL_DIR}/${RUNSC_BIN}"; then
+    stop_spinner "Installed runsc to ${INSTALL_DIR}/${RUNSC_BIN}"
+  else
+    stop_spinner "Failed to install runsc (are you root?)" fail
+    exit 1
+  fi
+else
+  # Fallback: download runsc if not bundled (older release)
+  if ! command -v runsc > /dev/null 2>&1; then
+    RUNSC_VERSION="${SYFRAH_RUNSC_VERSION:-20260323.0}"
+    case "$ARCH" in
+      x86_64)  RUNSC_ARCH="x86_64" ;;
+      aarch64) RUNSC_ARCH="aarch64" ;;
+      *)
+        step_fail "Unsupported architecture for runsc: $ARCH"
+        exit 1
+        ;;
+    esac
+    RUNSC_URL="https://storage.googleapis.com/gvisor/releases/release/${RUNSC_VERSION}/${RUNSC_ARCH}/runsc"
+    start_spinner "Downloading runsc (gVisor) ${RUNSC_VERSION}..."
+    if curl -fsSL -o "${TMPDIR}/${RUNSC_BIN}" "$RUNSC_URL"; then
+      # Validate downloaded binary
+      RUNSC_DL_SIZE=$(wc -c < "${TMPDIR}/${RUNSC_BIN}" | tr -d ' ')
+      if [ "$RUNSC_DL_SIZE" -lt 1024 ]; then
+        stop_spinner "Downloaded runsc binary is too small (${RUNSC_DL_SIZE} bytes)" fail
+        exit 1
+      fi
+      if command -v file > /dev/null 2>&1 && ! file "${TMPDIR}/${RUNSC_BIN}" | grep -q ELF; then
+        stop_spinner "Downloaded runsc binary is not a valid ELF executable" fail
+        exit 1
+      fi
+      stop_spinner "Downloaded runsc ${RUNSC_VERSION}"
+      if install -m 755 "${TMPDIR}/${RUNSC_BIN}" "${INSTALL_DIR}/${RUNSC_BIN}"; then
+        step_ok "Installed runsc to ${INSTALL_DIR}/${RUNSC_BIN}"
+      else
+        step_fail "Failed to install runsc (are you root?)"
+        exit 1
+      fi
+    else
+      stop_spinner "Failed to download runsc from ${RUNSC_URL}" fail
+      exit 1
+    fi
+  fi
+fi
+
 if [ ! -f "${KERNEL_INSTALL_DIR}/${KERNEL_BIN}" ]; then
     # Kernel not in tarball — download from syfrah-images release
     start_spinner "Downloading kernel..."
