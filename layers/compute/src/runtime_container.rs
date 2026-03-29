@@ -937,6 +937,58 @@ impl ComputeRuntime for ContainerRuntime {
         })
     }
 
+    async fn start(&self, handle: &RuntimeHandle) -> Result<RuntimeHandle, ComputeError> {
+        info!(
+            container_id = %handle.id,
+            "ContainerRuntime::start: restarting stopped container"
+        );
+
+        // The OCI lifecycle doesn't allow restarting a stopped container directly.
+        // Delete the stopped container state, then re-run it using the existing
+        // bundle (rootfs + config.json are still in the runtime dir).
+        let _ = self.runtime_exec(&["delete", "--force", &handle.id]).await;
+
+        // Re-run the container from the existing bundle directory.
+        let runtime_dir_str = handle.runtime_dir.to_string_lossy().to_string();
+        self.runtime_exec_detached(&["run", "-d", "--bundle", &runtime_dir_str, &handle.id])
+            .await?;
+
+        // Get the new PID from runtime state.
+        let state_json = self.runtime_exec(&["state", &handle.id]).await?;
+        let state: serde_json::Value =
+            serde_json::from_str(&state_json).map_err(|e| ProcessError::SpawnFailed {
+                reason: format!("failed to parse runtime state JSON: {e}"),
+            })?;
+        let pid = state["pid"].as_u64().unwrap_or(0) as u32;
+
+        // Update meta.json with new timestamp and PID.
+        let now = chrono_now_iso8601();
+        let meta_path = handle.runtime_dir.join("meta.json");
+        if let Ok(old_meta) = read_container_meta(&handle.runtime_dir) {
+            let meta = ContainerMeta {
+                pid,
+                created_at: now,
+                ..old_meta
+            };
+            if let Ok(json) = serde_json::to_string_pretty(&meta) {
+                let _ = tokio::fs::write(&meta_path, json).await;
+            }
+        }
+
+        info!(
+            container_id = %handle.id,
+            pid = pid,
+            "ContainerRuntime::start: container restarted"
+        );
+
+        Ok(RuntimeHandle {
+            id: handle.id.clone(),
+            pid,
+            runtime_type: RuntimeType::Container,
+            runtime_dir: handle.runtime_dir.clone(),
+        })
+    }
+
     async fn stop(&self, handle: &RuntimeHandle, force: bool) -> Result<(), ComputeError> {
         let signal = if force { "SIGKILL" } else { "SIGTERM" };
         debug!(
