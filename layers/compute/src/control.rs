@@ -275,7 +275,19 @@ async fn handle_compute_request(mgr: &VmManager, req: ComputeRequest) -> Compute
         },
         ComputeRequest::ImagePull { name } => match fetch_catalog_for(mgr).await {
             Ok(catalog) => {
-                match crate::image::pull::pull(mgr.image_store(), &name, &catalog).await {
+                let mode = if mgr.runtime_name().starts_with("container") {
+                    crate::image::types::RuntimeMode::Container
+                } else {
+                    crate::image::types::RuntimeMode::Vm
+                };
+                match crate::image::pull::pull_for_runtime(
+                    mgr.image_store(),
+                    &name,
+                    &catalog,
+                    &mode,
+                )
+                .await
+                {
                     Ok(meta) => {
                         ComputeResponse::ImageMeta(serde_json::to_value(meta).unwrap_or_default())
                     }
