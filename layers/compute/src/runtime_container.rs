@@ -132,6 +132,8 @@ impl ContainerRuntime {
     /// same OCI CLI interface (create, start, state, kill, delete).
     ///
     /// Returns stdout on success; maps failures to `ProcessError::SpawnFailed`.
+    /// Execute a runtime command and capture its output.
+    /// Used for commands like `state`, `kill`, `delete` that return quickly.
     async fn runtime_exec(&self, args: &[&str]) -> Result<String, ComputeError> {
         let binary = self.runtime_binary();
         let binary_name = binary
@@ -149,6 +151,9 @@ impl ContainerRuntime {
 
         let output = cmd
             .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .output()
             .await
             .map_err(|e| ProcessError::SpawnFailed {
@@ -164,6 +169,44 @@ impl ContainerRuntime {
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    /// Execute a runtime command without capturing output.
+    /// Used for `run -d` where the child process inherits fds and
+    /// `output()` would block until the container exits.
+    async fn runtime_exec_detached(&self, args: &[&str]) -> Result<(), ComputeError> {
+        let binary = self.runtime_binary();
+        let binary_name = binary
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+
+        let mut cmd = Command::new(binary);
+
+        if binary_name == "runsc" {
+            cmd.arg("--root").arg("/run/syfrah/runsc");
+        }
+
+        let status = cmd
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+            .map_err(|e| ProcessError::SpawnFailed {
+                reason: format!("{binary_name}: {e}"),
+            })?;
+
+        if !status.success() {
+            return Err(ProcessError::SpawnFailed {
+                reason: format!("{binary_name} exited with code {:?}", status.code()),
+            }
+            .into());
+        }
+
+        Ok(())
     }
 }
 
@@ -847,7 +890,7 @@ impl ComputeRuntime for ContainerRuntime {
         //    `run -d` does create+start in one call and detaches immediately,
         //    avoiding the deadlock where `create` blocks waiting for `start`.
         let runtime_dir_str = runtime_dir.to_string_lossy().to_string();
-        self.runtime_exec(&["run", "-d", "--bundle", &runtime_dir_str, id])
+        self.runtime_exec_detached(&["run", "-d", "--bundle", &runtime_dir_str, id])
             .await?;
 
         // 5. Get PID from runtime state.
