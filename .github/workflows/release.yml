@@ -236,7 +236,8 @@ jobs:
         if: contains(matrix.target, 'linux')
         run: |
           set -euo pipefail
-          CRUN_VERSION="1.18.2"
+          CRUN_VERSION=$(cat CRUN_VERSION | tr -d '[:space:]')
+          echo "crun version: ${CRUN_VERSION}"
 
           if [[ "${{ matrix.target }}" == aarch64-* ]]; then
             CRUN_ARCH="arm64"
@@ -249,10 +250,25 @@ jobs:
           curl -fsSL -o "target/${{ matrix.target }}/release/crun" "${CRUN_URL}"
           chmod +x "target/${{ matrix.target }}/release/crun"
 
+          # Validate downloaded binary is non-empty and is an ELF executable
+          CRUN_SIZE=$(wc -c < "target/${{ matrix.target }}/release/crun" | tr -d ' ')
+          if [ "$CRUN_SIZE" -lt 1024 ]; then
+            echo "::error::Downloaded crun binary is too small (${CRUN_SIZE} bytes)"
+            exit 1
+          fi
+          if ! file "target/${{ matrix.target }}/release/crun" | grep -q ELF; then
+            echo "::error::Downloaded crun binary is not a valid ELF executable"
+            file "target/${{ matrix.target }}/release/crun"
+            exit 1
+          fi
+          echo "crun binary validated (${CRUN_SIZE} bytes, ELF)"
+
       - name: Download runsc / gVisor (Linux only)
         if: contains(matrix.target, 'linux')
         run: |
           set -euo pipefail
+          RUNSC_VERSION=$(cat RUNSC_VERSION | tr -d '[:space:]')
+          echo "runsc/gVisor version: ${RUNSC_VERSION}"
 
           if [[ "${{ matrix.target }}" == aarch64-* ]]; then
             RUNSC_ARCH="aarch64"
@@ -260,10 +276,23 @@ jobs:
             RUNSC_ARCH="x86_64"
           fi
 
-          RUNSC_URL="https://storage.googleapis.com/gvisor/releases/release/latest/${RUNSC_ARCH}/runsc"
+          RUNSC_URL="https://storage.googleapis.com/gvisor/releases/release/${RUNSC_VERSION}/${RUNSC_ARCH}/runsc"
           echo "Downloading runsc from ${RUNSC_URL}"
           curl -fsSL -o "target/${{ matrix.target }}/release/runsc" "${RUNSC_URL}"
           chmod +x "target/${{ matrix.target }}/release/runsc"
+
+          # Validate downloaded binary is non-empty and is an ELF executable
+          RUNSC_SIZE=$(wc -c < "target/${{ matrix.target }}/release/runsc" | tr -d ' ')
+          if [ "$RUNSC_SIZE" -lt 1024 ]; then
+            echo "::error::Downloaded runsc binary is too small (${RUNSC_SIZE} bytes)"
+            exit 1
+          fi
+          if ! file "target/${{ matrix.target }}/release/runsc" | grep -q ELF; then
+            echo "::error::Downloaded runsc binary is not a valid ELF executable"
+            file "target/${{ matrix.target }}/release/runsc"
+            exit 1
+          fi
+          echo "runsc binary validated (${RUNSC_SIZE} bytes, ELF)"
 
       - name: Upload binary
         uses: actions/upload-artifact@v4

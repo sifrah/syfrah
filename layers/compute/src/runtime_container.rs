@@ -163,11 +163,18 @@ pub fn container_binaries_available() -> bool {
 // ---------------------------------------------------------------------------
 
 /// crun version used for auto-download.
-const CRUN_VERSION: &str = "1.18.2";
+/// Kept in sync with the repo-root `CRUN_VERSION` file.
+const CRUN_VERSION: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../CRUN_VERSION"));
+
+/// runsc (gVisor) release version used for auto-download.
+/// Kept in sync with the repo-root `RUNSC_VERSION` file.
+const RUNSC_VERSION: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../RUNSC_VERSION"));
 
 /// URL template for downloading crun static binaries.
 /// `{version}` and `{arch}` are substituted at runtime.
 fn crun_download_url() -> String {
+    let version = CRUN_VERSION.trim();
     let arch = if cfg!(target_arch = "aarch64") {
         "arm64"
     } else {
@@ -175,20 +182,21 @@ fn crun_download_url() -> String {
     };
     format!(
         "https://github.com/containers/crun/releases/download/{}/crun-{}-linux-{}",
-        CRUN_VERSION, CRUN_VERSION, arch
+        version, version, arch
     )
 }
 
-/// URL for downloading runsc (gVisor) static binary.
+/// URL for downloading runsc (gVisor) static binary pinned to a specific release.
 fn runsc_download_url() -> String {
+    let version = RUNSC_VERSION.trim();
     let arch = if cfg!(target_arch = "aarch64") {
         "aarch64"
     } else {
         "x86_64"
     };
     format!(
-        "https://storage.googleapis.com/gvisor/releases/release/latest/{}/runsc",
-        arch
+        "https://storage.googleapis.com/gvisor/releases/release/{}/{}/runsc",
+        version, arch
     )
 }
 
@@ -252,6 +260,27 @@ fn download_binary(url: &str, dest: &Path, name: &str) -> Result<(), ComputeErro
     let bytes = response.bytes().map_err(|e| ProcessError::SpawnFailed {
         reason: format!("failed to read {name} response body: {e}"),
     })?;
+
+    // Guard against empty or truncated responses
+    if bytes.len() < 1024 {
+        return Err(ProcessError::SpawnFailed {
+            reason: format!(
+                "downloaded {name} binary is too small ({} bytes) — possible empty or truncated response",
+                bytes.len()
+            ),
+        }
+        .into());
+    }
+
+    // Validate ELF magic bytes (0x7f 'E' 'L' 'F')
+    if bytes.len() >= 4 && &bytes[..4] != b"\x7fELF" {
+        return Err(ProcessError::SpawnFailed {
+            reason: format!(
+                "downloaded {name} binary is not a valid ELF executable (bad magic bytes)"
+            ),
+        }
+        .into());
+    }
 
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| ProcessError::SpawnFailed {
