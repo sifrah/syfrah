@@ -387,7 +387,7 @@ impl VmManager {
             use crate::image::types::{CloudInitConfig, InstanceId, RuntimeMode};
 
             let store = &self.image_store;
-            let is_container = self.runtime.name() == "container";
+            let is_container = self.runtime.name().starts_with("container");
             let runtime_mode = if is_container {
                 RuntimeMode::Container
             } else {
