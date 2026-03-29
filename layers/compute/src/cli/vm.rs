@@ -247,11 +247,13 @@ async fn run_list(json: bool) -> anyhow::Result<()> {
                 let json_str = serde_json::to_string_pretty(&vms)?;
                 println!("{json_str}");
             } else {
-                println!(
+                let tw = super::term_width();
+                let header = format!(
                     "{:<20} {:<20} {:<12} {:<12} {:<6} {:<10} {:<10}",
                     "NAME", "IMAGE", "PHASE", "RUNTIME", "vCPUs", "MEMORY", "UPTIME"
                 );
-                println!("{}", "-".repeat(90));
+                println!("{}", &header[..header.len().min(tw)]);
+                println!("{}", "-".repeat(90.min(tw)));
                 if vms.is_empty() {
                     println!("(no VMs)");
                 } else {
@@ -267,7 +269,10 @@ async fn run_list(json: bool) -> anyhow::Result<()> {
                             .and_then(|u| u.as_u64())
                             .map(format_uptime)
                             .unwrap_or_else(|| "-".to_string());
-                        println!("{name:<20} {image:<20} {phase:<12} {runtime:<12} {vcpus:<6} {memory:<10} {uptime:<10}");
+                        let name = super::truncate(name, 19);
+                        let image = super::truncate(image, 19);
+                        let row = format!("{name:<20} {image:<20} {phase:<12} {runtime:<12} {vcpus:<6} {memory:<10} {uptime:<10}");
+                        println!("{}", &row[..row.len().min(tw)]);
                     }
                 }
             }

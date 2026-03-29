@@ -23,6 +23,7 @@ serde_json = { workspace = true }
 sha2 = "0.10"
 syfrah-api = { path = "../api" }
 thiserror = { workspace = true }
+terminal_size = "0.4"
 tokio = { workspace = true }
 tracing = { workspace = true }
 uuid = { version = "1", features = ["v4", "serde"] }
