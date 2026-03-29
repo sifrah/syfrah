@@ -3,6 +3,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::phase::VmPhase;
+use crate::runtime_backend::RuntimeType;
 
 /// Unique identifier for a VM.
 ///
@@ -102,6 +103,9 @@ pub struct VmStatus {
     /// Image name used to create this VM.
     #[serde(default)]
     pub image: Option<String>,
+    /// Runtime backend type (VM or Container).
+    #[serde(default)]
+    pub runtime: Option<RuntimeType>,
     /// Unix timestamp of when the VM was created.
     pub created_at: Option<u64>,
     /// Seconds the VM has been running. `None` if not in the `Running` phase.
@@ -273,6 +277,7 @@ mod tests {
             vcpus: 2,
             memory_mb: 4096,
             image: Some("ubuntu-24.04".to_string()),
+            runtime: Some(RuntimeType::Vm),
             created_at: Some(1700000000),
             uptime_secs: Some(3600),
         };
@@ -281,6 +286,7 @@ mod tests {
         assert_eq!(back.vm_id, status.vm_id);
         assert_eq!(back.phase, VmPhase::Running);
         assert_eq!(back.vcpus, 2);
+        assert_eq!(back.runtime, Some(RuntimeType::Vm));
         assert_eq!(back.uptime_secs, Some(3600));
     }
 

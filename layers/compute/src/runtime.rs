@@ -84,6 +84,7 @@ impl VmRuntimeState {
             vcpus: self.vcpus,
             memory_mb: self.memory_mb,
             image: self.image_name.clone(),
+            runtime: self.runtime_handle.as_ref().map(|h| h.runtime_type),
             created_at: Some(self.launched_at),
             uptime_secs,
         }
