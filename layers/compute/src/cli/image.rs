@@ -24,6 +24,9 @@ pub enum ImageCommand {
     Inspect {
         /// Image name
         name: String,
+        /// Output as JSON (default for inspect; accepted for consistency)
+        #[arg(long)]
+        json: bool,
     },
     /// Download an image from the catalog
     Pull {
@@ -46,7 +49,7 @@ pub enum ImageCommand {
         /// Image name
         name: String,
         /// Skip confirmation prompt
-        #[arg(long)]
+        #[arg(long, short)]
         yes: bool,
     },
     /// Show remote image catalog
@@ -61,7 +64,7 @@ pub enum ImageCommand {
 pub async fn run(cmd: ImageCommand) -> anyhow::Result<()> {
     match cmd {
         ImageCommand::List { json } => run_list(json).await,
-        ImageCommand::Inspect { name } => run_inspect(name).await,
+        ImageCommand::Inspect { name, json: _ } => run_inspect(name).await,
         ImageCommand::Pull { name } => run_pull(name).await,
         ImageCommand::Import { path, name, arch } => run_import(path, name, arch).await,
         ImageCommand::Delete { name, yes } => run_delete(name, yes).await,
@@ -86,13 +89,16 @@ fn control_socket_path() -> PathBuf {
 
 async fn run_list(json: bool) -> anyhow::Result<()> {
     let req = ComputeRequest::ImageList;
-    let resp = send_compute_request(&control_socket_path(), &req)
-        .await
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "failed to connect to daemon: {e}\n\nIs the daemon running? Initialize with: syfrah fabric init --name <mesh-name>"
-            )
-        })?;
+    let resp = match send_compute_request(&control_socket_path(), &req).await {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = format!("failed to connect to daemon: {e}\n\nIs the daemon running? Initialize with: syfrah fabric init --name <mesh-name>");
+            if json {
+                super::json_error_exit(&msg);
+            }
+            anyhow::bail!("{msg}");
+        }
+    };
 
     match resp {
         ComputeResponse::ImageList(images) => {
@@ -127,9 +133,15 @@ async fn run_list(json: bool) -> anyhow::Result<()> {
             Ok(())
         }
         ComputeResponse::Error(msg) => {
+            if json {
+                super::json_error_exit(&msg);
+            }
             anyhow::bail!("{msg}");
         }
         _ => {
+            if json {
+                super::json_error_exit("unexpected response from daemon");
+            }
             anyhow::bail!("unexpected response from daemon");
         }
     }
@@ -289,13 +301,16 @@ async fn run_delete(name: String, yes: bool) -> anyhow::Result<()> {
 
 async fn run_catalog(json: bool) -> anyhow::Result<()> {
     let req = ComputeRequest::ImageCatalog;
-    let resp = send_compute_request(&control_socket_path(), &req)
-        .await
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "failed to connect to daemon: {e}\n\nIs the daemon running? Initialize with: syfrah fabric init --name <mesh-name>"
-            )
-        })?;
+    let resp = match send_compute_request(&control_socket_path(), &req).await {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = format!("failed to connect to daemon: {e}\n\nIs the daemon running? Initialize with: syfrah fabric init --name <mesh-name>");
+            if json {
+                super::json_error_exit(&msg);
+            }
+            anyhow::bail!("{msg}");
+        }
+    };
 
     match resp {
         ComputeResponse::ImageCatalog(v) => {
@@ -334,9 +349,15 @@ async fn run_catalog(json: bool) -> anyhow::Result<()> {
             Ok(())
         }
         ComputeResponse::Error(msg) => {
+            if json {
+                super::json_error_exit(&msg);
+            }
             anyhow::bail!("{msg}");
         }
         _ => {
+            if json {
+                super::json_error_exit("unexpected response from daemon");
+            }
             anyhow::bail!("unexpected response from daemon");
         }
     }
@@ -376,7 +397,22 @@ mod tests {
     fn parse_inspect() {
         let cmd = parse(&["inspect", "ubuntu-24.04"]);
         match cmd {
-            ImageCommand::Inspect { name } => assert_eq!(name, "ubuntu-24.04"),
+            ImageCommand::Inspect { name, json } => {
+                assert_eq!(name, "ubuntu-24.04");
+                assert!(!json);
+            }
+            other => panic!("expected Inspect, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_inspect_json() {
+        let cmd = parse(&["inspect", "ubuntu-24.04", "--json"]);
+        match cmd {
+            ImageCommand::Inspect { name, json } => {
+                assert_eq!(name, "ubuntu-24.04");
+                assert!(json);
+            }
             other => panic!("expected Inspect, got {other:?}"),
         }
     }
@@ -438,6 +474,18 @@ mod tests {
     #[test]
     fn parse_delete_yes() {
         let cmd = parse(&["delete", "--yes", "old-image"]);
+        match cmd {
+            ImageCommand::Delete { name, yes } => {
+                assert_eq!(name, "old-image");
+                assert!(yes);
+            }
+            other => panic!("expected Delete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_delete_short_y() {
+        let cmd = parse(&["delete", "-y", "old-image"]);
         match cmd {
             ImageCommand::Delete { name, yes } => {
                 assert_eq!(name, "old-image");

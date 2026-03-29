@@ -393,9 +393,21 @@ async fn prepare_rootfs(rootfs_path: &Path, runtime_dir: &Path) -> Result<PathBu
             })?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+            // Wrap raw tar stderr into a user-friendly message instead of
+            // leaking internal paths like /opt/syfrah/images/foo-oci.tar.gz.
+            let image_name = rootfs_path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .trim_end_matches("-oci.tar")
+                .trim_end_matches("-oci")
+                .to_string();
             return Err(ProcessError::SpawnFailed {
-                reason: format!("tar extraction failed: {stderr}"),
+                reason: format!(
+                    "Container image format not available for '{image_name}'. \
+                     The OCI archive may be corrupt or missing. \
+                     Try re-pulling with: syfrah compute image pull {image_name}"
+                ),
             }
             .into());
         }
@@ -403,11 +415,16 @@ async fn prepare_rootfs(rootfs_path: &Path, runtime_dir: &Path) -> Result<PathBu
         return Ok(rootfs_dest);
     }
 
-    // .raw or unsupported format
+    // .raw or unsupported format — show image name instead of full path.
+    let image_name = rootfs_path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
     Err(ProcessError::SpawnFailed {
         reason: format!(
-            "unsupported rootfs format for container mode: {}. Expected a directory or .tar.gz archive",
-            rootfs_path.display()
+            "Container image format not available for '{image_name}'. \
+             Raw disk images are not supported in container mode — use a .tar.gz OCI archive."
         ),
     }
     .into())

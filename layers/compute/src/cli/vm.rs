@@ -47,7 +47,8 @@ pub enum VmCommand {
     },
     /// Get details of a virtual machine
     Get {
-        /// VM identifier
+        /// VM name
+        #[arg(value_name = "NAME")]
         id: String,
         /// Output as JSON
         #[arg(long)]
@@ -55,12 +56,14 @@ pub enum VmCommand {
     },
     /// Start (boot) a stopped virtual machine
     Start {
-        /// VM identifier
+        /// VM name
+        #[arg(value_name = "NAME")]
         id: String,
     },
     /// Stop a running virtual machine
     Stop {
-        /// VM identifier
+        /// VM name
+        #[arg(value_name = "NAME")]
         id: String,
         /// Force shutdown (kill) instead of graceful ACPI
         #[arg(long, short)]
@@ -68,7 +71,8 @@ pub enum VmCommand {
     },
     /// Delete a virtual machine and clean up all artifacts
     Delete {
-        /// VM identifier
+        /// VM name
+        #[arg(value_name = "NAME")]
         id: String,
         /// Skip confirmation prompt
         #[arg(long, short)]
@@ -76,12 +80,14 @@ pub enum VmCommand {
     },
     /// Reboot a running virtual machine
     Reboot {
-        /// VM identifier
+        /// VM name
+        #[arg(value_name = "NAME")]
         id: String,
     },
     /// Hot-resize CPU and memory of a running virtual machine
     Resize {
-        /// VM identifier
+        /// VM name
+        #[arg(value_name = "NAME")]
         id: String,
         /// New number of virtual CPUs
         #[arg(long)]
@@ -220,13 +226,16 @@ async fn run_create(
 
 async fn run_list(json: bool) -> anyhow::Result<()> {
     let req = ComputeRequest::ListVms;
-    let resp = send_compute_request(&control_socket_path(), &req)
-        .await
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "failed to connect to daemon: {e}\n\nIs the daemon running? Initialize with: syfrah fabric init --name <mesh-name>"
-            )
-        })?;
+    let resp = match send_compute_request(&control_socket_path(), &req).await {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = format!("failed to connect to daemon: {e}\n\nIs the daemon running? Initialize with: syfrah fabric init --name <mesh-name>");
+            if json {
+                super::json_error_exit(&msg);
+            }
+            anyhow::bail!("{msg}");
+        }
+    };
 
     match resp {
         ComputeResponse::VmList(vms) => {
@@ -260,9 +269,15 @@ async fn run_list(json: bool) -> anyhow::Result<()> {
             Ok(())
         }
         ComputeResponse::Error(msg) => {
+            if json {
+                super::json_error_exit(&msg);
+            }
             anyhow::bail!("{msg}");
         }
         _ => {
+            if json {
+                super::json_error_exit("unexpected response from daemon");
+            }
             anyhow::bail!("unexpected response from daemon");
         }
     }
@@ -270,13 +285,16 @@ async fn run_list(json: bool) -> anyhow::Result<()> {
 
 async fn run_get(id: String, json: bool) -> anyhow::Result<()> {
     let req = ComputeRequest::GetVm { id };
-    let resp = send_compute_request(&control_socket_path(), &req)
-        .await
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "failed to connect to daemon: {e}\n\nIs the daemon running? Initialize with: syfrah fabric init --name <mesh-name>"
-            )
-        })?;
+    let resp = match send_compute_request(&control_socket_path(), &req).await {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = format!("failed to connect to daemon: {e}\n\nIs the daemon running? Initialize with: syfrah fabric init --name <mesh-name>");
+            if json {
+                super::json_error_exit(&msg);
+            }
+            anyhow::bail!("{msg}");
+        }
+    };
 
     match resp {
         ComputeResponse::Vm(v) => {
@@ -304,9 +322,15 @@ async fn run_get(id: String, json: bool) -> anyhow::Result<()> {
             Ok(())
         }
         ComputeResponse::Error(msg) => {
+            if json {
+                super::json_error_exit(&msg);
+            }
             anyhow::bail!("{msg}");
         }
         _ => {
+            if json {
+                super::json_error_exit("unexpected response from daemon");
+            }
             anyhow::bail!("unexpected response from daemon");
         }
     }
@@ -433,6 +457,10 @@ async fn run_reboot(id: String) -> anyhow::Result<()> {
 }
 
 async fn run_resize(id: String, vcpus: Option<u32>, memory: Option<u32>) -> anyhow::Result<()> {
+    if vcpus.is_none() && memory.is_none() {
+        anyhow::bail!("at least one of --vcpus or --memory must be provided");
+    }
+
     let req = ComputeRequest::ResizeVm {
         id: id.clone(),
         vcpus,
@@ -787,5 +815,13 @@ mod tests {
             }
             other => panic!("expected Create, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn resize_requires_at_least_one_option() {
+        let result = run_resize("vm-test".to_string(), None, None).await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("--vcpus or --memory"), "unexpected: {msg}");
     }
 }

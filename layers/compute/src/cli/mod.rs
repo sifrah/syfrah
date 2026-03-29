@@ -13,6 +13,15 @@ use clap::Subcommand;
 
 use crate::control::{send_compute_request, ComputeRequest, ComputeResponse};
 
+/// Print a JSON error object to stdout and exit with code 1.
+///
+/// Used when `--json` is active so that callers parsing JSON output always
+/// receive structured data, even on failure.
+pub(crate) fn json_error_exit(msg: &str) -> ! {
+    println!("{}", serde_json::json!({"error": msg}));
+    std::process::exit(1)
+}
+
 /// Top-level compute CLI command.
 #[derive(Debug, Subcommand)]
 pub enum ComputeCommand {
@@ -52,9 +61,16 @@ fn control_socket_path() -> PathBuf {
 
 async fn run_status(json: bool) -> anyhow::Result<()> {
     let req = ComputeRequest::Status;
-    let resp = send_compute_request(&control_socket_path(), &req)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to daemon: {e}\n\nIs the daemon running? Initialize with: syfrah fabric init --name <mesh-name>"))?;
+    let resp = match send_compute_request(&control_socket_path(), &req).await {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = format!("failed to connect to daemon: {e}\n\nIs the daemon running? Initialize with: syfrah fabric init --name <mesh-name>");
+            if json {
+                json_error_exit(&msg);
+            }
+            anyhow::bail!("{msg}");
+        }
+    };
 
     match resp {
         ComputeResponse::Status(v) => {
@@ -82,9 +98,15 @@ async fn run_status(json: bool) -> anyhow::Result<()> {
             Ok(())
         }
         ComputeResponse::Error(msg) => {
+            if json {
+                json_error_exit(&msg);
+            }
             anyhow::bail!("{msg}");
         }
         _ => {
+            if json {
+                json_error_exit("unexpected response from daemon");
+            }
             anyhow::bail!("unexpected response from daemon");
         }
     }

@@ -7,7 +7,7 @@ pub enum ImageError {
     #[error("image not found: {name}")]
     ImageNotFound { name: String },
 
-    #[error("image already exists: {name}")]
+    #[error("image already exists: {name}. To replace it, delete first with: syfrah compute image delete {name}")]
     ImageAlreadyExists { name: String },
 
     #[error("catalog fetch failed for {url}: {reason}")]
