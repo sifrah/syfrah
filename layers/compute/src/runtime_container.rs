@@ -1,9 +1,10 @@
-//! Container runtime backend (crun + gVisor).
+//! Container runtime backend (runsc / crun).
 //!
 //! `ContainerRuntime` implements [`ComputeRuntime`] by generating OCI bundles
-//! and delegating to `crun` with gVisor (`runsc`) as the OCI runtime. This
-//! provides a sandboxed container environment on hosts where KVM is not
-//! available.
+//! and delegating to `runsc` (gVisor) directly as the OCI runtime. If `runsc`
+//! is not available, it falls back to `crun`. Both are OCI-compatible runtimes
+//! with the same CLI interface. This provides a sandboxed container environment
+//! on hosts where KVM is not available.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -42,11 +43,12 @@ pub struct ContainerMeta {
 // ContainerRuntime
 // ---------------------------------------------------------------------------
 
-/// Container runtime backend using crun + gVisor (runsc).
+/// Container runtime backend using runsc (gVisor) or crun as fallback.
 ///
 /// Each container is an OCI bundle under `base_dir/{id}/` containing a
-/// `config.json` and a `rootfs/` directory. The lifecycle is managed through
-/// `crun --runtime=/path/to/runsc` commands.
+/// `config.json` and a `rootfs/` directory. The lifecycle is managed by
+/// calling the OCI runtime binary directly (preferring `runsc`, falling
+/// back to `crun`).
 pub struct ContainerRuntime {
     /// Resolved path to the `crun` binary.
     crun_binary: PathBuf,
@@ -57,12 +59,24 @@ pub struct ContainerRuntime {
 }
 
 impl ContainerRuntime {
-    /// Create a new `ContainerRuntime` by resolving `crun` and `runsc` binaries.
+    /// Create a new `ContainerRuntime` by resolving `runsc` and/or `crun` binaries.
     ///
-    /// Returns an error if either binary cannot be found.
+    /// At least one OCI runtime binary must be found. `runsc` is preferred;
+    /// `crun` is used as a fallback.
     pub fn new(base_dir: PathBuf) -> Result<Self, ComputeError> {
-        let crun = resolve_binary("crun")?;
-        let runsc = resolve_binary("runsc")?;
+        let crun = resolve_binary("crun").ok().unwrap_or_default();
+        let runsc = resolve_binary("runsc").ok().unwrap_or_default();
+
+        // At least one runtime must be available.
+        if runsc.as_os_str().is_empty() && crun.as_os_str().is_empty() {
+            return Err(ProcessError::SpawnFailed {
+                reason:
+                    "neither runsc nor crun binary found in /usr/local/bin/, /usr/bin/, or $PATH"
+                        .to_string(),
+            }
+            .into());
+        }
+
         Ok(Self {
             crun_binary: crun,
             runsc_binary: runsc,
@@ -85,23 +99,51 @@ impl ContainerRuntime {
         &self.base_dir
     }
 
-    /// Execute a crun command with `--runtime=<runsc>` prepended.
+    /// Return the preferred OCI runtime binary path.
+    ///
+    /// Prefers `runsc` if available, falls back to `crun`.
+    fn runtime_binary(&self) -> &Path {
+        if !self.runsc_binary.as_os_str().is_empty() && self.runsc_binary.exists() {
+            &self.runsc_binary
+        } else {
+            &self.crun_binary
+        }
+    }
+
+    /// Execute an OCI runtime command (runsc or crun).
+    ///
+    /// For `runsc`, `--root /run/syfrah/runsc` is prepended so that runsc
+    /// knows where to store container state. Both `runsc` and `crun` share the
+    /// same OCI CLI interface (create, start, state, kill, delete).
     ///
     /// Returns stdout on success; maps failures to `ProcessError::SpawnFailed`.
-    async fn crun_exec(&self, args: &[&str]) -> Result<String, ComputeError> {
-        let output = Command::new(&self.crun_binary)
-            .arg(format!("--runtime={}", self.runsc_binary.display()))
+    async fn runtime_exec(&self, args: &[&str]) -> Result<String, ComputeError> {
+        let binary = self.runtime_binary();
+        let binary_name = binary
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+
+        let mut cmd = Command::new(binary);
+
+        // runsc needs --root to know where to store container state.
+        if binary_name == "runsc" {
+            cmd.arg("--root").arg("/run/syfrah/runsc");
+        }
+
+        let output = cmd
             .args(args)
             .output()
             .await
             .map_err(|e| ProcessError::SpawnFailed {
-                reason: format!("crun: {e}"),
+                reason: format!("{binary_name}: {e}"),
             })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(ProcessError::SpawnFailed {
-                reason: format!("crun failed: {stderr}"),
+                reason: format!("{binary_name} failed: {stderr}"),
             }
             .into());
         }
@@ -155,7 +197,7 @@ fn resolve_binary(name: &str) -> Result<PathBuf, ComputeError> {
 /// Used by `select_runtime` to decide whether the container backend can be
 /// offered as a fallback when KVM is absent.
 pub fn container_binaries_available() -> bool {
-    resolve_binary("crun").is_ok() && resolve_binary("runsc").is_ok()
+    resolve_binary("runsc").is_ok() || resolve_binary("crun").is_ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -356,7 +398,7 @@ async fn prepare_rootfs(rootfs_path: &Path, runtime_dir: &Path) -> Result<PathBu
     let rootfs_dest = runtime_dir.join("rootfs");
 
     if rootfs_path.is_dir() {
-        // Use the directory directly — symlink so crun sees "rootfs" in the bundle.
+        // Use the directory directly — symlink so the runtime sees "rootfs" in the bundle.
         #[cfg(unix)]
         tokio::fs::symlink(rootfs_path, &rootfs_dest)
             .await
@@ -472,19 +514,19 @@ impl ComputeRuntime for ContainerRuntime {
                 reason: format!("failed to write config.json: {e}"),
             })?;
 
-        // 4. crun create --bundle {runtime_dir} {id}
+        // 4. runtime create --bundle {runtime_dir} {id}
         let runtime_dir_str = runtime_dir.to_string_lossy().to_string();
-        self.crun_exec(&["create", "--bundle", &runtime_dir_str, id])
+        self.runtime_exec(&["create", "--bundle", &runtime_dir_str, id])
             .await?;
 
-        // 5. crun start {id}
-        self.crun_exec(&["start", id]).await?;
+        // 5. runtime start {id}
+        self.runtime_exec(&["start", id]).await?;
 
-        // 6. Get PID from crun state.
-        let state_json = self.crun_exec(&["state", id]).await?;
+        // 6. Get PID from runtime state.
+        let state_json = self.runtime_exec(&["state", id]).await?;
         let state: serde_json::Value =
             serde_json::from_str(&state_json).map_err(|e| ProcessError::SpawnFailed {
-                reason: format!("failed to parse crun state JSON: {e}"),
+                reason: format!("failed to parse runtime state JSON: {e}"),
             })?;
         let pid = state["pid"].as_u64().unwrap_or(0) as u32;
 
@@ -532,7 +574,7 @@ impl ComputeRuntime for ContainerRuntime {
             "ContainerRuntime::stop"
         );
 
-        self.crun_exec(&["kill", &handle.id, signal]).await?;
+        self.runtime_exec(&["kill", &handle.id, signal]).await?;
 
         if !force {
             // Poll for the container to exit (up to 30 seconds).
@@ -547,7 +589,7 @@ impl ComputeRuntime for ContainerRuntime {
                 container_id = %handle.id,
                 "ContainerRuntime::stop: graceful shutdown timed out, sending SIGKILL"
             );
-            self.crun_exec(&["kill", &handle.id, "SIGKILL"]).await?;
+            self.runtime_exec(&["kill", &handle.id, "SIGKILL"]).await?;
         }
 
         Ok(())
@@ -559,9 +601,9 @@ impl ComputeRuntime for ContainerRuntime {
             "ContainerRuntime::delete"
         );
 
-        // crun delete (force to handle stopped containers).
+        // OCI runtime delete (force to handle stopped containers).
         // Ignore errors from delete — the container may already be gone.
-        let _ = self.crun_exec(&["delete", "--force", &handle.id]).await;
+        let _ = self.runtime_exec(&["delete", "--force", &handle.id]).await;
 
         // Clean up the runtime directory.
         if handle.runtime_dir.exists() {
@@ -583,10 +625,10 @@ impl ComputeRuntime for ContainerRuntime {
     }
 
     async fn info(&self, handle: &RuntimeHandle) -> Result<RuntimeInfo, ComputeError> {
-        let state_json = self.crun_exec(&["state", &handle.id]).await?;
+        let state_json = self.runtime_exec(&["state", &handle.id]).await?;
         let state: serde_json::Value =
             serde_json::from_str(&state_json).map_err(|e| ProcessError::SpawnFailed {
-                reason: format!("failed to parse crun state JSON: {e}"),
+                reason: format!("failed to parse runtime state JSON: {e}"),
             })?;
 
         let status = state["status"].as_str().unwrap_or("unknown");
@@ -624,8 +666,8 @@ impl ComputeRuntime for ContainerRuntime {
     }
 
     async fn is_alive(&self, handle: &RuntimeHandle) -> bool {
-        // Try crun state first; fall back to kill(pid, 0).
-        if let Ok(state_json) = self.crun_exec(&["state", &handle.id]).await {
+        // Try runtime state first; fall back to kill(pid, 0).
+        if let Ok(state_json) = self.runtime_exec(&["state", &handle.id]).await {
             if let Ok(state) = serde_json::from_str::<serde_json::Value>(&state_json) {
                 return state["status"].as_str() == Some("running");
             }
@@ -660,7 +702,7 @@ impl ComputeRuntime for ContainerRuntime {
 
             // Verify the container is still running.
             let id = &meta.container_id;
-            let alive = if let Ok(state_json) = self.crun_exec(&["state", id]).await {
+            let alive = if let Ok(state_json) = self.runtime_exec(&["state", id]).await {
                 serde_json::from_str::<serde_json::Value>(&state_json)
                     .map(|s| s["status"].as_str() == Some("running"))
                     .unwrap_or(false)
