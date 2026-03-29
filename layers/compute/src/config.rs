@@ -52,6 +52,12 @@ pub fn validate(spec: &VmSpec) -> Result<ValidatedSpec, Vec<ConfigError>> {
             value: spec.memory_mb,
         });
     }
+    // memory: must be <= 1_048_576 MB (1 TB practical cap)
+    if spec.memory_mb > 1_048_576 {
+        errors.push(ConfigError::InvalidMemory {
+            value: spec.memory_mb,
+        });
+    }
     // memory: must be a multiple of 2 (CH alignment requirement for hotplug)
     if spec.memory_mb >= 128 && !spec.memory_mb.is_multiple_of(2) {
         errors.push(ConfigError::InvalidMemory {
@@ -1058,5 +1064,22 @@ mod tests {
         let spec = minimal_spec();
         assert!(validate(&spec).is_ok());
         assert!(spec.disk_size_mb.is_none());
+    }
+
+    #[test]
+    fn validate_memory_1tb_ok() {
+        let mut spec = minimal_spec();
+        spec.memory_mb = 1_048_576; // exactly 1 TB
+        assert!(validate(&spec).is_ok());
+    }
+
+    #[test]
+    fn validate_memory_exceeds_1tb_rejected() {
+        let mut spec = minimal_spec();
+        spec.memory_mb = 1_048_578; // just over 1 TB (and even)
+        let errors = validate(&spec).unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ConfigError::InvalidMemory { .. })));
     }
 }
