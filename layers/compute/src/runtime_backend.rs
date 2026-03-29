@@ -118,6 +118,14 @@ pub trait ComputeRuntime: Send + Sync {
 
     /// Human-readable name for this runtime backend (e.g., "cloud-hypervisor").
     fn name(&self) -> &str;
+
+    /// Return runtime-specific health warnings.
+    ///
+    /// Each runtime checks its own prerequisites (e.g., ChRuntime checks KVM,
+    /// CH binary, and kernel; ContainerRuntime checks crun and runsc).
+    fn health_warnings(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 // ---------------------------------------------------------------------------

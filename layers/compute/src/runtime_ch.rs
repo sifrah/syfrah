@@ -59,56 +59,244 @@ impl ChRuntime {
     pub fn kernel_path(&self) -> &Path {
         &self.kernel_path
     }
+
+    /// Return runtime-specific health warnings.
+    ///
+    /// Checks for KVM, CH binary, and kernel availability.
+    pub fn health_warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if !Path::new("/dev/kvm").exists() {
+            warnings.push("KVM not available — VMs cannot boot".to_string());
+        }
+        if !self.ch_binary.exists() {
+            warnings.push("cloud-hypervisor binary not found".to_string());
+        }
+        if !self.kernel_path.exists() {
+            warnings.push("kernel not found".to_string());
+        }
+        warnings
+    }
 }
 
 #[async_trait]
 impl ComputeRuntime for ChRuntime {
-    async fn create(&self, id: &str, _spec: &RuntimeSpec) -> Result<RuntimeHandle, ComputeError> {
-        // Note: The actual VM creation is still driven by VmManager::create_vm
-        // which calls process::spawn_vm directly, because spawn_vm needs the
-        // full VmSpec, image store, catalog, etc. This method provides the
-        // trait interface for future use when the manager is fully decoupled.
-        //
-        // For now, return the handle shape that would result from a spawn.
-        let runtime_dir = self.base_dir.join(id);
-        let pid_path = runtime_dir.join("pid");
+    async fn create(&self, id: &str, spec: &RuntimeSpec) -> Result<RuntimeHandle, ComputeError> {
+        use crate::config::{map, resolve, validate, ResolvedVolume};
+        use crate::preflight::run_preflight;
+        use crate::types::{VmId, VmSpec};
 
-        // Read PID from the runtime dir if it exists (post-spawn).
-        let pid = if pid_path.exists() {
-            let rd = RuntimeDir::from_existing(runtime_dir.clone());
-            rd.read_pid().unwrap_or(0)
-        } else {
-            0
+        info!(
+            vm_id = %id,
+            runtime = self.name(),
+            "ChRuntime::create: spawning Cloud Hypervisor VM"
+        );
+
+        // Build a VmSpec from RuntimeSpec so we can reuse validate/resolve/map.
+        let vm_spec = VmSpec {
+            id: VmId(id.to_string()),
+            vcpus: spec.vcpus,
+            memory_mb: spec.memory_mb,
+            image: spec.rootfs_path.to_string_lossy().into_owned(),
+            kernel: None,
+            network: spec.network.clone(),
+            volumes: vec![],
+            gpu: spec.gpu.clone(),
+            ssh_key: None,
+            disk_size_mb: None,
         };
 
-        Ok(RuntimeHandle {
-            id: id.to_string(),
-            pid,
-            runtime_type: RuntimeType::Vm,
-            runtime_dir,
-        })
+        // Step 1: validate
+        let validated = validate(&vm_spec).map_err(|errors| {
+            ComputeError::Config(
+                errors
+                    .into_iter()
+                    .next()
+                    .expect("at least one config error"),
+            )
+        })?;
+
+        // Step 2: resolve (use rootfs_path directly)
+        let mut resolved = resolve(
+            &validated,
+            spec.rootfs_path.parent().unwrap_or(Path::new("/")),
+            &self.kernel_path,
+        )
+        .map_err(|errors| {
+            ComputeError::Config(
+                errors
+                    .into_iter()
+                    .next()
+                    .expect("at least one config error"),
+            )
+        })?;
+
+        // Override rootfs path with the one from RuntimeSpec.
+        resolved.rootfs_path = spec.rootfs_path.clone();
+
+        // If cloud-init was generated, add it as a volume.
+        if let Some(ref ci_path) = spec.cloud_init_path {
+            resolved.volume_paths.insert(
+                0,
+                ResolvedVolume {
+                    path: ci_path.clone(),
+                    read_only: true,
+                },
+            );
+        }
+
+        // Step 3: compute socket path for preflight and map
+        let runtime_dir_path = self.base_dir.join(id);
+        let socket_path = runtime_dir_path.join("api.sock");
+
+        // Step 4: map
+        let vm_config = map(&resolved, &socket_path);
+
+        // Step 5: preflight
+        if let Err(e) = run_preflight(&resolved, &self.ch_binary, &socket_path) {
+            return Err(ComputeError::Preflight(
+                e.into_iter().next().expect("at least one preflight error"),
+            ));
+        }
+
+        // Step 6: create RuntimeDir
+        let runtime_dir = RuntimeDir::create(&self.base_dir, id)?;
+
+        // Step 7: spawn inner (from here on, failure must clean up)
+        let result =
+            process::spawn_vm_inner(id, &self.ch_binary, &runtime_dir, &vm_config, &vm_spec).await;
+
+        match result {
+            Ok(state) => {
+                let handle = RuntimeHandle {
+                    id: id.to_string(),
+                    pid: state.pid,
+                    runtime_type: RuntimeType::Vm,
+                    runtime_dir: runtime_dir.path().to_path_buf(),
+                };
+                info!(
+                    vm_id = %id,
+                    pid = state.pid,
+                    "ChRuntime::create: VM started"
+                );
+                Ok(handle)
+            }
+            Err(e) => {
+                let _ = runtime_dir.cleanup();
+                Err(e)
+            }
+        }
     }
 
-    async fn stop(&self, handle: &RuntimeHandle, _force: bool) -> Result<(), ComputeError> {
-        // The actual kill chain is still driven by VmManager via process::kill_vm
-        // because it needs the VmRuntimeState and ChClient. This trait method
-        // provides the interface contract.
-        debug!(
+    async fn stop(&self, handle: &RuntimeHandle, force: bool) -> Result<(), ComputeError> {
+        use crate::client::ChClient;
+
+        info!(
             id = %handle.id,
             runtime = self.name(),
-            "stop requested (delegated to VmManager)"
+            force = force,
+            "ChRuntime::stop: stopping VM"
         );
+
+        let pid = handle.pid;
+        let socket_path = handle.runtime_dir.join("api.sock");
+        let client = ChClient::new(socket_path);
+        let runtime_dir = RuntimeDir::from_existing(handle.runtime_dir.clone());
+
+        // Check if already dead.
+        if !process::is_pid_alive(pid) {
+            debug!(id = %handle.id, "process already dead");
+            let _ = runtime_dir.cleanup();
+            return Ok(());
+        }
+
+        // Level 1: graceful shutdown (30s) — skipped when force=true
+        if !force {
+            info!(id = %handle.id, "kill chain level 1: shutdown_graceful");
+            if let Err(e) = client.shutdown_graceful().await {
+                debug!(id = %handle.id, error = %e, "shutdown_graceful failed, continuing");
+            } else if process::wait_for_pid_exit(pid, std::time::Duration::from_secs(30)).await {
+                info!(id = %handle.id, "process exited after graceful shutdown");
+                let _ = runtime_dir.cleanup();
+                return Ok(());
+            }
+        }
+
+        // Level 2: shutdown_force (10s)
+        if !process::is_pid_alive(pid) {
+            let _ = runtime_dir.cleanup();
+            return Ok(());
+        }
+        info!(id = %handle.id, "kill chain level 2: shutdown_force");
+        if let Err(e) = client.shutdown_force().await {
+            debug!(id = %handle.id, error = %e, "shutdown_force failed, continuing");
+        } else if process::wait_for_pid_exit(pid, std::time::Duration::from_secs(10)).await {
+            let _ = runtime_dir.cleanup();
+            return Ok(());
+        }
+
+        // Level 3: SIGTERM (5s)
+        if !process::is_pid_alive(pid) {
+            let _ = runtime_dir.cleanup();
+            return Ok(());
+        }
+        info!(id = %handle.id, "kill chain level 3: SIGTERM");
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+        if process::wait_for_pid_exit(pid, std::time::Duration::from_secs(5)).await {
+            let _ = runtime_dir.cleanup();
+            return Ok(());
+        }
+
+        // Level 4: SIGKILL
+        if !process::is_pid_alive(pid) {
+            let _ = runtime_dir.cleanup();
+            return Ok(());
+        }
+        info!(id = %handle.id, "kill chain level 4: SIGKILL");
+        unsafe {
+            libc::kill(pid as i32, libc::SIGKILL);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        if process::is_pid_alive(pid) {
+            return Err(crate::error::ProcessError::SignalFailed {
+                signal: "SIGKILL".to_string(),
+                pid,
+            }
+            .into());
+        }
+
+        let _ = runtime_dir.cleanup();
         Ok(())
     }
 
     async fn delete(&self, handle: &RuntimeHandle) -> Result<(), ComputeError> {
-        // Same delegation pattern as stop — the actual delete uses process::delete_vm
-        // through VmManager which has access to the full runtime state.
+        use crate::client::ChClient;
+
         debug!(
             id = %handle.id,
             runtime = self.name(),
-            "delete requested (delegated to VmManager)"
+            "ChRuntime::delete"
         );
+
+        // Stop the process if it is still alive.
+        if process::is_pid_alive(handle.pid) {
+            self.stop(handle, true).await?;
+        }
+
+        // Best-effort: tell CH to delete (may fail if process is already gone).
+        let socket_path = handle.runtime_dir.join("api.sock");
+        let client = ChClient::new(socket_path);
+        let _ = client.delete().await;
+
+        // Cleanup runtime dir.
+        let runtime_dir = RuntimeDir::from_existing(handle.runtime_dir.clone());
+        if let Err(e) = runtime_dir.cleanup() {
+            debug!(id = %handle.id, error = %e, "runtime dir cleanup failed");
+        }
+
+        info!(id = %handle.id, "ChRuntime::delete: VM deleted and cleaned up");
         Ok(())
     }
 

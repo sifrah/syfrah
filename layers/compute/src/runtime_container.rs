@@ -670,6 +670,17 @@ impl ComputeRuntime for ContainerRuntime {
     fn name(&self) -> &str {
         "container (gVisor)"
     }
+
+    fn health_warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if !self.crun_binary.exists() {
+            warnings.push("crun binary not found".to_string());
+        }
+        if !self.runsc_binary.exists() {
+            warnings.push("runsc (gVisor) binary not found".to_string());
+        }
+        warnings
+    }
 }
 
 // ---------------------------------------------------------------------------

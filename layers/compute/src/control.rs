@@ -251,6 +251,7 @@ async fn handle_compute_request(mgr: &VmManager, req: ComputeRequest) -> Compute
             ComputeResponse::Status(serde_json::json!({
                 "status": status,
                 "warnings": warnings,
+                "runtime": mgr.runtime_name(),
                 "total_vms": total,
                 "running_vms": running,
             }))

@@ -224,7 +224,7 @@ pub fn scan_runtime_dirs(base: &Path) -> Vec<RuntimeDir> {
 /// First attempts `waitpid(WNOHANG)` to reap zombie children (the CH process
 /// is our direct child but its `Child` handle was forgotten to avoid pidfd
 /// issues). Without this, zombies appear alive to `kill(pid, 0)`.
-fn is_pid_alive(pid: u32) -> bool {
+pub(crate) fn is_pid_alive(pid: u32) -> bool {
     // SAFETY: waitpid with WNOHANG is non-blocking and only reaps our own children.
     unsafe {
         let mut status: libc::c_int = 0;
@@ -236,7 +236,7 @@ fn is_pid_alive(pid: u32) -> bool {
 
 /// Poll every 200ms until the PID exits or timeout is reached.
 /// Returns `true` if the process exited within the timeout.
-async fn wait_for_pid_exit(pid: u32, timeout: Duration) -> bool {
+pub(crate) async fn wait_for_pid_exit(pid: u32, timeout: Duration) -> bool {
     let poll_interval = Duration::from_millis(200);
     let start = tokio::time::Instant::now();
 
@@ -559,7 +559,7 @@ pub async fn spawn_vm(
 }
 
 /// Inner spawn logic. Separated so the caller can catch errors and clean up.
-async fn spawn_vm_inner(
+pub(crate) async fn spawn_vm_inner(
     vm_id_str: &str,
     ch_binary: &Path,
     runtime_dir: &RuntimeDir,
@@ -713,11 +713,12 @@ async fn spawn_vm_inner(
         reconnect_source: ReconnectSource::FreshSpawn,
         image_name: Some(spec.image.clone()),
         instance_dir_path: None, // Caller (spawn_vm) sets these
+        runtime_handle: None,    // Caller sets from RuntimeHandle
     })
 }
 
 /// Get the Cloud Hypervisor version by running `ch_binary --version`.
-fn get_ch_version(ch_binary: &Path) -> Option<String> {
+pub(crate) fn get_ch_version(ch_binary: &Path) -> Option<String> {
     let output = std::process::Command::new(ch_binary)
         .arg("--version")
         .output()
@@ -728,7 +729,7 @@ fn get_ch_version(ch_binary: &Path) -> Option<String> {
 }
 
 /// Compute a SHA256 hash of the VmSpec JSON for change detection.
-fn compute_spec_hash(spec: &VmSpec) -> String {
+pub(crate) fn compute_spec_hash(spec: &VmSpec) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
@@ -1265,6 +1266,7 @@ pub async fn reconnect(base_dir: &Path, event_tx: broadcast::Sender<VmEvent>) ->
             reconnect_source: ReconnectSource::Recovered,
             image_name: meta.image_name.clone(),
             instance_dir_path: None,
+            runtime_handle: None,
         };
 
         events::emit(
@@ -1628,6 +1630,7 @@ mod tests {
             reconnect_source: ReconnectSource::FreshSpawn,
             image_name: None,
             instance_dir_path: None,
+            runtime_handle: None,
         };
 
         let result = delete_vm(&mut state, &client, &dir).await;
@@ -1659,6 +1662,7 @@ mod tests {
             reconnect_source: ReconnectSource::FreshSpawn,
             image_name: None,
             instance_dir_path: None,
+            runtime_handle: None,
         };
 
         let result = delete_vm(&mut state, &client, &dir).await;
@@ -1690,6 +1694,7 @@ mod tests {
             reconnect_source: ReconnectSource::FreshSpawn,
             image_name: None,
             instance_dir_path: None,
+            runtime_handle: None,
         };
 
         let result = delete_vm(&mut state, &client, &dir).await;
@@ -1723,6 +1728,7 @@ mod tests {
             reconnect_source: ReconnectSource::FreshSpawn,
             image_name: None,
             instance_dir_path: None,
+            runtime_handle: None,
         };
 
         let result = kill_vm(&mut state, &client, &dir).await;
@@ -1932,6 +1938,7 @@ mod tests {
             reconnect_source: ReconnectSource::FreshSpawn,
             image_name: None,
             instance_dir_path: None,
+            runtime_handle: None,
         };
 
         let vm_arc = Arc::new(Mutex::new(state));
@@ -2069,6 +2076,7 @@ mod tests {
             reconnect_source: ReconnectSource::FreshSpawn,
             image_name: None,
             instance_dir_path: None,
+            runtime_handle: None,
         };
 
         let result = delete_vm(&mut state, &client, &dir).await;
@@ -2120,6 +2128,7 @@ mod tests {
             reconnect_source: ReconnectSource::FreshSpawn,
             image_name: None,
             instance_dir_path: None,
+            runtime_handle: None,
         };
 
         let result = kill_vm(&mut state, &client, &dir).await;
@@ -2236,6 +2245,7 @@ mod tests {
             reconnect_source: ReconnectSource::FreshSpawn,
             image_name: None,
             instance_dir_path: None,
+            runtime_handle: None,
         };
 
         let vm_arc = Arc::new(Mutex::new(state));
