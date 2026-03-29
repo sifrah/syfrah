@@ -649,6 +649,56 @@ impl VmManager {
         Ok(status)
     }
 
+    /// Start a stopped VM via the runtime backend.
+    ///
+    /// Acquires the VM's mutex, delegates to `self.runtime.start()`, updates
+    /// the internal state, and emits a `Booted` event on success.
+    pub async fn start_vm(&self, id: &str) -> Result<VmStatus, ComputeError> {
+        let vm_arc = self.get_vm(id).await?;
+        let mut guard = vm_arc.lock().await;
+
+        if guard.current_phase == crate::phase::VmPhase::Running {
+            return Ok(guard.to_status(now_unix()));
+        }
+
+        // Transition Stopped -> Starting (validates via state machine).
+        guard.current_phase = guard
+            .current_phase
+            .transition(crate::phase::VmPhase::Starting)?;
+
+        let handle = guard.to_runtime_handle(&self.config.base_dir);
+        let new_handle = match self.runtime.start(&handle).await {
+            Ok(h) => h,
+            Err(e) => {
+                guard.current_phase = crate::phase::VmPhase::Failed;
+                return Err(e);
+            }
+        };
+
+        // Transition Starting -> Running.
+        guard.current_phase = guard
+            .current_phase
+            .transition(crate::phase::VmPhase::Running)?;
+
+        let now = now_unix();
+        guard.pid = new_handle.pid;
+        guard.launched_at = now;
+        guard.last_ping_at = Some(now);
+        guard.last_error = None;
+        guard.runtime_handle = Some(new_handle);
+
+        let status = guard.to_status(now);
+
+        events::emit(
+            &self.event_tx,
+            VmEvent::Booted {
+                vm_id: VmId(id.to_string()),
+            },
+        );
+
+        Ok(status)
+    }
+
     /// Shut down a running VM via the runtime backend.
     ///
     /// Acquires the VM's mutex, delegates to `self.runtime.stop()`, and emits a

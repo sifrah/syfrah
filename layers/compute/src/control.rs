@@ -199,13 +199,10 @@ async fn handle_compute_request(mgr: &VmManager, req: ComputeRequest) -> Compute
             Ok(status) => ComputeResponse::Vm(vm_status_to_json(&status)),
             Err(e) => ComputeResponse::Error(e.to_string()),
         },
-        ComputeRequest::StartVm { id } => {
-            // Start just returns current info (MVP — VMs boot on create)
-            match mgr.info(&id).await {
-                Ok(status) => ComputeResponse::Vm(vm_status_to_json(&status)),
-                Err(e) => ComputeResponse::Error(e.to_string()),
-            }
-        }
+        ComputeRequest::StartVm { id } => match mgr.start_vm(&id).await {
+            Ok(status) => ComputeResponse::Vm(vm_status_to_json(&status)),
+            Err(e) => ComputeResponse::Error(e.to_string()),
+        },
         ComputeRequest::StopVm { id, force } => {
             let result = if force {
                 mgr.shutdown_vm_force(&id).await

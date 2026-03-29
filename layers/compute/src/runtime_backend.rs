@@ -103,6 +103,17 @@ pub trait ComputeRuntime: Send + Sync {
     /// Create and start a workload.
     async fn create(&self, id: &str, spec: &RuntimeSpec) -> Result<RuntimeHandle, ComputeError>;
 
+    /// Start a stopped workload.
+    ///
+    /// Not all backends support restarting. The default returns an error.
+    async fn start(&self, handle: &RuntimeHandle) -> Result<RuntimeHandle, ComputeError> {
+        let _ = handle;
+        Err(crate::error::ProcessError::SpawnFailed {
+            reason: "start not supported by this runtime backend".to_string(),
+        }
+        .into())
+    }
+
     /// Stop a running workload.
     ///
     /// When `force` is true, skip the graceful shutdown phase.
