@@ -934,6 +934,9 @@ impl ComputeRuntime for ContainerRuntime {
             pid,
             runtime_type: RuntimeType::Container,
             runtime_dir,
+            vcpus: Some(spec.vcpus),
+            memory_mb: Some(spec.memory_mb),
+            launched_at: None,
         })
     }
 
@@ -1092,7 +1095,25 @@ impl ComputeRuntime for ContainerRuntime {
                     pid: meta.pid,
                     runtime_type: RuntimeType::Container,
                     runtime_dir: dir,
+                    vcpus: Some(meta.vcpus),
+                    memory_mb: Some(meta.memory_mb),
+                    launched_at: parse_iso8601_to_unix(&meta.created_at),
                 });
+            } else {
+                warn!(
+                    container_id = %id,
+                    pid = meta.pid,
+                    dir = %dir.display(),
+                    "ContainerRuntime::reconnect: dead container, cleaning up runtime dir"
+                );
+                if let Err(e) = std::fs::remove_dir_all(&dir) {
+                    warn!(
+                        container_id = %id,
+                        dir = %dir.display(),
+                        error = %e,
+                        "ContainerRuntime::reconnect: failed to remove dead container dir"
+                    );
+                }
             }
         }
 
@@ -1397,6 +1418,9 @@ mod tests {
             pid: 4_000_000, // nonexistent PID
             runtime_type: RuntimeType::Container,
             runtime_dir: PathBuf::from("/tmp/nonexistent"),
+            vcpus: None,
+            memory_mb: None,
+            launched_at: None,
         };
         assert!(!rt.is_alive(&handle).await);
     }

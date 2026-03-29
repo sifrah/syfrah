@@ -2319,4 +2319,61 @@ mod tests {
 
         handle.abort();
     }
+
+    // -- is_container_meta ----------------------------------------------------
+
+    #[test]
+    fn is_container_meta_valid_container() {
+        let tmp = TempDir::new().unwrap();
+        let meta_path = tmp.path().join("meta.json");
+        fs::write(
+            &meta_path,
+            r#"{"container_id":"ctr-1","created_at":"2026-01-01T00:00:00Z","pid":1,"runtime_type":"container","vcpus":2,"memory_mb":512}"#,
+        )
+        .unwrap();
+        assert!(is_container_meta(meta_path));
+    }
+
+    #[test]
+    fn is_container_meta_vm_meta_returns_false() {
+        let tmp = TempDir::new().unwrap();
+        let dir = RuntimeDir::create(tmp.path(), "vm-test").unwrap();
+        let meta = VmMeta {
+            vm_id: "vm-test".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            socket_path: "/tmp/api.sock".to_string(),
+            pid: 1,
+            ch_binary: "/bin/true".to_string(),
+            ch_version: "v1".to_string(),
+            spec_hash: "hash:0".to_string(),
+            vcpus: 2,
+            memory_mb: 512,
+            image_name: None,
+            disk_size_mb: None,
+        };
+        dir.write_meta(&meta).unwrap();
+        assert!(!is_container_meta(dir.meta_path()));
+    }
+
+    #[test]
+    fn is_container_meta_empty_file() {
+        let tmp = TempDir::new().unwrap();
+        let meta_path = tmp.path().join("meta.json");
+        fs::write(&meta_path, "").unwrap();
+        assert!(!is_container_meta(meta_path));
+    }
+
+    #[test]
+    fn is_container_meta_non_json() {
+        let tmp = TempDir::new().unwrap();
+        let meta_path = tmp.path().join("meta.json");
+        fs::write(&meta_path, "not valid json at all").unwrap();
+        assert!(!is_container_meta(meta_path));
+    }
+
+    #[test]
+    fn is_container_meta_missing_file() {
+        let path = PathBuf::from("/tmp/nonexistent-test-dir-12345/meta.json");
+        assert!(!is_container_meta(path));
+    }
 }
