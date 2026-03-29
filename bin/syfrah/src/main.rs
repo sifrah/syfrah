@@ -633,6 +633,13 @@ fn background_daemon() -> Result<()> {
 
 #[tokio::main]
 async fn main() {
+    // Reset SIGPIPE to default behavior so piped commands (e.g.
+    // `syfrah completions bash | head`) terminate cleanly instead of panicking.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     if let Err(e) = run().await {
         eprintln!("Error: {e:#}");
         std::process::exit(1);
@@ -882,7 +889,11 @@ async fn run() -> Result<()> {
         Commands::Compute { command } => syfrah_compute::cli::run(command).await,
         Commands::Completions { shell } => {
             let mut cmd = Cli::command();
-            generate(shell, &mut cmd, "syfrah", &mut std::io::stdout());
+            let mut buf = Vec::new();
+            generate(shell, &mut cmd, "syfrah", &mut buf);
+            // Use write_all to handle broken pipe gracefully (e.g. `syfrah completions bash | head`)
+            use std::io::Write;
+            let _ = std::io::stdout().lock().write_all(&buf);
             Ok(())
         }
         Commands::State { command } => syfrah_state::cli::run(command).await,
