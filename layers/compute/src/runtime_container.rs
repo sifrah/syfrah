@@ -1,10 +1,11 @@
 //! Container runtime backend (runsc / crun).
 //!
 //! `ContainerRuntime` implements [`ComputeRuntime`] by generating OCI bundles
-//! and delegating to `runsc` (gVisor) directly as the OCI runtime. If `runsc`
-//! is not available, it falls back to `crun`. Both are OCI-compatible runtimes
-//! with the same CLI interface. This provides a sandboxed container environment
-//! on hosts where KVM is not available.
+//! and delegating to `crun` as the primary OCI runtime. `crun` works on all
+//! Linux hosts with no special kernel requirements. `runsc` (gVisor) is
+//! detected and logged as available but not used by default, since it requires
+//! KVM/sandbox support that many VPS environments lack. Both runtimes share
+//! the same OCI CLI interface.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -43,12 +44,12 @@ pub struct ContainerMeta {
 // ContainerRuntime
 // ---------------------------------------------------------------------------
 
-/// Container runtime backend using runsc (gVisor) or crun as fallback.
+/// Container runtime backend using crun (primary) with runsc (gVisor) as optional.
 ///
 /// Each container is an OCI bundle under `base_dir/{id}/` containing a
 /// `config.json` and a `rootfs/` directory. The lifecycle is managed by
-/// calling the OCI runtime binary directly (preferring `runsc`, falling
-/// back to `crun`).
+/// calling the OCI runtime binary directly (preferring `crun`; `runsc` is
+/// detected but not used by default).
 pub struct ContainerRuntime {
     /// Resolved path to the `crun` binary.
     crun_binary: PathBuf,
@@ -101,12 +102,17 @@ impl ContainerRuntime {
 
     /// Return the preferred OCI runtime binary path.
     ///
-    /// Prefers `runsc` if available, falls back to `crun`.
+    /// Prefers `crun` (works on all Linux, no special kernel requirements).
+    /// `runsc` (gVisor) needs KVM/sandbox support and fails on many VPS hosts,
+    /// so it is only logged as available for future opt-in use.
     fn runtime_binary(&self) -> &Path {
-        if !self.runsc_binary.as_os_str().is_empty() && self.runsc_binary.exists() {
-            &self.runsc_binary
-        } else {
+        if !self.crun_binary.as_os_str().is_empty() && self.crun_binary.exists() {
+            if !self.runsc_binary.as_os_str().is_empty() && self.runsc_binary.exists() {
+                info!("runsc (gVisor) is available but not used by default; using crun");
+            }
             &self.crun_binary
+        } else {
+            &self.runsc_binary
         }
     }
 
@@ -367,6 +373,37 @@ fn generate_oci_config(id: &str, spec: &RuntimeSpec) -> serde_json::Value {
             "path": "rootfs",
             "readonly": false
         },
+        "mounts": [
+            {
+                "destination": "/proc",
+                "type": "proc",
+                "source": "proc"
+            },
+            {
+                "destination": "/dev",
+                "type": "tmpfs",
+                "source": "tmpfs",
+                "options": ["nosuid", "strictatime", "mode=755", "size=65536k"]
+            },
+            {
+                "destination": "/dev/pts",
+                "type": "devpts",
+                "source": "devpts",
+                "options": ["nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620"]
+            },
+            {
+                "destination": "/dev/shm",
+                "type": "tmpfs",
+                "source": "shm",
+                "options": ["nosuid", "noexec", "nodev", "mode=1777", "size=65536k"]
+            },
+            {
+                "destination": "/sys",
+                "type": "sysfs",
+                "source": "sysfs",
+                "options": ["nosuid", "noexec", "nodev", "ro"]
+            }
+        ],
         "hostname": id,
         "linux": {
             "resources": {
@@ -418,16 +455,17 @@ async fn prepare_rootfs(rootfs_path: &Path, runtime_dir: &Path) -> Result<PathBu
         .to_string_lossy();
 
     if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
-        tokio::fs::create_dir_all(&rootfs_dest)
+        let staging_dir = runtime_dir.join("_oci_staging");
+        tokio::fs::create_dir_all(&staging_dir)
             .await
             .map_err(|e| ProcessError::SpawnFailed {
-                reason: format!("failed to create rootfs dir: {e}"),
+                reason: format!("failed to create staging dir: {e}"),
             })?;
 
-        // Extract using tar (async spawn).
+        // Extract the archive into a staging area first.
         let output = Command::new("tar")
             .args(["xzf", &rootfs_path.to_string_lossy(), "-C"])
-            .arg(&rootfs_dest)
+            .arg(&staging_dir)
             .output()
             .await
             .map_err(|e| ProcessError::SpawnFailed {
@@ -435,8 +473,6 @@ async fn prepare_rootfs(rootfs_path: &Path, runtime_dir: &Path) -> Result<PathBu
             })?;
 
         if !output.status.success() {
-            // Wrap raw tar stderr into a user-friendly message instead of
-            // leaking internal paths like /opt/syfrah/images/foo-oci.tar.gz.
             let image_name = rootfs_path
                 .file_stem()
                 .unwrap_or_default()
@@ -453,6 +489,62 @@ async fn prepare_rootfs(rootfs_path: &Path, runtime_dir: &Path) -> Result<PathBu
             }
             .into());
         }
+
+        // Detect whether this is an OCI image layout (with oci-layout/index.json)
+        // or a Docker `docker save` archive (with manifest.json + layer.tar files),
+        // vs a flat rootfs tarball.
+        let is_oci_layout = staging_dir.join("oci-layout").exists();
+        let is_docker_save = staging_dir.join("manifest.json").exists();
+
+        if is_oci_layout || is_docker_save {
+            // OCI/Docker image archive — extract layer tarballs into rootfs.
+            tokio::fs::create_dir_all(&rootfs_dest).await.map_err(|e| {
+                ProcessError::SpawnFailed {
+                    reason: format!("failed to create rootfs dir: {e}"),
+                }
+            })?;
+
+            let layer_tars = find_layer_tars(&staging_dir, is_oci_layout).await?;
+            if layer_tars.is_empty() {
+                return Err(ProcessError::SpawnFailed {
+                    reason: "OCI/Docker image archive contains no layer tarballs".to_string(),
+                }
+                .into());
+            }
+
+            for layer_tar in &layer_tars {
+                debug!(layer = %layer_tar.display(), "extracting layer into rootfs");
+                let out = Command::new("tar")
+                    .args(["xf", &layer_tar.to_string_lossy(), "-C"])
+                    .arg(&rootfs_dest)
+                    .output()
+                    .await
+                    .map_err(|e| ProcessError::SpawnFailed {
+                        reason: format!("failed to extract layer {}: {e}", layer_tar.display()),
+                    })?;
+                if !out.status.success() {
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    return Err(ProcessError::SpawnFailed {
+                        reason: format!(
+                            "tar failed extracting layer {}: {stderr}",
+                            layer_tar.display()
+                        ),
+                    }
+                    .into());
+                }
+            }
+        } else {
+            // Flat rootfs tarball — staging IS the rootfs.
+            tokio::fs::rename(&staging_dir, &rootfs_dest)
+                .await
+                .map_err(|e| ProcessError::SpawnFailed {
+                    reason: format!("failed to rename staging dir to rootfs: {e}"),
+                })?;
+            return Ok(rootfs_dest);
+        }
+
+        // Clean up staging directory.
+        let _ = tokio::fs::remove_dir_all(&staging_dir).await;
 
         return Ok(rootfs_dest);
     }
@@ -472,6 +564,135 @@ async fn prepare_rootfs(rootfs_path: &Path, runtime_dir: &Path) -> Result<PathBu
         ),
     }
     .into())
+}
+
+/// Find layer tarballs inside an OCI image layout or Docker save archive.
+///
+/// For OCI layouts: reads `index.json` -> manifest blob -> layer digests, then
+/// returns the corresponding `blobs/sha256/<digest>` paths.
+///
+/// For Docker `docker save` archives: reads `manifest.json` and returns the
+/// `Layers` entries in order.
+///
+/// Falls back to globbing for `layer.tar` files if JSON parsing fails.
+async fn find_layer_tars(
+    staging_dir: &Path,
+    is_oci_layout: bool,
+) -> Result<Vec<PathBuf>, ComputeError> {
+    if is_oci_layout {
+        // Try to parse the OCI index.json -> manifest -> layers.
+        if let Ok(layers) = find_oci_layout_layers(staging_dir).await {
+            if !layers.is_empty() {
+                return Ok(layers);
+            }
+        }
+    }
+
+    // Docker save: parse manifest.json for layer paths.
+    let manifest_path = staging_dir.join("manifest.json");
+    if manifest_path.exists() {
+        if let Ok(data) = tokio::fs::read_to_string(&manifest_path).await {
+            if let Ok(manifests) = serde_json::from_str::<Vec<serde_json::Value>>(&data) {
+                if let Some(manifest) = manifests.first() {
+                    if let Some(layers) = manifest["Layers"].as_array() {
+                        let paths: Vec<PathBuf> = layers
+                            .iter()
+                            .filter_map(|l| l.as_str())
+                            .map(|l| staging_dir.join(l))
+                            .filter(|p| p.exists())
+                            .collect();
+                        if !paths.is_empty() {
+                            return Ok(paths);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: glob for layer.tar files.
+    let mut layer_tars = Vec::new();
+    if let Ok(mut entries) = tokio::fs::read_dir(staging_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            if path.is_dir() {
+                let layer_tar = path.join("layer.tar");
+                if layer_tar.exists() {
+                    layer_tars.push(layer_tar);
+                }
+            }
+        }
+    }
+    layer_tars.sort();
+
+    Ok(layer_tars)
+}
+
+/// Parse OCI image layout: index.json -> manifest blob -> layer blobs.
+async fn find_oci_layout_layers(staging_dir: &Path) -> Result<Vec<PathBuf>, ComputeError> {
+    let index_path = staging_dir.join("index.json");
+    let index_data =
+        tokio::fs::read_to_string(&index_path)
+            .await
+            .map_err(|e| ProcessError::SpawnFailed {
+                reason: format!("failed to read OCI index.json: {e}"),
+            })?;
+    let index: serde_json::Value =
+        serde_json::from_str(&index_data).map_err(|e| ProcessError::SpawnFailed {
+            reason: format!("failed to parse OCI index.json: {e}"),
+        })?;
+
+    // Get the first manifest descriptor.
+    let manifest_digest = index["manifests"]
+        .as_array()
+        .and_then(|m| m.first())
+        .and_then(|m| m["digest"].as_str())
+        .ok_or_else(|| ProcessError::SpawnFailed {
+            reason: "OCI index.json has no manifest entries".to_string(),
+        })?;
+
+    // digest is "sha256:<hex>" — resolve to blobs/sha256/<hex>
+    let blob_path = digest_to_blob_path(staging_dir, manifest_digest)?;
+    let manifest_data =
+        tokio::fs::read_to_string(&blob_path)
+            .await
+            .map_err(|e| ProcessError::SpawnFailed {
+                reason: format!("failed to read OCI manifest blob: {e}"),
+            })?;
+    let manifest: serde_json::Value =
+        serde_json::from_str(&manifest_data).map_err(|e| ProcessError::SpawnFailed {
+            reason: format!("failed to parse OCI manifest: {e}"),
+        })?;
+
+    let layers = manifest["layers"]
+        .as_array()
+        .ok_or_else(|| ProcessError::SpawnFailed {
+            reason: "OCI manifest has no layers array".to_string(),
+        })?;
+
+    let mut paths = Vec::new();
+    for layer in layers {
+        if let Some(digest) = layer["digest"].as_str() {
+            let path = digest_to_blob_path(staging_dir, digest)?;
+            if path.exists() {
+                paths.push(path);
+            }
+        }
+    }
+
+    Ok(paths)
+}
+
+/// Convert an OCI digest like `sha256:abc123` to `{staging}/blobs/sha256/abc123`.
+fn digest_to_blob_path(staging_dir: &Path, digest: &str) -> Result<PathBuf, ComputeError> {
+    let parts: Vec<&str> = digest.splitn(2, ':').collect();
+    if parts.len() != 2 {
+        return Err(ProcessError::SpawnFailed {
+            reason: format!("invalid OCI digest format: {digest}"),
+        }
+        .into());
+    }
+    Ok(staging_dir.join("blobs").join(parts[0]).join(parts[1]))
 }
 
 // ---------------------------------------------------------------------------
