@@ -797,19 +797,49 @@ impl VmManager {
 
     /// Scan runtime dirs and recover VMs that survived a daemon restart.
     ///
-    /// Calls `process::reconnect`, inserts recovered VMs into the map, and
-    /// returns a summary (recovered count / failed / orphans cleaned).
+    /// Calls `process::reconnect` for CH VMs, then delegates to the runtime
+    /// backend for container VMs. Inserts all recovered workloads into the map.
     pub async fn reconnect(&self) -> Result<ReconnectSummary, ComputeError> {
+        // 1. Recover CH VMs via process::reconnect (skips container dirs).
         let report = process::reconnect(&self.config.base_dir, self.event_tx.clone()).await;
 
-        let recovered_count = report.recovered.len();
+        let mut recovered_count = report.recovered.len();
 
-        // Insert recovered VMs into the map.
+        // Insert recovered CH VMs into the map.
         if !report.recovered.is_empty() {
             let mut map = self.vms.write().await;
             for state in report.recovered {
                 let id = state.vm_id.0.clone();
                 map.insert(id, Arc::new(Mutex::new(state)));
+            }
+        }
+
+        // 2. Recover container workloads via the runtime backend.
+        let container_handles = self.runtime.reconnect(&self.config.base_dir).await;
+        if !container_handles.is_empty() {
+            let mut map = self.vms.write().await;
+            for handle in container_handles {
+                let id = handle.id.clone();
+                let state = VmRuntimeState {
+                    vm_id: VmId(id.clone()),
+                    pid: handle.pid,
+                    socket_path: PathBuf::new(),
+                    cgroup_path: None,
+                    ch_binary_path: PathBuf::new(),
+                    ch_binary_version: String::new(),
+                    vcpus: 0,
+                    memory_mb: 0,
+                    launched_at: now_unix(),
+                    last_ping_at: Some(now_unix()),
+                    last_error: None,
+                    current_phase: crate::phase::VmPhase::Running,
+                    reconnect_source: crate::runtime::ReconnectSource::Recovered,
+                    image_name: None,
+                    instance_dir_path: None,
+                    runtime_handle: Some(handle),
+                };
+                map.insert(id, Arc::new(Mutex::new(state)));
+                recovered_count += 1;
             }
         }
 

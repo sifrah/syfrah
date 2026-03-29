@@ -1175,6 +1175,18 @@ pub async fn reconnect(base_dir: &Path, event_tx: broadcast::Sender<VmEvent>) ->
         let meta = match dir.read_meta() {
             Ok(m) => m,
             Err(e) => {
+                // Before treating as orphan, check if this is a container
+                // runtime dir. Container VMs write ContainerMeta (different
+                // schema) which fails VmMeta deserialization. Skip these —
+                // VmManager::reconnect delegates them to the runtime backend.
+                if is_container_meta(dir.meta_path()) {
+                    debug!(
+                        dir = %dir.path().display(),
+                        "reconnect: skipping container runtime dir"
+                    );
+                    continue;
+                }
+
                 // meta.json exists but is corrupt — treat as orphan.
                 let dir_name = dir
                     .path()
@@ -1304,6 +1316,27 @@ pub async fn reconnect(base_dir: &Path, event_tx: broadcast::Sender<VmEvent>) ->
     );
 
     report
+}
+
+// ---------------------------------------------------------------------------
+// Container meta detection
+// ---------------------------------------------------------------------------
+
+/// Check if a `meta.json` file belongs to a container runtime.
+///
+/// Reads the raw JSON and looks for `"runtime_type": "container"`. This avoids
+/// deserializing as `VmMeta` (which would fail for container dirs) and prevents
+/// the reconnect loop from treating container dirs as corrupt orphans.
+fn is_container_meta(path: PathBuf) -> bool {
+    let data = match fs::read_to_string(&path) {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+    let value: serde_json::Value = match serde_json::from_str(&data) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    value.get("runtime_type").and_then(|v| v.as_str()) == Some("container")
 }
 
 // ---------------------------------------------------------------------------
