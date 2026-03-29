@@ -394,14 +394,34 @@ async fn run_stop(id: String, force: bool) -> anyhow::Result<()> {
 }
 
 async fn run_delete(id: String, yes: bool) -> anyhow::Result<()> {
+    // Check that the VM exists before prompting for confirmation.
+    let get_req = ComputeRequest::GetVm { id: id.clone() };
+    let get_resp = send_compute_request(&control_socket_path(), &get_req)
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to connect to daemon: {e}\n\nIs the daemon running? Initialize with: syfrah fabric init --name <mesh-name>"
+            )
+        })?;
+
+    match get_resp {
+        ComputeResponse::Vm(_) => {} // VM exists, proceed
+        ComputeResponse::Error(msg) => {
+            anyhow::bail!("{msg}");
+        }
+        _ => {
+            anyhow::bail!("unexpected response from daemon");
+        }
+    }
+
     if !yes {
         eprint!("Delete VM {id}? This cannot be undone. [y/N] ");
         let mut answer = String::new();
         std::io::stdin().read_line(&mut answer)?;
         let answer = answer.trim();
         if answer != "y" && answer != "Y" {
-            println!("Aborted.");
-            return Ok(());
+            eprintln!("Aborted.");
+            std::process::exit(1);
         }
     }
 

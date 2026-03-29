@@ -265,14 +265,34 @@ async fn run_import(path: PathBuf, name: String, arch: String) -> anyhow::Result
 }
 
 async fn run_delete(name: String, yes: bool) -> anyhow::Result<()> {
+    // Check that the image exists before prompting for confirmation.
+    let inspect_req = ComputeRequest::ImageInspect { name: name.clone() };
+    let inspect_resp = send_compute_request(&control_socket_path(), &inspect_req)
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to connect to daemon: {e}\n\nIs the daemon running? Initialize with: syfrah fabric init --name <mesh-name>"
+            )
+        })?;
+
+    match inspect_resp {
+        ComputeResponse::ImageMeta(_) => {} // Image exists, proceed
+        ComputeResponse::Error(msg) => {
+            anyhow::bail!("{msg}");
+        }
+        _ => {
+            anyhow::bail!("unexpected response from daemon");
+        }
+    }
+
     if !yes {
         eprint!("Delete image {name}? This cannot be undone. [y/N] ");
         let mut answer = String::new();
         std::io::stdin().read_line(&mut answer)?;
         let answer = answer.trim();
         if answer != "y" && answer != "Y" {
-            println!("Aborted.");
-            return Ok(());
+            eprintln!("Aborted.");
+            std::process::exit(1);
         }
     }
 
