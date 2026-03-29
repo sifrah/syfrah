@@ -248,10 +248,10 @@ async fn run_list(json: bool) -> anyhow::Result<()> {
                 println!("{json_str}");
             } else {
                 println!(
-                    "{:<20} {:<20} {:<12} {:<6} {:<10} {:<10}",
-                    "NAME", "IMAGE", "PHASE", "vCPUs", "MEMORY", "UPTIME"
+                    "{:<20} {:<20} {:<12} {:<12} {:<6} {:<10} {:<10}",
+                    "NAME", "IMAGE", "PHASE", "RUNTIME", "vCPUs", "MEMORY", "UPTIME"
                 );
-                println!("{}", "-".repeat(78));
+                println!("{}", "-".repeat(90));
                 if vms.is_empty() {
                     println!("(no VMs)");
                 } else {
@@ -259,6 +259,7 @@ async fn run_list(json: bool) -> anyhow::Result<()> {
                         let name = vm.get("id").and_then(|n| n.as_str()).unwrap_or("?");
                         let image = vm.get("image").and_then(|i| i.as_str()).unwrap_or("");
                         let phase = vm.get("phase").and_then(|p| p.as_str()).unwrap_or("?");
+                        let runtime = vm.get("runtime").and_then(|r| r.as_str()).unwrap_or("-");
                         let vcpus = vm.get("vcpus").and_then(|v| v.as_u64()).unwrap_or(0);
                         let memory = vm.get("memory_mb").and_then(|m| m.as_u64()).unwrap_or(0);
                         let uptime = vm
@@ -266,7 +267,7 @@ async fn run_list(json: bool) -> anyhow::Result<()> {
                             .and_then(|u| u.as_u64())
                             .map(format_uptime)
                             .unwrap_or_else(|| "-".to_string());
-                        println!("{name:<20} {image:<20} {phase:<12} {vcpus:<6} {memory:<10} {uptime:<10}");
+                        println!("{name:<20} {image:<20} {phase:<12} {runtime:<12} {vcpus:<6} {memory:<10} {uptime:<10}");
                     }
                 }
             }
@@ -308,6 +309,7 @@ async fn run_get(id: String, json: bool) -> anyhow::Result<()> {
                 let name = v.get("id").and_then(|n| n.as_str()).unwrap_or("?");
                 let image = v.get("image").and_then(|i| i.as_str()).unwrap_or("");
                 let phase = v.get("phase").and_then(|p| p.as_str()).unwrap_or("?");
+                let runtime = v.get("runtime").and_then(|r| r.as_str()).unwrap_or("-");
                 let vcpus = v.get("vcpus").and_then(|v| v.as_u64()).unwrap_or(0);
                 let memory = v.get("memory_mb").and_then(|m| m.as_u64()).unwrap_or(0);
                 let uptime = v
@@ -319,6 +321,7 @@ async fn run_get(id: String, json: bool) -> anyhow::Result<()> {
                 println!("  Name:      {name}");
                 println!("  Image:     {image}");
                 println!("  Phase:     {phase}");
+                println!("  Runtime:   {runtime}");
                 println!("  vCPUs:     {vcpus}");
                 println!("  Memory:    {memory} MB");
                 println!("  Uptime:    {uptime}");

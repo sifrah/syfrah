@@ -109,6 +109,8 @@ pub struct VmResponse {
     pub vcpus: u32,
     pub memory_mb: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uptime_secs: Option<u64>,
@@ -142,6 +144,10 @@ fn vm_status_to_response(s: &VmStatus) -> VmResponse {
         phase: format!("{:?}", s.phase),
         vcpus: s.vcpus,
         memory_mb: s.memory_mb,
+        runtime: s.runtime.map(|r| match r {
+            crate::runtime_backend::RuntimeType::Vm => "vm".to_string(),
+            crate::runtime_backend::RuntimeType::Container => "container".to_string(),
+        }),
         created_at: s.created_at,
         uptime_secs: s.uptime_secs,
     }
@@ -312,6 +318,7 @@ async fn stop_vm(State(mgr): State<SharedManager>, Path(id): Path<String>) -> im
                     phase: "Stopped".to_string(),
                     vcpus: 0,
                     memory_mb: 0,
+                    runtime: None,
                     created_at: None,
                     uptime_secs: None,
                 }),
@@ -640,6 +647,7 @@ mod tests {
             vcpus: 4,
             memory_mb: 8192,
             image: Some("ubuntu-24.04".to_string()),
+            runtime: Some(crate::runtime_backend::RuntimeType::Vm),
             created_at: Some(1700000000),
             uptime_secs: Some(3600),
         };
@@ -660,6 +668,7 @@ mod tests {
             vcpus: 1,
             memory_mb: 512,
             image: None,
+            runtime: None,
             created_at: None,
             uptime_secs: None,
         };
