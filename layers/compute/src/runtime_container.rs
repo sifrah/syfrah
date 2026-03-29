@@ -1000,6 +1000,9 @@ impl ComputeRuntime for ContainerRuntime {
             pid,
             runtime_type: RuntimeType::Container,
             runtime_dir: handle.runtime_dir.clone(),
+            vcpus: handle.vcpus,
+            memory_mb: handle.memory_mb,
+            launched_at: None,
         })
     }
 
