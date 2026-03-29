@@ -57,6 +57,8 @@ pub struct ContainerRuntime {
     runsc_binary: PathBuf,
     /// Base directory for per-container runtime dirs (e.g., `/run/syfrah/vms`).
     base_dir: PathBuf,
+    /// Cached preferred runtime binary path (resolved once in `new()`).
+    preferred_runtime: PathBuf,
 }
 
 impl ContainerRuntime {
@@ -78,10 +80,28 @@ impl ContainerRuntime {
             .into());
         }
 
+        // Cache the runtime decision once at construction time.
+        let preferred = if !crun.as_os_str().is_empty() && crun.exists() {
+            if !runsc.as_os_str().is_empty() && runsc.exists() {
+                info!(
+                    crun = %crun.display(),
+                    runsc = %runsc.display(),
+                    "runsc (gVisor) is available but not used by default; using crun"
+                );
+            } else {
+                info!(runtime = %crun.display(), "using crun as OCI runtime");
+            }
+            crun.clone()
+        } else {
+            info!(runtime = %runsc.display(), "using runsc as OCI runtime (crun not found)");
+            runsc.clone()
+        };
+
         Ok(Self {
             crun_binary: crun,
             runsc_binary: runsc,
             base_dir,
+            preferred_runtime: preferred,
         })
     }
 
@@ -100,20 +120,9 @@ impl ContainerRuntime {
         &self.base_dir
     }
 
-    /// Return the preferred OCI runtime binary path.
-    ///
-    /// Prefers `crun` (works on all Linux, no special kernel requirements).
-    /// `runsc` (gVisor) needs KVM/sandbox support and fails on many VPS hosts,
-    /// so it is only logged as available for future opt-in use.
+    /// Return the preferred OCI runtime binary path (cached at construction time).
     fn runtime_binary(&self) -> &Path {
-        if !self.crun_binary.as_os_str().is_empty() && self.crun_binary.exists() {
-            if !self.runsc_binary.as_os_str().is_empty() && self.runsc_binary.exists() {
-                info!("runsc (gVisor) is available but not used by default; using crun");
-            }
-            &self.crun_binary
-        } else {
-            &self.runsc_binary
-        }
+        &self.preferred_runtime
     }
 
     /// Execute an OCI runtime command (runsc or crun).
@@ -490,11 +499,19 @@ async fn prepare_rootfs(rootfs_path: &Path, runtime_dir: &Path) -> Result<PathBu
             .into());
         }
 
-        // Detect whether this is an OCI image layout (with oci-layout/index.json)
-        // or a Docker `docker save` archive (with manifest.json + layer.tar files),
-        // vs a flat rootfs tarball.
+        // Explicit format detection — try each format in order with clear
+        // diagnostics. No silent fallback: OCI layout -> Docker save -> flat
+        // rootfs -> error.
         let is_oci_layout = staging_dir.join("oci-layout").exists();
-        let is_docker_save = staging_dir.join("manifest.json").exists();
+        let is_docker_save = !is_oci_layout && staging_dir.join("manifest.json").exists();
+
+        if is_oci_layout {
+            debug!("detected OCI image layout (oci-layout file present)");
+        } else if is_docker_save {
+            debug!("detected Docker save archive (manifest.json present)");
+        } else {
+            debug!("no oci-layout or manifest.json — treating as flat rootfs tarball");
+        }
 
         if is_oci_layout || is_docker_save {
             // OCI/Docker image archive — extract layer tarballs into rootfs.
@@ -568,49 +585,58 @@ async fn prepare_rootfs(rootfs_path: &Path, runtime_dir: &Path) -> Result<PathBu
 
 /// Find layer tarballs inside an OCI image layout or Docker save archive.
 ///
-/// For OCI layouts: reads `index.json` -> manifest blob -> layer digests, then
-/// returns the corresponding `blobs/sha256/<digest>` paths.
-///
-/// For Docker `docker save` archives: reads `manifest.json` and returns the
-/// `Layers` entries in order.
-///
-/// Falls back to globbing for `layer.tar` files if JSON parsing fails.
+/// Detection is explicit with no silent fallback chains:
+/// 1. If `oci-layout` exists -> parse OCI layout (error on failure)
+/// 2. Else if `manifest.json` exists -> parse Docker save format (error on failure)
+/// 3. Else if subdirectories contain `layer.tar` -> flat rootfs format
+/// 4. Otherwise -> return error "unsupported archive format"
 async fn find_layer_tars(
     staging_dir: &Path,
     is_oci_layout: bool,
 ) -> Result<Vec<PathBuf>, ComputeError> {
+    // 1. OCI layout: parse index.json -> manifest -> layers (no silent fallthrough).
     if is_oci_layout {
-        // Try to parse the OCI index.json -> manifest -> layers.
-        if let Ok(layers) = find_oci_layout_layers(staging_dir).await {
-            if !layers.is_empty() {
-                return Ok(layers);
-            }
-        }
+        return find_oci_layout_layers(staging_dir).await;
     }
 
-    // Docker save: parse manifest.json for layer paths.
+    // 2. Docker save: parse manifest.json for layer paths.
     let manifest_path = staging_dir.join("manifest.json");
     if manifest_path.exists() {
-        if let Ok(data) = tokio::fs::read_to_string(&manifest_path).await {
-            if let Ok(manifests) = serde_json::from_str::<Vec<serde_json::Value>>(&data) {
-                if let Some(manifest) = manifests.first() {
-                    if let Some(layers) = manifest["Layers"].as_array() {
-                        let paths: Vec<PathBuf> = layers
-                            .iter()
-                            .filter_map(|l| l.as_str())
-                            .map(|l| staging_dir.join(l))
-                            .filter(|p| p.exists())
-                            .collect();
-                        if !paths.is_empty() {
-                            return Ok(paths);
-                        }
-                    }
+        let data = tokio::fs::read_to_string(&manifest_path)
+            .await
+            .map_err(|e| ProcessError::SpawnFailed {
+                reason: format!("failed to read Docker manifest.json: {e}"),
+            })?;
+        let manifests: Vec<serde_json::Value> =
+            serde_json::from_str(&data).map_err(|e| ProcessError::SpawnFailed {
+                reason: format!("failed to parse Docker manifest.json: {e}"),
+            })?;
+        let manifest = manifests.first().ok_or_else(|| ProcessError::SpawnFailed {
+            reason: "Docker manifest.json is an empty array".to_string(),
+        })?;
+        let layers = manifest["Layers"]
+            .as_array()
+            .ok_or_else(|| ProcessError::SpawnFailed {
+                reason: "Docker manifest.json has no Layers array".to_string(),
+            })?;
+        let mut paths = Vec::new();
+        for l in layers {
+            let layer_str = l.as_str().ok_or_else(|| ProcessError::SpawnFailed {
+                reason: "Docker manifest.json Layers entry is not a string".to_string(),
+            })?;
+            let path = safe_join(staging_dir, layer_str)?;
+            if !path.exists() {
+                return Err(ProcessError::SpawnFailed {
+                    reason: format!("referenced layer blob does not exist: {}", path.display()),
                 }
+                .into());
             }
+            paths.push(path);
         }
+        return Ok(paths);
     }
 
-    // Fallback: glob for layer.tar files.
+    // 3. Flat rootfs: glob for layer.tar files in subdirectories.
     let mut layer_tars = Vec::new();
     if let Ok(mut entries) = tokio::fs::read_dir(staging_dir).await {
         while let Ok(Some(entry)) = entries.next_entry().await {
@@ -623,10 +649,25 @@ async fn find_layer_tars(
             }
         }
     }
-    layer_tars.sort();
+    if !layer_tars.is_empty() {
+        layer_tars.sort();
+        return Ok(layer_tars);
+    }
 
-    Ok(layer_tars)
+    // 4. No recognized format.
+    Err(ProcessError::SpawnFailed {
+        reason:
+            "unsupported archive format: no oci-layout, manifest.json, or layer.tar files found"
+                .to_string(),
+    }
+    .into())
 }
+
+/// Expected OCI manifest media types.
+const OCI_MANIFEST_MEDIA_TYPES: &[&str] = &[
+    "application/vnd.oci.image.manifest.v1+json",
+    "application/vnd.docker.distribution.manifest.v2+json",
+];
 
 /// Parse OCI image layout: index.json -> manifest blob -> layer blobs.
 async fn find_oci_layout_layers(staging_dir: &Path) -> Result<Vec<PathBuf>, ComputeError> {
@@ -643,16 +684,43 @@ async fn find_oci_layout_layers(staging_dir: &Path) -> Result<Vec<PathBuf>, Comp
         })?;
 
     // Get the first manifest descriptor.
-    let manifest_digest = index["manifests"]
+    let manifest_descriptor = index["manifests"]
         .as_array()
         .and_then(|m| m.first())
-        .and_then(|m| m["digest"].as_str())
         .ok_or_else(|| ProcessError::SpawnFailed {
             reason: "OCI index.json has no manifest entries".to_string(),
         })?;
 
+    // Validate mediaType on the manifest descriptor.
+    if let Some(media_type) = manifest_descriptor["mediaType"].as_str() {
+        if !OCI_MANIFEST_MEDIA_TYPES.contains(&media_type) {
+            warn!(
+                media_type = media_type,
+                "OCI manifest descriptor has unexpected mediaType"
+            );
+        }
+    } else {
+        warn!("OCI manifest descriptor is missing mediaType field");
+    }
+
+    let manifest_digest =
+        manifest_descriptor["digest"]
+            .as_str()
+            .ok_or_else(|| ProcessError::SpawnFailed {
+                reason: "OCI manifest descriptor has no digest".to_string(),
+            })?;
+
     // digest is "sha256:<hex>" — resolve to blobs/sha256/<hex>
     let blob_path = digest_to_blob_path(staging_dir, manifest_digest)?;
+    if !blob_path.exists() {
+        return Err(ProcessError::SpawnFailed {
+            reason: format!(
+                "referenced manifest blob does not exist: {}",
+                blob_path.display()
+            ),
+        }
+        .into());
+    }
     let manifest_data =
         tokio::fs::read_to_string(&blob_path)
             .await
@@ -672,18 +740,28 @@ async fn find_oci_layout_layers(staging_dir: &Path) -> Result<Vec<PathBuf>, Comp
 
     let mut paths = Vec::new();
     for layer in layers {
-        if let Some(digest) = layer["digest"].as_str() {
-            let path = digest_to_blob_path(staging_dir, digest)?;
-            if path.exists() {
-                paths.push(path);
+        let digest = layer["digest"]
+            .as_str()
+            .ok_or_else(|| ProcessError::SpawnFailed {
+                reason: "OCI manifest layer entry missing digest field".to_string(),
+            })?;
+        let path = digest_to_blob_path(staging_dir, digest)?;
+        if !path.exists() {
+            return Err(ProcessError::SpawnFailed {
+                reason: format!("referenced layer blob does not exist: {}", path.display()),
             }
+            .into());
         }
+        paths.push(path);
     }
 
     Ok(paths)
 }
 
 /// Convert an OCI digest like `sha256:abc123` to `{staging}/blobs/sha256/abc123`.
+///
+/// The resolved path is validated to stay within `staging_dir` to prevent
+/// path traversal via crafted digest strings.
 fn digest_to_blob_path(staging_dir: &Path, digest: &str) -> Result<PathBuf, ComputeError> {
     let parts: Vec<&str> = digest.splitn(2, ':').collect();
     if parts.len() != 2 {
@@ -692,7 +770,37 @@ fn digest_to_blob_path(staging_dir: &Path, digest: &str) -> Result<PathBuf, Comp
         }
         .into());
     }
-    Ok(staging_dir.join("blobs").join(parts[0]).join(parts[1]))
+    let joined = staging_dir.join("blobs").join(parts[0]).join(parts[1]);
+    safe_join_check(staging_dir, &joined, digest)?;
+    Ok(joined)
+}
+
+/// Validate that `resolved` stays within `base_dir`, preventing path traversal.
+///
+/// Uses canonicalize when the path exists on disk; otherwise validates the
+/// joined path components do not escape via `..`.
+fn safe_join_check(base_dir: &Path, resolved: &Path, untrusted: &str) -> Result<(), ComputeError> {
+    let canonical = resolved
+        .canonicalize()
+        .unwrap_or_else(|_| resolved.to_path_buf());
+    let base_canonical = base_dir
+        .canonicalize()
+        .unwrap_or_else(|_| base_dir.to_path_buf());
+    if !canonical.starts_with(&base_canonical) {
+        return Err(ProcessError::SpawnFailed {
+            reason: format!("path traversal detected: {untrusted}"),
+        }
+        .into());
+    }
+    Ok(())
+}
+
+/// Join a base directory with an untrusted relative path, returning an error
+/// if the result would escape `base_dir`.
+fn safe_join(base_dir: &Path, untrusted: &str) -> Result<PathBuf, ComputeError> {
+    let joined = base_dir.join(untrusted);
+    safe_join_check(base_dir, &joined, untrusted)?;
+    Ok(joined)
 }
 
 // ---------------------------------------------------------------------------
@@ -1168,6 +1276,7 @@ mod tests {
             crun_binary: PathBuf::from("/bin/true"),
             runsc_binary: PathBuf::from("/bin/true"),
             base_dir: PathBuf::from("/tmp/vms"),
+            preferred_runtime: PathBuf::from("/bin/true"),
         };
         assert_eq!(rt.name(), "container (gVisor)");
     }
@@ -1178,6 +1287,7 @@ mod tests {
             crun_binary: PathBuf::from("/usr/local/bin/crun"),
             runsc_binary: PathBuf::from("/usr/local/bin/runsc"),
             base_dir: PathBuf::from("/run/syfrah/vms"),
+            preferred_runtime: PathBuf::from("/usr/local/bin/crun"),
         };
         assert_eq!(rt.crun_binary(), Path::new("/usr/local/bin/crun"));
         assert_eq!(rt.runsc_binary(), Path::new("/usr/local/bin/runsc"));
@@ -1226,6 +1336,7 @@ mod tests {
             crun_binary: PathBuf::from("/bin/true"),
             runsc_binary: PathBuf::from("/bin/true"),
             base_dir: tmp.path().to_path_buf(),
+            preferred_runtime: PathBuf::from("/bin/true"),
         };
         let handles = rt.reconnect(tmp.path()).await;
         assert!(handles.is_empty());
@@ -1237,6 +1348,7 @@ mod tests {
             crun_binary: PathBuf::from("/bin/false"),
             runsc_binary: PathBuf::from("/bin/false"),
             base_dir: PathBuf::from("/tmp/vms"),
+            preferred_runtime: PathBuf::from("/bin/false"),
         };
         let handle = RuntimeHandle {
             id: "ctr-dead".to_string(),
