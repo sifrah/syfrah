@@ -54,6 +54,9 @@ pub enum ImageError {
 
     #[error("invalid image name: {reason}")]
     InvalidImageName { reason: String },
+
+    #[error("image '{name}' has no container format. Use a catalog image with container support, or import an OCI image.")]
+    NoContainerFormat { name: String },
 }
 
 #[cfg(test)]
@@ -198,6 +201,16 @@ mod tests {
             path: "/opt/syfrah/vmlinux".to_string(),
         };
         assert!(e.to_string().contains("/opt/syfrah/vmlinux"));
+    }
+
+    #[test]
+    fn display_no_container_format() {
+        let e = ImageError::NoContainerFormat {
+            name: "test-import".to_string(),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("test-import"));
+        assert!(msg.contains("no container format"));
     }
 
     #[test]

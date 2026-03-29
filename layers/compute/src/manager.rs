@@ -453,6 +453,12 @@ impl VmManager {
                 // Container mode: pass the OCI tar.gz directly to the runtime.
                 // No clone, no cloud-init — the container runtime extracts
                 // the archive at create time.
+                if image_meta.container_file.is_none() {
+                    return Err(ImageError::NoContainerFormat {
+                        name: spec.image.clone(),
+                    }
+                    .into());
+                }
                 let oci_tar = store.image_dir().join(format!("{}-oci.tar.gz", spec.image));
 
                 // Create a minimal instance dir for metadata tracking.
