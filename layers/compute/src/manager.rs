@@ -6,14 +6,13 @@ use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, Mutex, RwLock};
 use tracing::info;
 
-use crate::client::ChClient;
 use crate::error::{ComputeError, ProcessError};
 use crate::events;
 use crate::image::store::ImageStore;
 use crate::image::types::{ImageCatalog, PullPolicy};
-use crate::process::{self, RuntimeDir};
+use crate::process;
 use crate::runtime::VmRuntimeState;
-use crate::runtime_backend::ComputeRuntime;
+use crate::runtime_backend::{ComputeRuntime, RuntimeSpec};
 use crate::runtime_ch;
 use crate::types::{VmEvent, VmId, VmSpec, VmStatus};
 
@@ -304,7 +303,7 @@ impl VmManager {
         self.runtime.name()
     }
 
-    /// Run health checks against KVM, CH binary, and kernel availability.
+    /// Run health checks by delegating to the active runtime backend.
     ///
     /// Returns `("healthy", [])` if everything is OK, or `("degraded", warnings)`
     /// if one or more prerequisites are missing.
@@ -312,11 +311,9 @@ impl VmManager {
     /// Results are cached for [`HEALTH_CHECK_TTL`] (30 s) to avoid repeated stat
     /// syscalls when the status endpoint is polled frequently.
     ///
-    /// NOTE: The path-existence checks here intentionally duplicate the logic in
-    /// `preflight.rs`. Preflight returns typed `PreflightError` variants (collected
-    /// into a `Vec<PreflightError>`) while health_check returns human-readable
-    /// warning strings. Extracting a shared helper would couple two different
-    /// error models for only 3 lines of savings.
+    /// Each runtime checks its own prerequisites:
+    /// - ChRuntime: KVM, CH binary, kernel
+    /// - ContainerRuntime: crun, runsc
     pub fn health_check(&self) -> (&'static str, Vec<String>) {
         // Return cached result if still fresh.
         {
@@ -331,22 +328,8 @@ impl VmManager {
             }
         }
 
-        // Cache miss — perform the stat checks.
-        // Pre-allocate for the 3 possible warnings to avoid a heap allocation
-        // on the happy path (with_capacity(0) is free; grows only if needed).
-        let mut warnings = Vec::with_capacity(3);
-
-        if !Path::new("/dev/kvm").exists() {
-            warnings.push("KVM not available — VMs cannot boot".to_string());
-        }
-
-        if !self.ch_binary.exists() {
-            warnings.push("cloud-hypervisor binary not found".to_string());
-        }
-
-        if !self.config.kernel_path.exists() {
-            warnings.push("kernel not found".to_string());
-        }
+        // Delegate to the active runtime for its specific health warnings.
+        let warnings = self.runtime.health_warnings();
 
         let status = if warnings.is_empty() {
             "healthy"
@@ -371,9 +354,10 @@ impl VmManager {
     /// Create and boot a new VM.
     ///
     /// 1. Checks that no VM with the same ID already exists.
-    /// 2. Calls `process::spawn_vm` (validate, resolve, preflight, spawn, boot).
-    /// 3. Inserts the runtime state into the map with `Arc<Mutex<_>>`.
-    /// 4. Emits `Created` and `Booted` events.
+    /// 2. Performs image management (pull, clone, cloud-init) if enabled.
+    /// 3. Builds a `RuntimeSpec` and delegates to `self.runtime.create()`.
+    /// 4. Inserts the runtime state into the map with `Arc<Mutex<_>>`.
+    /// 5. Emits `Created` and `Booted` events.
     pub async fn create_vm(&self, spec: VmSpec) -> Result<VmStatus, ComputeError> {
         let vm_id_str = spec.id.0.clone();
 
@@ -388,26 +372,179 @@ impl VmManager {
             }
         }
 
-        // Spawn (this is the heavy part — runs outside any lock on the map).
+        // -- Image management (pull, clone, cloud-init) -----------------------
+        // These steps stay in the manager; only the final spawn goes through
+        // the runtime trait.
         let catalog = self.catalog.read().await.clone();
-        let state = process::spawn_vm(
-            &spec,
-            &self.ch_binary,
-            &self.config.base_dir,
-            &self.config.image_dir,
-            &self.config.kernel_path,
-            if self.config.image_management {
-                Some(&self.image_store)
-            } else {
-                None
-            },
-            &catalog,
-            &self.config.pull_policy,
-            &self.config.instance_base,
-        )
-        .await?;
+        let mut instance_dir_path: Option<PathBuf> = None;
+        let mut instance_rootfs: Option<PathBuf> = None;
+        let mut cloud_init_path: Option<PathBuf> = None;
 
+        if self.config.image_management {
+            use crate::disk;
+            use crate::image;
+            use crate::image::error::ImageError;
+            use crate::image::types::{CloudInitConfig, InstanceId};
+
+            let store = &self.image_store;
+
+            // Image check/pull
+            let image_meta = match store.get(&spec.image)? {
+                Some(meta) => {
+                    info!(image = %spec.image, "image found in local cache");
+                    meta
+                }
+                None if self.config.pull_policy != PullPolicy::Never => {
+                    info!(image = %spec.image, "pulling image from catalog");
+                    image::pull::pull(store, &spec.image, &catalog).await?
+                }
+                None => {
+                    return Err(ImageError::ImageNotFound {
+                        name: spec.image.clone(),
+                    }
+                    .into());
+                }
+            };
+
+            // Arch validation
+            let node_arch = match std::env::consts::ARCH {
+                "x86_64" => "amd64",
+                "aarch64" => "arm64",
+                other => other,
+            };
+            if image_meta.arch != "unknown" && image_meta.arch != node_arch {
+                return Err(ImageError::ArchMismatch {
+                    image_arch: image_meta.arch.clone(),
+                    node_arch: node_arch.to_string(),
+                }
+                .into());
+            }
+
+            // Create instance dir
+            let instance_id = InstanceId::new();
+            let inst_dir = disk::InstanceDir::create(&self.config.instance_base, &instance_id)?;
+            let inst_path = inst_dir.path().to_path_buf();
+
+            // Clone base image
+            let base_image_path = store.image_path(&spec.image);
+            let min_disk = image_meta.min_disk_mb as u32;
+            let effective_size_bytes =
+                match disk::clone_image(&base_image_path, &inst_dir, spec.disk_size_mb, min_disk) {
+                    Ok(size) => {
+                        info!(
+                            vm_id = %vm_id_str,
+                            instance = %instance_id,
+                            "image cloned to instance dir"
+                        );
+                        size
+                    }
+                    Err(e) => {
+                        inst_dir.cleanup().ok();
+                        return Err(e.into());
+                    }
+                };
+
+            // Generate cloud-init (if applicable)
+            if image_meta.cloud_init && spec.ssh_key.is_some() {
+                let cloud_config = CloudInitConfig {
+                    hostname: vm_id_str.clone(),
+                    ssh_authorized_keys: vec![spec.ssh_key.clone().unwrap()],
+                    default_user: image_meta
+                        .default_username
+                        .clone()
+                        .unwrap_or_else(|| "ubuntu".to_string()),
+                    users: vec![],
+                    network_config: None,
+                    user_data_extra: None,
+                };
+                match disk::generate_cloud_init(&cloud_config, &inst_dir, &instance_id) {
+                    Ok(ci_path) => {
+                        info!(vm_id = %vm_id_str, "cloud-init config-drive generated");
+                        cloud_init_path = Some(ci_path);
+                    }
+                    Err(e) => {
+                        inst_dir.cleanup().ok();
+                        return Err(e.into());
+                    }
+                }
+            }
+
+            // Write instance metadata
+            let effective_mb = (effective_size_bytes / (1024 * 1024)) as u32;
+            let inst_meta = disk::InstanceMeta {
+                image_source: spec.image.clone(),
+                image_sha: image_meta.sha256.clone(),
+                arch: image_meta.arch.clone(),
+                requested_disk_size_mb: spec.disk_size_mb,
+                effective_disk_size_mb: effective_mb,
+                hostname: vm_id_str.clone(),
+                created_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+                    .to_string(),
+                vm_name: vm_id_str.clone(),
+            };
+            if let Err(e) = inst_dir.write_metadata(&inst_meta) {
+                inst_dir.cleanup().ok();
+                return Err(e.into());
+            }
+
+            instance_rootfs = Some(inst_dir.rootfs_path());
+            instance_dir_path = Some(inst_path);
+        }
+
+        // -- Build RuntimeSpec and delegate to the runtime --------------------
+        let rootfs_path = if let Some(ref rootfs) = instance_rootfs {
+            rootfs.clone()
+        } else {
+            // When image management is disabled, use image name as path
+            // (same behaviour as before — resolve happens inside the runtime).
+            self.config.image_dir.join(format!("{}.raw", spec.image))
+        };
+
+        let runtime_spec = RuntimeSpec {
+            vcpus: spec.vcpus,
+            memory_mb: spec.memory_mb,
+            rootfs_path,
+            cloud_init_path,
+            network: spec.network.clone(),
+            gpu: spec.gpu.clone(),
+        };
+
+        let handle = match self.runtime.create(&vm_id_str, &runtime_spec).await {
+            Ok(h) => h,
+            Err(e) => {
+                // Cleanup instance dir on runtime failure.
+                if let Some(ref p) = instance_dir_path {
+                    let _ = std::fs::remove_dir_all(p);
+                }
+                return Err(e);
+            }
+        };
+
+        // -- Build VmRuntimeState from the RuntimeHandle ----------------------
         let now = now_unix();
+        let state = crate::runtime::VmRuntimeState {
+            vm_id: spec.id.clone(),
+            pid: handle.pid,
+            socket_path: handle.runtime_dir.join("api.sock"),
+            cgroup_path: None,
+            ch_binary_path: self.ch_binary.clone(),
+            ch_binary_version: process::get_ch_version(&self.ch_binary)
+                .unwrap_or_else(|| "unknown".to_string()),
+            vcpus: spec.vcpus,
+            memory_mb: spec.memory_mb,
+            launched_at: now,
+            last_ping_at: Some(now),
+            last_error: None,
+            current_phase: crate::phase::VmPhase::Running,
+            reconnect_source: crate::runtime::ReconnectSource::FreshSpawn,
+            image_name: Some(spec.image.clone()),
+            instance_dir_path,
+            runtime_handle: Some(handle),
+        };
+
         let status = state.to_status(now);
         let image_name = spec.image.clone();
 
@@ -440,18 +577,17 @@ impl VmManager {
         Ok(status)
     }
 
-    /// Shut down a running VM via the 4-level kill chain.
+    /// Shut down a running VM via the runtime backend.
     ///
-    /// Acquires the VM's mutex, calls `process::kill_vm`, and emits a
+    /// Acquires the VM's mutex, delegates to `self.runtime.stop()`, and emits a
     /// `Stopped` event on success.
     pub async fn shutdown_vm(&self, id: &str) -> Result<(), ComputeError> {
         let vm_arc = self.get_vm(id).await?;
         let mut guard = vm_arc.lock().await;
 
-        let runtime_dir = RuntimeDir::from_existing(self.config.base_dir.join(id));
-        let client = ChClient::new(guard.socket_path.clone());
-
-        process::kill_vm(&mut guard, &client, &runtime_dir).await?;
+        let handle = guard.to_runtime_handle(&self.config.base_dir);
+        self.runtime.stop(&handle, false).await?;
+        guard.current_phase = crate::phase::VmPhase::Stopped;
 
         events::emit(
             &self.event_tx,
@@ -468,10 +604,9 @@ impl VmManager {
         let vm_arc = self.get_vm(id).await?;
         let mut guard = vm_arc.lock().await;
 
-        let runtime_dir = RuntimeDir::from_existing(self.config.base_dir.join(id));
-        let client = ChClient::new(guard.socket_path.clone());
-
-        process::kill_vm_force(&mut guard, &client, &runtime_dir).await?;
+        let handle = guard.to_runtime_handle(&self.config.base_dir);
+        self.runtime.stop(&handle, true).await?;
+        guard.current_phase = crate::phase::VmPhase::Stopped;
 
         events::emit(
             &self.event_tx,
@@ -501,16 +636,17 @@ impl VmManager {
         retain_disk: bool,
     ) -> Result<(), ComputeError> {
         let vm_arc = self.get_vm(id).await?;
-        let mut guard = vm_arc.lock().await;
-
-        let runtime_dir = RuntimeDir::from_existing(self.config.base_dir.join(id));
-        let client = ChClient::new(guard.socket_path.clone());
+        let guard = vm_arc.lock().await;
 
         // Capture image name before delete for refcount tracking.
         let image_name = guard.image_name.clone();
         let instance_dir_path = guard.instance_dir_path.clone();
 
-        process::delete_vm(&mut guard, &client, &runtime_dir).await?;
+        let handle = guard.to_runtime_handle(&self.config.base_dir);
+        drop(guard);
+
+        // Delegate to the runtime backend for stop + cleanup of runtime artifacts.
+        self.runtime.delete(&handle).await?;
 
         // Clean up instance directory (if image management was used).
         if let Some(ref inst_path) = instance_dir_path {
@@ -530,9 +666,6 @@ impl VmManager {
                 info!(path = %inst_path.display(), "instance directory cleaned up");
             }
         }
-
-        // Drop the guard before acquiring the write lock on the map.
-        drop(guard);
 
         {
             let mut map = self.vms.write().await;

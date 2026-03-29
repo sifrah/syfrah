@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use crate::phase::VmPhase;
+use crate::runtime_backend::{RuntimeHandle, RuntimeType};
 use crate::types::{VmId, VmStatus};
 
 /// How this VM's runtime state was established.
@@ -43,10 +44,26 @@ pub(crate) struct VmRuntimeState {
     pub(crate) image_name: Option<String>,
     /// Path to the instance directory (for cleanup on delete).
     pub(crate) instance_dir_path: Option<PathBuf>,
+    /// Handle returned by the runtime backend that created this workload.
+    pub(crate) runtime_handle: Option<RuntimeHandle>,
 }
 
 #[allow(dead_code)]
 impl VmRuntimeState {
+    /// Build a `RuntimeHandle` from this state, using the stored handle if
+    /// available, or constructing one from the pid / base_dir.
+    pub(crate) fn to_runtime_handle(&self, base_dir: &std::path::Path) -> RuntimeHandle {
+        if let Some(ref h) = self.runtime_handle {
+            return h.clone();
+        }
+        RuntimeHandle {
+            id: self.vm_id.0.clone(),
+            pid: self.pid,
+            runtime_type: RuntimeType::Vm,
+            runtime_dir: base_dir.join(&self.vm_id.0),
+        }
+    }
+
     /// Produce the public external view of this VM's state.
     ///
     /// This is what forge and the control plane see. Internal details like
@@ -91,6 +108,7 @@ mod tests {
             reconnect_source: ReconnectSource::FreshSpawn,
             image_name: None,
             instance_dir_path: None,
+            runtime_handle: None,
         }
     }
 
