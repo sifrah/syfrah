@@ -10,6 +10,7 @@ use tracing::info;
 use super::error::ImageError;
 use super::store::ImageStore;
 use super::types::{ImageCatalog, ImageMeta, RuntimeMode};
+use crate::config::validate_name;
 
 /// Pull an image from the catalog, streaming download + gzip decompress +
 /// SHA256 verify. Idempotent: if the image already exists locally with the
@@ -19,6 +20,10 @@ pub async fn pull(
     name: &str,
     catalog: &ImageCatalog,
 ) -> Result<ImageMeta, ImageError> {
+    validate_name(name, "image").map_err(|e| ImageError::InvalidImageName {
+        reason: e.to_string(),
+    })?;
+
     // 1. Find image in catalog
     let catalog_entry = catalog
         .images
@@ -75,6 +80,10 @@ pub async fn pull_for_runtime(
     catalog: &ImageCatalog,
     mode: &RuntimeMode,
 ) -> Result<ImageMeta, ImageError> {
+    validate_name(name, "image").map_err(|e| ImageError::InvalidImageName {
+        reason: e.to_string(),
+    })?;
+
     let catalog_entry = catalog
         .images
         .iter()

@@ -22,6 +22,7 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
+use crate::config::validate_name;
 use crate::error::ComputeError;
 use crate::manager::VmManager;
 use crate::types::{GpuMode, NetworkConfig, VmId, VmSpec, VmStatus, VolumeAttachment};
@@ -170,6 +171,12 @@ fn error_response(err: ComputeError) -> (StatusCode, Json<ErrorResponse>) {
     )
 }
 
+/// Validate a path-parameter ID using the shared name rules.
+fn validate_path_id(id: &str) -> Result<(), ComputeError> {
+    validate_name(id, "VM").map_err(ComputeError::Config)?;
+    Ok(())
+}
+
 fn parse_gpu_mode(req: Option<GpuModeRequest>) -> GpuMode {
     match req {
         None => GpuMode::None,
@@ -248,6 +255,9 @@ async fn list_vms(State(mgr): State<SharedManager>) -> impl IntoResponse {
 }
 
 async fn get_vm(State(mgr): State<SharedManager>, Path(id): Path<String>) -> impl IntoResponse {
+    if let Err(e) = validate_path_id(&id) {
+        return error_response(e).into_response();
+    }
     match mgr.info(&id).await {
         Ok(status) => (StatusCode::OK, Json(vm_status_to_response(&status))).into_response(),
         Err(e) => {
@@ -258,6 +268,9 @@ async fn get_vm(State(mgr): State<SharedManager>, Path(id): Path<String>) -> imp
 }
 
 async fn delete_vm(State(mgr): State<SharedManager>, Path(id): Path<String>) -> impl IntoResponse {
+    if let Err(e) = validate_path_id(&id) {
+        return error_response(e).into_response();
+    }
     match mgr.delete_vm(&id).await {
         Ok(()) => (
             StatusCode::OK,
@@ -274,14 +287,21 @@ async fn delete_vm(State(mgr): State<SharedManager>, Path(id): Path<String>) -> 
     }
 }
 
-async fn start_vm(State(_mgr): State<SharedManager>, Path(_id): Path<String>) -> impl IntoResponse {
+async fn start_vm(State(_mgr): State<SharedManager>, Path(id): Path<String>) -> impl IntoResponse {
+    if let Err(e) = validate_path_id(&id) {
+        return error_response(e).into_response();
+    }
     (
         StatusCode::NOT_IMPLEMENTED,
         Json(serde_json::json!({"error": "start is not yet implemented"})),
     )
+        .into_response()
 }
 
 async fn stop_vm(State(mgr): State<SharedManager>, Path(id): Path<String>) -> impl IntoResponse {
+    if let Err(e) = validate_path_id(&id) {
+        return error_response(e).into_response();
+    }
     match mgr.shutdown_vm(&id).await {
         Ok(()) => match mgr.info(&id).await {
             Ok(status) => (StatusCode::OK, Json(vm_status_to_response(&status))).into_response(),
@@ -305,24 +325,26 @@ async fn stop_vm(State(mgr): State<SharedManager>, Path(id): Path<String>) -> im
     }
 }
 
-async fn reboot_vm(
-    State(_mgr): State<SharedManager>,
-    Path(_id): Path<String>,
-) -> impl IntoResponse {
+async fn reboot_vm(State(_mgr): State<SharedManager>, Path(id): Path<String>) -> impl IntoResponse {
+    if let Err(e) = validate_path_id(&id) {
+        return error_response(e).into_response();
+    }
     (
         StatusCode::NOT_IMPLEMENTED,
         Json(serde_json::json!({"error": "reboot is not yet implemented"})),
     )
+        .into_response()
 }
 
-async fn resize_vm(
-    State(_mgr): State<SharedManager>,
-    Path(_id): Path<String>,
-) -> impl IntoResponse {
+async fn resize_vm(State(_mgr): State<SharedManager>, Path(id): Path<String>) -> impl IntoResponse {
+    if let Err(e) = validate_path_id(&id) {
+        return error_response(e).into_response();
+    }
     (
         StatusCode::NOT_IMPLEMENTED,
         Json(serde_json::json!({"error": "resize is not yet implemented"})),
     )
+        .into_response()
 }
 
 async fn get_status(State(mgr): State<SharedManager>) -> impl IntoResponse {
