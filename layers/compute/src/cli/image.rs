@@ -64,7 +64,7 @@ pub enum ImageCommand {
 pub async fn run(cmd: ImageCommand) -> anyhow::Result<()> {
     match cmd {
         ImageCommand::List { json } => run_list(json).await,
-        ImageCommand::Inspect { name, json: _ } => run_inspect(name).await,
+        ImageCommand::Inspect { name, json } => run_inspect(name, json).await,
         ImageCommand::Pull { name } => run_pull(name).await,
         ImageCommand::Import { path, name, arch } => run_import(path, name, arch).await,
         ImageCommand::Delete { name, yes } => run_delete(name, yes).await,
@@ -147,15 +147,18 @@ async fn run_list(json: bool) -> anyhow::Result<()> {
     }
 }
 
-async fn run_inspect(name: String) -> anyhow::Result<()> {
+async fn run_inspect(name: String, json: bool) -> anyhow::Result<()> {
     let req = ComputeRequest::ImageInspect { name };
-    let resp = send_compute_request(&control_socket_path(), &req)
-        .await
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "failed to connect to daemon: {e}\n\nIs the daemon running? Initialize with: syfrah fabric init --name <mesh-name>"
-            )
-        })?;
+    let resp = match send_compute_request(&control_socket_path(), &req).await {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = format!("failed to connect to daemon: {e}\n\nIs the daemon running? Initialize with: syfrah fabric init --name <mesh-name>");
+            if json {
+                super::json_error_exit(&msg);
+            }
+            anyhow::bail!("{msg}");
+        }
+    };
 
     match resp {
         ComputeResponse::ImageMeta(v) => {
@@ -163,9 +166,15 @@ async fn run_inspect(name: String) -> anyhow::Result<()> {
             Ok(())
         }
         ComputeResponse::Error(msg) => {
+            if json {
+                super::json_error_exit(&msg);
+            }
             anyhow::bail!("{msg}");
         }
         _ => {
+            if json {
+                super::json_error_exit("unexpected response from daemon");
+            }
             anyhow::bail!("unexpected response from daemon");
         }
     }

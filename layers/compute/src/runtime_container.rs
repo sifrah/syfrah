@@ -420,6 +420,8 @@ async fn prepare_rootfs(rootfs_path: &Path, runtime_dir: &Path) -> Result<PathBu
         .file_stem()
         .unwrap_or_default()
         .to_string_lossy()
+        .trim_end_matches(".tar")
+        .trim_end_matches("-oci")
         .to_string();
     Err(ProcessError::SpawnFailed {
         reason: format!(
