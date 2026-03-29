@@ -84,7 +84,9 @@ wait_daemon() {
     local i=0
     debug "waiting for daemon on $container (max ${max_wait}s)"
     while [ $i -lt "$max_wait" ]; do
-        if docker exec "$container" syfrah fabric status >/dev/null 2>&1; then
+        # Socket must exist AND daemon must respond
+        if docker exec "$container" test -S /root/.syfrah/control.sock 2>/dev/null \
+           && docker exec "$container" syfrah fabric status >/dev/null 2>&1; then
             debug "daemon ready on $container after ${i}s"
             return 0
         fi
