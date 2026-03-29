@@ -372,6 +372,16 @@ impl VmManager {
             }
         }
 
+        // -- Validate spec early (before image lookup) -------------------------
+        crate::config::validate(&spec).map_err(|errors| {
+            ComputeError::Config(
+                errors
+                    .into_iter()
+                    .next()
+                    .expect("at least one config error"),
+            )
+        })?;
+
         // -- Image management (pull, clone, cloud-init) -----------------------
         // These steps stay in the manager; only the final spawn goes through
         // the runtime trait.
@@ -402,8 +412,20 @@ impl VmManager {
                 }
                 None if self.config.pull_policy != PullPolicy::Never => {
                     info!(image = %spec.image, "pulling image from catalog");
-                    image::pull::pull_for_runtime(store, &spec.image, &catalog, &runtime_mode)
-                        .await?
+                    match image::pull::pull_for_runtime(store, &spec.image, &catalog, &runtime_mode)
+                        .await
+                    {
+                        Ok(meta) => meta,
+                        Err(ImageError::CatalogFetchFailed { reason, .. })
+                            if reason.contains("not found in catalog") =>
+                        {
+                            return Err(ImageError::ImageNotPulled {
+                                name: spec.image.clone(),
+                            }
+                            .into());
+                        }
+                        Err(e) => return Err(e.into()),
+                    }
                 }
                 None => {
                     return Err(ImageError::ImageNotFound {
@@ -431,6 +453,12 @@ impl VmManager {
                 // Container mode: pass the OCI tar.gz directly to the runtime.
                 // No clone, no cloud-init — the container runtime extracts
                 // the archive at create time.
+                if image_meta.container_file.is_none() {
+                    return Err(ImageError::NoContainerFormat {
+                        name: spec.image.clone(),
+                    }
+                    .into());
+                }
                 let oci_tar = store.image_dir().join(format!("{}-oci.tar.gz", spec.image));
 
                 // Create a minimal instance dir for metadata tracking.
