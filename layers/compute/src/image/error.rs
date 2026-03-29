@@ -7,6 +7,9 @@ pub enum ImageError {
     #[error("image not found: {name}")]
     ImageNotFound { name: String },
 
+    #[error("image '{name}' not found locally. Run: syfrah compute image pull {name}")]
+    ImageNotPulled { name: String },
+
     #[error("image already exists: {name}. To replace it, delete first with: syfrah compute image delete {name}")]
     ImageAlreadyExists { name: String },
 
@@ -66,6 +69,17 @@ mod tests {
             name: "ubuntu-24.04".to_string(),
         };
         assert!(e.to_string().contains("ubuntu-24.04"));
+    }
+
+    #[test]
+    fn display_image_not_pulled() {
+        let e = ImageError::ImageNotPulled {
+            name: "alpine-3.20".to_string(),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("alpine-3.20"));
+        assert!(msg.contains("not found locally"));
+        assert!(msg.contains("syfrah compute image pull alpine-3.20"));
     }
 
     #[test]
