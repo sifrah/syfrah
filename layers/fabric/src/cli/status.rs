@@ -96,6 +96,14 @@ pub async fn run(opts: StatusOpts) -> Result<()> {
     }
     println!();
 
+    // TODO(#644): Add compute summary (runtime type, VM count, running VMs)
+    // to fabric status output. This requires cross-layer integration:
+    // the fabric daemon would need to query the compute layer's control
+    // socket (ComputeRequest::Status) and merge the response into the
+    // fabric status view. Skipped for now because fabric cannot depend
+    // on compute (lower layers never depend on higher layers). A shared
+    // status aggregation mechanism is needed first.
+
     // ── Peers section ───────────────────────────────────────────────
     let total = state.peers.len();
     let active = state
