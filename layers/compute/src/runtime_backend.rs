@@ -35,6 +35,8 @@ pub struct RuntimeSpec {
     pub network: Option<NetworkConfig>,
     /// GPU passthrough mode.
     pub gpu: GpuMode,
+    /// Image name (passed through so container meta can persist it for reconnect).
+    pub image_name: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -58,6 +60,8 @@ pub struct RuntimeHandle {
     pub memory_mb: Option<u32>,
     /// Original launch time as Unix epoch seconds (populated from metadata during reconnect).
     pub launched_at: Option<u64>,
+    /// Image name used to create this workload (populated from metadata during reconnect).
+    pub image_name: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -175,6 +179,7 @@ mod tests {
             cloud_init_path: None,
             network: None,
             gpu: GpuMode::None,
+            image_name: None,
         };
         let cloned = spec.clone();
         assert_eq!(cloned.vcpus, 4);
@@ -191,6 +196,7 @@ mod tests {
             vcpus: None,
             memory_mb: None,
             launched_at: None,
+            image_name: None,
         };
         let cloned = handle.clone();
         assert_eq!(cloned.id, "vm-1");

@@ -175,6 +175,7 @@ impl ComputeRuntime for ChRuntime {
                     vcpus: None,
                     memory_mb: None,
                     launched_at: None,
+                    image_name: None,
                 };
                 info!(
                     vm_id = %id,
@@ -377,6 +378,7 @@ impl ComputeRuntime for ChRuntime {
                     vcpus: None,
                     memory_mb: None,
                     launched_at: None,
+                    image_name: None,
                 });
             }
         }
@@ -479,6 +481,7 @@ mod tests {
             vcpus: None,
             memory_mb: None,
             launched_at: None,
+            image_name: None,
         };
         assert!(!rt.is_alive(&handle).await);
     }
