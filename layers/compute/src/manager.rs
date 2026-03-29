@@ -661,23 +661,30 @@ impl VmManager {
             return Ok(guard.to_status(now_unix()));
         }
 
-        if guard.current_phase != crate::phase::VmPhase::Stopped {
-            return Err(crate::phase::TransitionError {
-                from: guard.current_phase,
-                to: crate::phase::VmPhase::Running,
-            }
-            .into());
-        }
+        // Transition Stopped -> Starting (validates via state machine).
+        guard.current_phase = guard
+            .current_phase
+            .transition(crate::phase::VmPhase::Starting)?;
 
         let handle = guard.to_runtime_handle(&self.config.base_dir);
-        let new_handle = self.runtime.start(&handle).await?;
+        let new_handle = match self.runtime.start(&handle).await {
+            Ok(h) => h,
+            Err(e) => {
+                guard.current_phase = crate::phase::VmPhase::Failed;
+                return Err(e);
+            }
+        };
+
+        // Transition Starting -> Running.
+        guard.current_phase = guard
+            .current_phase
+            .transition(crate::phase::VmPhase::Running)?;
 
         let now = now_unix();
         guard.pid = new_handle.pid;
         guard.launched_at = now;
         guard.last_ping_at = Some(now);
         guard.last_error = None;
-        guard.current_phase = crate::phase::VmPhase::Running;
         guard.runtime_handle = Some(new_handle);
 
         let status = guard.to_status(now);

@@ -959,21 +959,32 @@ impl ComputeRuntime for ContainerRuntime {
             serde_json::from_str(&state_json).map_err(|e| ProcessError::SpawnFailed {
                 reason: format!("failed to parse runtime state JSON: {e}"),
             })?;
-        let pid = state["pid"].as_u64().unwrap_or(0) as u32;
+        let pid =
+            state["pid"]
+                .as_u64()
+                .filter(|&p| p > 0)
+                .ok_or_else(|| ProcessError::SpawnFailed {
+                    reason: "runtime state missing valid pid".to_string(),
+                })? as u32;
 
         // Update meta.json with new timestamp and PID.
         let now = chrono_now_iso8601();
         let meta_path = handle.runtime_dir.join("meta.json");
-        if let Ok(old_meta) = read_container_meta(&handle.runtime_dir) {
-            let meta = ContainerMeta {
-                pid,
-                created_at: now,
-                ..old_meta
-            };
-            if let Ok(json) = serde_json::to_string_pretty(&meta) {
-                let _ = tokio::fs::write(&meta_path, json).await;
-            }
-        }
+        let old_meta = read_container_meta(&handle.runtime_dir)?;
+        let meta = ContainerMeta {
+            pid,
+            created_at: now,
+            ..old_meta
+        };
+        let meta_json =
+            serde_json::to_string_pretty(&meta).map_err(|e| ProcessError::SpawnFailed {
+                reason: format!("failed to serialize meta.json: {e}"),
+            })?;
+        tokio::fs::write(&meta_path, meta_json)
+            .await
+            .map_err(|e| ProcessError::SpawnFailed {
+                reason: format!("failed to write meta.json: {e}"),
+            })?;
 
         info!(
             container_id = %handle.id,
