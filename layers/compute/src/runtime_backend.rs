@@ -52,6 +52,12 @@ pub struct RuntimeHandle {
     pub runtime_type: RuntimeType,
     /// Path to the runtime directory containing socket, PID file, metadata.
     pub runtime_dir: PathBuf,
+    /// Number of virtual CPUs (populated from metadata during reconnect).
+    pub vcpus: Option<u32>,
+    /// Memory allocation in megabytes (populated from metadata during reconnect).
+    pub memory_mb: Option<u32>,
+    /// Original launch time as Unix epoch seconds (populated from metadata during reconnect).
+    pub launched_at: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -182,6 +188,9 @@ mod tests {
             pid: 1234,
             runtime_type: RuntimeType::Vm,
             runtime_dir: PathBuf::from("/run/syfrah/vms/vm-1"),
+            vcpus: None,
+            memory_mb: None,
+            launched_at: None,
         };
         let cloned = handle.clone();
         assert_eq!(cloned.id, "vm-1");
