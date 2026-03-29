@@ -84,28 +84,175 @@ pub async fn pull_for_runtime(
             reason: format!("image '{name}' not found in catalog"),
         })?;
 
-    // For container mode, check if an OCI variant is available
+    // For container mode, download the OCI variant if available.
     if *mode == RuntimeMode::Container {
-        if let Some(container_file) = &catalog_entry.container_file {
+        if let (Some(container_file), Some(container_sha)) = (
+            &catalog_entry.container_file,
+            &catalog_entry.container_sha256,
+        ) {
             info!(
                 name,
                 container_file = %container_file,
-                "container mode: OCI image available, pulling container variant"
+                "container mode: pulling OCI container variant"
             );
-            // Fall through to normal pull, which downloads the VM variant.
-            // The container file URL is recorded in the metadata for the
-            // runtime to fetch separately when needed.
-        } else {
-            info!(
-                name,
-                "container mode requested but no OCI variant available, falling back to VM image"
-            );
+
+            // Check if already present with matching container SHA (idempotent).
+            let oci_path = store.container_image_path(name);
+            if let Some(existing) = store.get(name)? {
+                if existing.container_sha256.as_deref() == Some(container_sha) && oci_path.exists()
+                {
+                    info!(
+                        name,
+                        "OCI image already present with matching SHA, skipping pull"
+                    );
+                    return Ok(existing);
+                }
+            }
+
+            // Acquire file lock.
+            let lock_path = store.image_dir().join(".lock");
+            let lock_file = File::create(&lock_path).map_err(|e| ImageError::ImportFailed {
+                reason: format!("failed to create lock file: {e}"),
+            })?;
+            lock_file
+                .lock_exclusive()
+                .map_err(|e| ImageError::ImportFailed {
+                    reason: format!("failed to acquire lock: {e}"),
+                })?;
+
+            let result = pull_oci(store, name, catalog_entry, &catalog.base_url).await;
+
+            let _ = lock_file.unlock();
+            drop(lock_file);
+
+            return result;
         }
+
+        info!(
+            name,
+            "container mode requested but no OCI variant available, falling back to VM image"
+        );
     }
 
-    // Delegate to the standard pull, which downloads the VM raw image and
-    // records the container_file/container_sha256 in metadata.
+    // Default: download the VM raw image.
     pull(store, name, catalog).await
+}
+
+/// Download the OCI container variant of an image.
+///
+/// Unlike [`pull_inner`] which downloads and decompresses the `.raw.gz`, this
+/// stores the `.tar.gz` as-is (the container runtime extracts it at create
+/// time). The SHA-256 is verified against `container_sha256`.
+async fn pull_oci(
+    store: &ImageStore,
+    name: &str,
+    catalog_entry: &ImageMeta,
+    base_url: &str,
+) -> Result<ImageMeta, ImageError> {
+    let container_file = catalog_entry
+        .container_file
+        .as_deref()
+        .expect("pull_oci called without container_file");
+    let expected_sha = catalog_entry
+        .container_sha256
+        .as_deref()
+        .expect("pull_oci called without container_sha256");
+
+    let download_url = format!("{}/{}", base_url.trim_end_matches('/'), container_file);
+    super::catalog::validate_url(&download_url)?;
+
+    info!(name, url = %download_url, "starting OCI image download");
+
+    let response =
+        reqwest::get(&download_url)
+            .await
+            .map_err(|e| ImageError::CatalogFetchFailed {
+                url: download_url.clone(),
+                reason: format!("HTTP request failed: {e}"),
+            })?;
+
+    if !response.status().is_success() {
+        return Err(ImageError::CatalogFetchFailed {
+            url: download_url,
+            reason: format!("HTTP status {}", response.status()),
+        });
+    }
+
+    // Stream to a temp file (keep as-is, no decompression).
+    let oci_path = store.container_image_path(name);
+    let tmp_path = oci_path.with_extension("tar.gz.tmp");
+    let mut tmp_file = File::create(&tmp_path).map_err(|e| ImageError::ImportFailed {
+        reason: format!("failed to create temp file: {e}"),
+    })?;
+
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| ImageError::CatalogFetchFailed {
+            url: download_url.clone(),
+            reason: format!("download stream error: {e}"),
+        })?;
+        tmp_file
+            .write_all(&chunk)
+            .map_err(|e| ImageError::ImportFailed {
+                reason: format!("failed to write to temp file: {e}"),
+            })?;
+    }
+
+    tmp_file.sync_all().map_err(|e| ImageError::ImportFailed {
+        reason: format!("fsync failed: {e}"),
+    })?;
+    drop(tmp_file);
+
+    // SHA-256 verify.
+    let actual_sha = compute_sha256(&tmp_path)?;
+    info!(name, sha256 = %actual_sha, "OCI image SHA256 computed");
+
+    if actual_sha != expected_sha {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(ImageError::ChecksumMismatch {
+            expected: expected_sha.to_string(),
+            actual: actual_sha,
+        });
+    }
+
+    info!(name, "OCI image SHA256 verified");
+
+    // Rename to final path: {image_dir}/{name}-oci.tar.gz
+    let final_path = store.image_dir().join(format!("{name}-oci.tar.gz"));
+    fs::rename(&tmp_path, &final_path).map_err(|e| ImageError::ImportFailed {
+        reason: format!("failed to rename temp to final: {e}"),
+    })?;
+
+    // Update images.json — store with format "oci" so downstream can tell
+    // which variant was pulled.
+    let meta = ImageMeta {
+        name: name.to_string(),
+        arch: catalog_entry.arch.clone(),
+        os_family: catalog_entry.os_family.clone(),
+        variant: catalog_entry.variant.clone(),
+        format: "oci".to_string(),
+        compression: Some("gzip".to_string()),
+        boot_mode: catalog_entry.boot_mode.clone(),
+        sha256: catalog_entry.sha256.clone(),
+        size_mb: catalog_entry.size_mb,
+        min_disk_mb: catalog_entry.min_disk_mb,
+        cloud_init: catalog_entry.cloud_init,
+        default_username: catalog_entry.default_username.clone(),
+        rootfs_fs: catalog_entry.rootfs_fs.clone(),
+        source_kind: "catalog".to_string(),
+        file: catalog_entry.file.clone(),
+        container_file: catalog_entry.container_file.clone(),
+        container_sha256: Some(actual_sha),
+        imported_at: Some(chrono_now()),
+    };
+
+    let mut images = store.read_metadata()?;
+    images.retain(|i| i.name != name);
+    images.push(meta.clone());
+    store.write_metadata(&images)?;
+
+    info!(name, "OCI image pull complete");
+    Ok(meta)
 }
 
 async fn pull_inner(
@@ -530,5 +677,102 @@ mod tests {
 
         let result = pull(&store, "unreachable", &catalog).await;
         assert!(matches!(result, Err(ImageError::CatalogFetchFailed { .. })));
+    }
+
+    #[tokio::test]
+    async fn pull_for_runtime_container_downloads_oci() {
+        use crate::image::types::RuntimeMode;
+
+        let tmp = TempDir::new().unwrap();
+        let store = ImageStore::new(tmp.path().to_path_buf());
+
+        let oci_data = b"fake OCI tar.gz content";
+        let oci_sha = compute_sha_of_bytes(oci_data);
+
+        let base_url =
+            start_test_server(vec![("alpine-oci.tar.gz".to_string(), oci_data.to_vec())]).await;
+
+        let mut entry = sample_catalog_entry("alpine", "vm_sha", "images/alpine.raw");
+        entry.container_file = Some("images/alpine-oci.tar.gz".to_string());
+        entry.container_sha256 = Some(oci_sha.clone());
+
+        let catalog = ImageCatalog {
+            version: 1,
+            base_url: base_url.clone(),
+            images: vec![entry],
+        };
+
+        let meta = pull_for_runtime(&store, "alpine", &catalog, &RuntimeMode::Container)
+            .await
+            .unwrap();
+
+        assert_eq!(meta.format, "oci");
+        assert_eq!(meta.container_sha256.as_deref(), Some(oci_sha.as_str()));
+
+        // The OCI tar.gz should exist on disk.
+        let oci_path = tmp.path().join("alpine-oci.tar.gz");
+        assert!(oci_path.exists());
+        let stored = std::fs::read(&oci_path).unwrap();
+        assert_eq!(stored, oci_data);
+    }
+
+    #[tokio::test]
+    async fn pull_for_runtime_container_fallback_to_vm() {
+        use crate::image::types::RuntimeMode;
+
+        let tmp = TempDir::new().unwrap();
+        let store = ImageStore::new(tmp.path().to_path_buf());
+
+        let raw_data = b"fake raw image";
+        let sha = compute_sha_of_bytes(raw_data);
+
+        let base_url = start_test_server(vec![("alpine.raw".to_string(), raw_data.to_vec())]).await;
+
+        // No container_file — should fall back to VM variant.
+        let entry = sample_catalog_entry("alpine", &sha, "images/alpine.raw");
+
+        let catalog = ImageCatalog {
+            version: 1,
+            base_url: base_url.clone(),
+            images: vec![entry],
+        };
+
+        let meta = pull_for_runtime(&store, "alpine", &catalog, &RuntimeMode::Container)
+            .await
+            .unwrap();
+
+        assert_eq!(meta.format, "raw");
+        assert!(store.image_path("alpine").exists());
+    }
+
+    #[tokio::test]
+    async fn pull_for_runtime_vm_mode_uses_raw() {
+        use crate::image::types::RuntimeMode;
+
+        let tmp = TempDir::new().unwrap();
+        let store = ImageStore::new(tmp.path().to_path_buf());
+
+        let raw_data = b"fake raw image for vm mode";
+        let sha = compute_sha_of_bytes(raw_data);
+
+        let base_url = start_test_server(vec![("test.raw".to_string(), raw_data.to_vec())]).await;
+
+        let mut entry = sample_catalog_entry("test-image", &sha, "images/test.raw");
+        entry.container_file = Some("images/test-oci.tar.gz".to_string());
+        entry.container_sha256 = Some("oci_sha".to_string());
+
+        let catalog = ImageCatalog {
+            version: 1,
+            base_url: base_url.clone(),
+            images: vec![entry],
+        };
+
+        // VM mode should download .raw, not OCI.
+        let meta = pull_for_runtime(&store, "test-image", &catalog, &RuntimeMode::Vm)
+            .await
+            .unwrap();
+
+        assert_eq!(meta.format, "raw");
+        assert!(store.image_path("test-image").exists());
     }
 }
