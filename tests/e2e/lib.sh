@@ -76,14 +76,15 @@ start_node() {
     E2E_CONTAINERS+=("$name")
 }
 
-# Wait for the syfrah daemon control socket to appear. Args: <container>
+# Wait for the syfrah daemon to be responsive. Args: <container> [max_wait]
+# Checks both socket existence AND that the daemon actually responds to commands.
 wait_daemon() {
     local container="$1"
     local max_wait="${2:-30}"
     local i=0
     debug "waiting for daemon on $container (max ${max_wait}s)"
     while [ $i -lt "$max_wait" ]; do
-        if docker exec "$container" test -S /root/.syfrah/control.sock 2>/dev/null; then
+        if docker exec "$container" syfrah fabric status >/dev/null 2>&1; then
             debug "daemon ready on $container after ${i}s"
             return 0
         fi
@@ -165,6 +166,19 @@ leave_mesh() {
 stop_daemon() {
     local container="$1"
     docker exec "$container" syfrah fabric stop 2>&1 || true
+}
+
+# Ensure daemon is alive on a container, restarting it if needed. Args: <container>
+ensure_daemon() {
+    local container="$1"
+    if docker exec "$container" syfrah fabric status >/dev/null 2>&1; then
+        return 0
+    fi
+    debug "ensure_daemon: daemon not responding on $container, restarting"
+    # Clean up stale socket if present
+    docker exec "$container" rm -f /root/.syfrah/control.sock 2>/dev/null || true
+    docker exec -d "$container" syfrah fabric start
+    wait_daemon "$container"
 }
 
 # ── Assertions ────────────────────────────────────────────────

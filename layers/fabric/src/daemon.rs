@@ -697,6 +697,15 @@ pub async fn run_daemon(
     mesh_secret: MeshSecret,
     peering_port: u16,
 ) -> anyhow::Result<()> {
+    // Ignore SIGPIPE so the daemon is not killed when writing to a
+    // disconnected TCP socket (e.g. a join client that timed out).
+    // The binary's main() sets SIGPIPE to SIG_DFL for CLI piping, but
+    // a long-running daemon must not be terminated by broken pipes.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
+
     // Ensure ring is installed as the global CryptoProvider. This is needed
     // because rustls 0.23 no longer auto-selects a provider at runtime.
     let _ = rustls::crypto::ring::default_provider().install_default();
