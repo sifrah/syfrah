@@ -899,7 +899,13 @@ impl ComputeRuntime for ContainerRuntime {
             serde_json::from_str(&state_json).map_err(|e| ProcessError::SpawnFailed {
                 reason: format!("failed to parse runtime state JSON: {e}"),
             })?;
-        let pid = state["pid"].as_u64().unwrap_or(0) as u32;
+        let pid =
+            state["pid"]
+                .as_u64()
+                .filter(|&p| p > 0)
+                .ok_or_else(|| ProcessError::SpawnFailed {
+                    reason: "runtime state missing valid pid".to_string(),
+                })? as u32;
 
         // 7. Write meta.json for reconnect.
         let now = chrono_now_iso8601();
@@ -1100,7 +1106,13 @@ impl ComputeRuntime for ContainerRuntime {
             })?;
 
         let status = state["status"].as_str().unwrap_or("unknown");
-        let pid = state["pid"].as_u64().unwrap_or(0) as u32;
+        let pid =
+            state["pid"]
+                .as_u64()
+                .filter(|&p| p > 0)
+                .ok_or_else(|| ProcessError::SpawnFailed {
+                    reason: "runtime state missing valid pid".to_string(),
+                })? as u32;
 
         let phase = match status {
             "creating" => VmPhase::Pending,
