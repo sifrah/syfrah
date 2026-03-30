@@ -916,7 +916,7 @@ impl ComputeRuntime for ContainerRuntime {
             container_id: id.to_string(),
             created_at: now,
             pid,
-            runtime_type: "container".to_string(),
+            runtime_type: RuntimeType::Container.to_string(),
             vcpus: spec.vcpus,
             memory_mb: spec.memory_mb,
             image_name: spec.image_name.clone(),
@@ -1410,7 +1410,7 @@ mod tests {
             container_id: "ctr-1".to_string(),
             created_at: "2026-01-15T10:30:00Z".to_string(),
             pid: 42,
-            runtime_type: "container".to_string(),
+            runtime_type: RuntimeType::Container.to_string(),
             vcpus: 2,
             memory_mb: 512,
             image_name: Some("ubuntu-24.04".to_string()),
@@ -1419,7 +1419,7 @@ mod tests {
         let back: ContainerMeta = serde_json::from_str(&json).unwrap();
         assert_eq!(back.container_id, "ctr-1");
         assert_eq!(back.pid, 42);
-        assert_eq!(back.runtime_type, "container");
+        assert_eq!(back.runtime_type, RuntimeType::Container.to_string());
     }
 
     #[test]
@@ -1538,7 +1538,7 @@ mod tests {
             container_id: "ctr-2".to_string(),
             created_at: "2026-01-01T00:00:00Z".to_string(),
             pid: 100,
-            runtime_type: "container".to_string(),
+            runtime_type: RuntimeType::Container.to_string(),
             vcpus: 1,
             memory_mb: 256,
             image_name: None,

