@@ -73,6 +73,27 @@ pub enum RuntimeType {
     Container,
 }
 
+impl std::fmt::Display for RuntimeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RuntimeType::Vm => f.write_str("vm"),
+            RuntimeType::Container => f.write_str("container"),
+        }
+    }
+}
+
+impl std::str::FromStr for RuntimeType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "vm" => Ok(RuntimeType::Vm),
+            "container" => Ok(RuntimeType::Container),
+            other => Err(format!("unknown runtime type: {other}")),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // RuntimeInfo — status information about a workload
 // ---------------------------------------------------------------------------
@@ -152,6 +173,22 @@ pub trait ComputeRuntime: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_type_display() {
+        assert_eq!(RuntimeType::Vm.to_string(), "vm");
+        assert_eq!(RuntimeType::Container.to_string(), "container");
+    }
+
+    #[test]
+    fn runtime_type_from_str() {
+        assert_eq!("vm".parse::<RuntimeType>(), Ok(RuntimeType::Vm));
+        assert_eq!(
+            "container".parse::<RuntimeType>(),
+            Ok(RuntimeType::Container)
+        );
+        assert!("unknown".parse::<RuntimeType>().is_err());
+    }
 
     #[test]
     fn runtime_type_serde_roundtrip() {
