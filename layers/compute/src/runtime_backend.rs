@@ -35,6 +35,8 @@ pub struct RuntimeSpec {
     pub network: Option<NetworkConfig>,
     /// GPU passthrough mode.
     pub gpu: GpuMode,
+    /// Image name (passed through so container meta can persist it for reconnect).
+    pub image_name: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -58,6 +60,8 @@ pub struct RuntimeHandle {
     pub memory_mb: Option<u32>,
     /// Original launch time as Unix epoch seconds (populated from metadata during reconnect).
     pub launched_at: Option<u64>,
+    /// Image name used to create this workload (populated from metadata during reconnect).
+    pub image_name: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -71,6 +75,27 @@ pub enum RuntimeType {
     Vm,
     /// Container (crun + gVisor). Reserved for future use.
     Container,
+}
+
+impl std::fmt::Display for RuntimeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RuntimeType::Vm => f.write_str("vm"),
+            RuntimeType::Container => f.write_str("container"),
+        }
+    }
+}
+
+impl std::str::FromStr for RuntimeType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "vm" => Ok(RuntimeType::Vm),
+            "container" => Ok(RuntimeType::Container),
+            other => Err(format!("unknown runtime type: {other}")),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +179,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn runtime_type_display() {
+        assert_eq!(RuntimeType::Vm.to_string(), "vm");
+        assert_eq!(RuntimeType::Container.to_string(), "container");
+    }
+
+    #[test]
+    fn runtime_type_from_str() {
+        assert_eq!("vm".parse::<RuntimeType>(), Ok(RuntimeType::Vm));
+        assert_eq!(
+            "container".parse::<RuntimeType>(),
+            Ok(RuntimeType::Container)
+        );
+        assert!("unknown".parse::<RuntimeType>().is_err());
+    }
+
+    #[test]
     fn runtime_type_serde_roundtrip() {
         let vm = RuntimeType::Vm;
         let json = serde_json::to_string(&vm).unwrap();
@@ -175,6 +216,7 @@ mod tests {
             cloud_init_path: None,
             network: None,
             gpu: GpuMode::None,
+            image_name: None,
         };
         let cloned = spec.clone();
         assert_eq!(cloned.vcpus, 4);
@@ -191,6 +233,7 @@ mod tests {
             vcpus: None,
             memory_mb: None,
             launched_at: None,
+            image_name: None,
         };
         let cloned = handle.clone();
         assert_eq!(cloned.id, "vm-1");
