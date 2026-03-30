@@ -582,6 +582,7 @@ impl VmManager {
             cloud_init_path,
             network: spec.network.clone(),
             gpu: spec.gpu.clone(),
+            image_name: Some(spec.image.clone()),
         };
 
         let handle = match self.runtime.create(&vm_id_str, &runtime_spec).await {
@@ -884,7 +885,7 @@ impl VmManager {
                     last_error: None,
                     current_phase: crate::phase::VmPhase::Running,
                     reconnect_source: crate::runtime::ReconnectSource::Recovered,
-                    image_name: None,
+                    image_name: handle.image_name.clone(),
                     instance_dir_path: None,
                     runtime_handle: Some(handle),
                 };
