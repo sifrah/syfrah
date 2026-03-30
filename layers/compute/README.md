@@ -2,9 +2,9 @@
 
 ## What is the compute layer?
 
-The compute layer is the **Cloud Hypervisor driver**. It owns the full lifecycle of a VM: create, start, stop, resize, delete, reconnect. Forge tells it what to do, compute knows how.
+The compute layer owns the full lifecycle of a workload: create, start, stop, resize, delete, reconnect. It automatically selects the best available runtime — **Cloud Hypervisor** (primary, when KVM is available) for full VM isolation, or **crun + gVisor** (fallback, when KVM is absent) for container-based isolation. Forge tells it what to do, compute knows how.
 
-Compute is not an orchestrator, not a scheduler, not a reconciliation loop. It is the specialist that interfaces with [Cloud Hypervisor](https://github.com/cloud-hypervisor/cloud-hypervisor) and manages VM processes on a single node.
+Compute is not an orchestrator, not a scheduler, not a reconciliation loop. It is the specialist that manages workload processes on a single node, abstracting the underlying runtime so that all commands work identically regardless of whether the host supports hardware virtualization.
 
 ### Responsibility boundaries
 
@@ -16,10 +16,10 @@ Compute is not an orchestrator, not a scheduler, not a reconciliation loop. It i
       |-- "Delete this VM"          --> Compute.delete(id)
       |-- "What VMs are running?"   --> Compute.list() / Compute.info(id)
       |
-    Compute (Cloud Hypervisor driver)
+    Compute (runtime driver)
       |
-      |-- spawns cloud-hypervisor processes
-      |-- talks to per-VM REST API (Unix socket)
+      |-- selects runtime: Cloud Hypervisor (KVM) or crun/gVisor (no KVM)
+      |-- spawns and manages workload processes
       |-- monitors process health
       |-- reconnects after daemon restart
       |-- manages cgroups and isolation
