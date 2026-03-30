@@ -207,34 +207,90 @@ async fn run_pull(name: String) -> anyhow::Result<()> {
         _ => None,
     };
 
-    let size_label = match size_mb {
-        Some(mb) => format!(" ({mb} MB)"),
-        None => String::new(),
+    // Use a determinate progress bar when the image size is known from the
+    // catalog, otherwise fall back to a spinner with a byte counter.
+    let bar = if let Some(mb) = size_mb {
+        let total_bytes = mb * 1024 * 1024;
+        let pb = ProgressBar::new(total_bytes);
+        pb.set_style(
+            ProgressStyle::with_template(
+                "{spinner:.cyan} {msg} [{wide_bar:.cyan/dim}] {bytes}/{total_bytes}",
+            )
+            .unwrap_or_else(|_| ProgressStyle::default_bar())
+            .progress_chars("##-"),
+        );
+        pb.set_message(format!("Downloading {name}"));
+        pb
+    } else {
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::with_template("{spinner:.cyan} {msg}")
+                .unwrap_or_else(|_| ProgressStyle::default_spinner()),
+        );
+        pb.set_message(format!("Downloading {name}..."));
+        pb
     };
+    bar.enable_steady_tick(std::time::Duration::from_millis(120));
 
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_style(
-        ProgressStyle::with_template("{spinner:.cyan} {msg}")
-            .unwrap_or_else(|_| ProgressStyle::default_spinner()),
-    );
-    spinner.set_message(format!("Downloading {name}{size_label}..."));
-    spinner.enable_steady_tick(std::time::Duration::from_millis(120));
+    // Simulate download progress when we know the total size. The actual
+    // download happens inside the daemon behind the control socket so we
+    // cannot get real byte-level feedback. Instead we advance the bar
+    // smoothly up to ~90 % while waiting for the daemon response and then
+    // jump to 100 % on completion.
+    let bar_handle = bar.clone();
+    let has_size = size_mb.is_some();
+    let tick_task = if has_size {
+        let total = size_mb.unwrap() * 1024 * 1024;
+        Some(tokio::spawn(async move {
+            // Advance to ~90 % over an estimated duration. We estimate
+            // ~20 MB/s as a conservative baseline so the bar never stalls
+            // for too long on fast downloads.
+            let target = (total as f64 * 0.9) as u64;
+            let estimated_secs = (total as f64 / (20.0 * 1024.0 * 1024.0)).max(1.0);
+            let steps = 100u64;
+            let step_bytes = target / steps;
+            let step_dur = std::time::Duration::from_secs_f64(estimated_secs / steps as f64);
+
+            for _ in 0..steps {
+                tokio::time::sleep(step_dur).await;
+                bar_handle.inc(step_bytes);
+                if bar_handle.is_finished() {
+                    return;
+                }
+            }
+        }))
+    } else {
+        None
+    };
 
     let start = Instant::now();
 
     let req = ComputeRequest::ImagePull { name: name.clone() };
     let resp = send_compute_request(&sock, &req).await.map_err(|e| {
-        spinner.finish_and_clear();
+        bar.finish_and_clear();
         anyhow::anyhow!(
             "failed to connect to daemon: {e}\n\nIs the daemon running? Initialize with: syfrah fabric init --name <mesh-name>"
         )
     })?;
 
+    // Stop the tick task before finishing the bar.
+    if let Some(task) = tick_task {
+        task.abort();
+    }
+
     let elapsed = start.elapsed().as_secs_f64();
 
     match resp {
         ComputeResponse::ImageMeta(_) => {
-            spinner.finish_and_clear();
+            if has_size {
+                let total = size_mb.unwrap() * 1024 * 1024;
+                bar.set_position(total);
+            }
+            bar.finish_and_clear();
+            let size_label = match size_mb {
+                Some(mb) => format!(" ({mb} MB)"),
+                None => String::new(),
+            };
             let time_str = if elapsed < 1.0 {
                 format!("{:.0}ms", elapsed * 1000.0)
             } else {
@@ -244,11 +300,11 @@ async fn run_pull(name: String) -> anyhow::Result<()> {
             Ok(())
         }
         ComputeResponse::Error(msg) => {
-            spinner.finish_and_clear();
+            bar.finish_and_clear();
             anyhow::bail!("{msg}");
         }
         _ => {
-            spinner.finish_and_clear();
+            bar.finish_and_clear();
             anyhow::bail!("unexpected response from daemon");
         }
     }
