@@ -109,6 +109,8 @@ pub struct VmResponse {
     pub vcpus: u32,
     pub memory_mb: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<u64>,
@@ -144,6 +146,7 @@ fn vm_status_to_response(s: &VmStatus) -> VmResponse {
         phase: format!("{:?}", s.phase),
         vcpus: s.vcpus,
         memory_mb: s.memory_mb,
+        image: s.image.clone(),
         runtime: s.runtime.map(|r| match r {
             crate::runtime_backend::RuntimeType::Vm => "vm".to_string(),
             crate::runtime_backend::RuntimeType::Container => "container".to_string(),
@@ -318,6 +321,7 @@ async fn stop_vm(State(mgr): State<SharedManager>, Path(id): Path<String>) -> im
                     phase: "Stopped".to_string(),
                     vcpus: 0,
                     memory_mb: 0,
+                    image: None,
                     runtime: None,
                     created_at: None,
                     uptime_secs: None,
