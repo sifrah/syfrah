@@ -113,10 +113,7 @@ impl ComputeLayerHandler {
 
 /// Convert a VmStatus to a JSON value suitable for CLI output.
 fn vm_status_to_json(s: &crate::types::VmStatus) -> serde_json::Value {
-    let runtime = s.runtime.map(|r| match r {
-        crate::runtime_backend::RuntimeType::Vm => "vm",
-        crate::runtime_backend::RuntimeType::Container => "container",
-    });
+    let runtime = s.runtime.map(|r| r.to_string());
     serde_json::json!({
         "id": s.vm_id.0,
         "phase": format!("{:?}", s.phase),
