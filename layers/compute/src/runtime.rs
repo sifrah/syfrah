@@ -64,6 +64,7 @@ impl VmRuntimeState {
             vcpus: None,
             memory_mb: None,
             launched_at: None,
+            image_name: None,
         }
     }
 
