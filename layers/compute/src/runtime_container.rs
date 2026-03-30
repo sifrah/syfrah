@@ -38,6 +38,9 @@ pub struct ContainerMeta {
     pub runtime_type: String,
     pub vcpus: u32,
     pub memory_mb: u32,
+    /// Image name used to create this container (persisted for reconnect).
+    #[serde(default)]
+    pub image_name: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -916,6 +919,7 @@ impl ComputeRuntime for ContainerRuntime {
             runtime_type: RuntimeType::Container.to_string(),
             vcpus: spec.vcpus,
             memory_mb: spec.memory_mb,
+            image_name: spec.image_name.clone(),
         };
         let meta_json =
             serde_json::to_string_pretty(&meta).map_err(|e| ProcessError::SpawnFailed {
@@ -943,6 +947,7 @@ impl ComputeRuntime for ContainerRuntime {
             vcpus: Some(spec.vcpus),
             memory_mb: Some(spec.memory_mb),
             launched_at: None,
+            image_name: spec.image_name.clone(),
         })
     }
 
@@ -1009,6 +1014,7 @@ impl ComputeRuntime for ContainerRuntime {
             vcpus: handle.vcpus,
             memory_mb: handle.memory_mb,
             launched_at: None,
+            image_name: handle.image_name.clone(),
         })
     }
 
@@ -1176,6 +1182,7 @@ impl ComputeRuntime for ContainerRuntime {
                     vcpus: Some(meta.vcpus),
                     memory_mb: Some(meta.memory_mb),
                     launched_at: parse_iso8601_to_unix(&meta.created_at),
+                    image_name: meta.image_name.clone(),
                 });
             } else {
                 warn!(
@@ -1317,6 +1324,7 @@ mod tests {
             cloud_init_path: None,
             network: None,
             gpu: GpuMode::None,
+            image_name: None,
         };
         let config = generate_oci_config("test-vm-1", &spec);
         assert_eq!(config["hostname"], "test-vm-1");
@@ -1331,6 +1339,7 @@ mod tests {
             cloud_init_path: None,
             network: None,
             gpu: GpuMode::None,
+            image_name: None,
         };
         let config = generate_oci_config("mem-test", &spec);
         let limit = config["linux"]["resources"]["memory"]["limit"]
@@ -1348,6 +1357,7 @@ mod tests {
             cloud_init_path: None,
             network: None,
             gpu: GpuMode::None,
+            image_name: None,
         };
         let config = generate_oci_config("cpu-test", &spec);
         let shares = config["linux"]["resources"]["cpu"]["shares"]
@@ -1365,6 +1375,7 @@ mod tests {
             cloud_init_path: None,
             network: None,
             gpu: GpuMode::None,
+            image_name: None,
         };
         let config = generate_oci_config("ns-test", &spec);
         let namespaces = config["linux"]["namespaces"].as_array().unwrap();
@@ -1387,6 +1398,7 @@ mod tests {
             cloud_init_path: None,
             network: None,
             gpu: GpuMode::None,
+            image_name: None,
         };
         let config = generate_oci_config("ver-test", &spec);
         assert_eq!(config["ociVersion"], "1.0.0");
@@ -1401,6 +1413,7 @@ mod tests {
             runtime_type: RuntimeType::Container.to_string(),
             vcpus: 2,
             memory_mb: 512,
+            image_name: Some("ubuntu-24.04".to_string()),
         };
         let json = serde_json::to_string(&meta).unwrap();
         let back: ContainerMeta = serde_json::from_str(&json).unwrap();
@@ -1499,6 +1512,7 @@ mod tests {
             vcpus: None,
             memory_mb: None,
             launched_at: None,
+            image_name: None,
         };
         assert!(!rt.is_alive(&handle).await);
     }
@@ -1527,6 +1541,7 @@ mod tests {
             runtime_type: RuntimeType::Container.to_string(),
             vcpus: 1,
             memory_mb: 256,
+            image_name: None,
         };
         let json = serde_json::to_string_pretty(&meta).unwrap();
         std::fs::write(tmp.path().join("meta.json"), json).unwrap();
